@@ -20,6 +20,7 @@ WORKDIR /app
 
 COPY --from=rust-build /app/target/release/project ./project
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY migrations ./migrations
 
 EXPOSE 8080
 CMD ["./project"]

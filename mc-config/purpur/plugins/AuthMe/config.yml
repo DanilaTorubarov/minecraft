@@ -1,0 +1,46 @@
+# Hardened AuthMe settings for an offline ("cracked") server.
+#
+# This is a PARTIAL config: it lists only the keys we deliberately change.
+# AuthMe (via ConfigMe) fills in every other key from its own defaults on load
+# and rewrites the complete file, so this stays small and survives AuthMe
+# upgrades. The /config attach point overwrites the generated file each boot
+# (SYNC_SKIP_NEWER_IN_DESTINATION=false), so these values always win.
+#
+# Deliberately NOT set here, because the AuthMe defaults are already correct for
+# this setup — do not "improve" them without understanding the consequence:
+#   settings.restrictions.allowChat: false          unauthenticated players cannot chat
+#   settings.restrictions.allowMovement: false      ...or move
+#   settings.restrictions.allowCommands             only /login, /register, /email,
+#                                                   /captcha, /2fa, /totp. /link is
+#                                                   deliberately absent: it must be
+#                                                   impossible before authenticating.
+#   settings.restrictions.ForceSingleSession: true  blocks the "logged in from
+#                                                   another location" kick exploit
+#   settings.restrictions.preventOtherCase: true    Bob/bob resolve to ONE offline
+#                                                   UUID, so case variants must not
+#                                                   be able to impersonate
+#   settings.restrictions.kickOnWrongPassword: true
+#   settings.restrictions.ProtectInventoryBeforeLogIn: true
+#   settings.registration.force: true               only authenticated players play
+#   settings.restrictions.enablePremium: false      premium auto-login is a bypass
+#                                                   vector on an offline server
+
+settings:
+    restrictions:
+        # A single IP may only have this many players logged in at once.
+        # 0 means unlimited, which lets one host drive a credential-stuffing run.
+        maxLoginPerIp: 3
+        # Same, for accounts allowed to join (registered or not).
+        maxJoinPerIp: 3
+        # AuthMe can tell a player which other accounts share their IP. On a
+        # cracked server that is free reconnaissance for an attacker.
+        displayOtherAccounts: false
+
+    security:
+        # AuthMe's default is salted SHA-256, which is fast and therefore cheap
+        # to brute-force if authme.db ever leaks. BCrypt is deliberately slow.
+        passwordHash: BCRYPT
+        # The default is 5. This password is the only thing standing between an
+        # attacker and a player's identity on an offline server, so raise it.
+        # Typed in-game, hence lower than the panel's 15-character rule.
+        minPasswordLength: 10

@@ -1,0 +1,41 @@
+{
+	# The image runs as a non-root user (65532), which cannot bind 80/443.
+	# Caddy listens on 8080/8443 and Compose maps host 80/443 onto them.
+	# Caddy still builds redirects/ACME against the standard ports.
+	http_port 8080
+	https_port 8443
+
+	# Set SITE_ADDRESS in .env.docker to your domain to get automatic public
+	# certificates. Left unset, it is `localhost`, where Caddy uses its own
+	# internal CA (your browser will warn about the untrusted certificate).
+	# email you@example.com
+}
+
+{$SITE_ADDRESS:localhost} {
+	encode gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# HSTS everywhere except localhost, so local dev over plain HTTP keeps working.
+	@not_local not host localhost
+	header @not_local Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# The in-game plugin reaches these over the private Docker network only. They must
+	# never be reachable from the internet, so block them before the reverse proxy.
+	handle /internal/* {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy app:8080 {
+			# Overwrite any client-supplied value so the app can trust X-Real-IP for
+			# rate limiting. Caddy replaces X-Forwarded-For too, but this is explicit.
+			header_up X-Real-IP {http.request.remote.host}
+		}
+	}
+}

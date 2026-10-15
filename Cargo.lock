@@ -918,10 +918,15 @@ dependencies = [
  "axum",
  "dotenvy",
  "email_address",
+ "getrandom",
+ "hex",
  "rand",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
+ "tower",
  "tower-http",
 ]
 

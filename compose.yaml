@@ -1,8 +1,22 @@
 services:
+  proxy:
+    image: dhi.io/caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+      - "443:8443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
   app:
     build: .
-    ports:
-      - "8080:8080"
+    restart: unless-stopped
     env_file: .env.docker
     depends_on:
       db:
@@ -21,14 +35,83 @@ services:
       retries: 10
   tests:
     image: dhi.io/rust:1-dev
+    profiles: ["tests"]
     working_dir: /app
     volumes:
       - .:/app
     env_file: .env.docker
+    # Test-only value so the internal link endpoint is reachable in tests.
+    environment:
+      LINK_SERVICE_TOKEN: test-service-token
     depends_on:
       db:
         condition: service_healthy
     command: cargo test
 
+  # --- Minecraft: Velocity (public) + Purpur backend (internal) -------------
+  # Only Velocity publishes a port. The backend has none, so it can only be
+  # reached through the proxy, which is what makes modern forwarding trustworthy.
+  velocity:
+    image: itzg/mc-proxy
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    environment:
+      TYPE: VELOCITY
+      REPLACE_ENV_VARIABLES: "true"
+      # Same secret as the backend, from a single source in .env.docker.
+      VELOCITY_FORWARDING_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
+      PUID: "1000"
+      PGID: "1000"
+    ports:
+      - "25565:25565"
+    volumes:
+      - ./mc/velocity:/server
+      - ./mc-config/velocity:/config:ro
+    depends_on:
+      - purpur
+
+  # Purpur is a Paper fork (Paper plugins run unchanged). Swap TYPE to PUFFERFISH
+  # later if you want — nothing else here changes.
+  purpur:
+    image: itzg/minecraft-server
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    environment:
+      EULA: "TRUE"
+      TYPE: PURPUR
+      VERSION: ${MC_VERSION:-LATEST}
+      # Offline (cracked) mode: Velocity does no Mojang auth and the backend
+      # trusts the proxy instead. In-game passwords live in an auth plugin.
+      ONLINE_MODE: "FALSE"
+      ENFORCE_SECURE_PROFILE: "false"
+      MEMORY: ${MC_MEMORY:-4G}
+      REPLACE_ENV_VARIABLES: "true"
+      REPLACE_ENV_DURING_SYNC: "true"
+      SYNC_SKIP_NEWER_IN_DESTINATION: "false"
+      # Make the /config attach point mirror /data exactly, so mc-config/purpur/
+      # maps 1:1 onto the server directory (config/, plugins/, ...). Without
+      # this it would only reach /data/config.
+      COPY_CONFIG_DEST: /data
+      # In-game authentication for the offline server. Pinned by URL so a
+      # redeploy gets the same build; use the Paper jar on Purpur.
+      PLUGINS: |
+        https://github.com/AuthMe/AuthMeReloaded/releases/download/6.0.1/AuthMe-6.0.1-Paper.jar
+      # Consumed by paper-global.yml's ${CFG_VELOCITY_SECRET} placeholder.
+      CFG_VELOCITY_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
+      # Consumed by the link plugin's config.yml placeholder.
+      CFG_LINK_SERVICE_TOKEN: ${LINK_SERVICE_TOKEN:-}
+      # Public hostname, so the plugin can send an unlinked player to the panel.
+      # Consumed by the link plugin's config.yml placeholder.
+      CFG_SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      UID: "1000"
+      GID: "1000"
+    volumes:
+      - ./mc/purpur:/data
+      - ./mc-config/purpur:/config:ro
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

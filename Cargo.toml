@@ -4,12 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "fs"] }
 axum = "0.8.9"
 tower-http = { version = "0.7.1", features = ["fs"] }
 serde = { version = "1.0.229", features = ["derive"] }
-sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio"] }
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "migrate"] }
 argon2 = "0.6.0"
 email_address = "0.2.9"
 dotenvy = "0.15.7"
+getrandom = "0.4"
+hex = "0.4"
+sha2 = "0.10"
+
+[dev-dependencies]
 rand = "0.10.3"
+serde_json = "1.0"
+tower = { version = "0.5", features = ["util"] }

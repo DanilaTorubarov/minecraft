@@ -1,0 +1,37 @@
+# Velocity proxy configuration.
+#
+# This file lives in the repo and is mounted read-only at /config; the mc-proxy
+# image syncs it into /server on startup. Keys that are absent fall back to
+# Velocity's defaults, so this stays minimal on purpose.
+#
+# The forwarding secret itself is NOT here: it is read from ./forwarding.secret,
+# which scripts/mc-init.sh generates (and which is never committed).
+
+bind = "0.0.0.0:25565"
+motd = "A Velocity Server"
+show-max-players = 100
+
+# Offline (cracked) mode. Velocity performs no Mojang authentication, so players
+# are identified by the offline UUID derived from their username. The real gate
+# is the in-game auth plugin, not this setting.
+online-mode = false
+
+# Modern forwarding: player IPs and UUIDs are forwarded to the backend in
+# Velocity's signed binary format, so the backend can trust who the proxy says
+# the player is. Requires the matching secret on both sides.
+player-info-forwarding-mode = "modern"
+forwarding-secret-file = "forwarding.secret"
+
+[servers]
+# "purpur" is the Compose service name; it resolves on the Compose network.
+purpur = "purpur:25565"
+try = ["purpur"]
+
+# The mc-proxy image merges Velocity's bundled default template underneath this
+# file, and that template ships example forced hosts pointing at servers we do
+# not run. An explicit empty table overrides them (otherwise Velocity refuses
+# to start with "Server 'lobby' for forced host 'lobby.example.com' does not exist").
+[forced-hosts]
+
+[query]
+enabled = false

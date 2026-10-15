@@ -1,0 +1,187 @@
+{
+  "title": "Choose the visual world",
+  "question": "The roll assigned Cloakroom Check — my seventh-ranked direction, deliberately not the obvious one. Keep it, take an alternate, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Cloakroom Check",
+      "kicker": "THE ROLL",
+      "lineage": "cloakroom and left-luggage claim tickets",
+      "thesis": "Your website account and your in-game name are the two halves of one ticket, brought together when the claim is redeemed.",
+      "palette": ["#E6D9B4", "#16171A", "#2E6A4E", "#A93B27"],
+      "materials": ["printed board", "punched perforation", "ink stamp"],
+      "viewport": "A standard top bar on a buff board ground. The claim check is the page's centre: one half ruled with your account's fields, the other a torn blank stub holding the code until the game redeems it.",
+      "risk": "Printed ephemera turns nostalgic the moment the ruled density is allowed to go soft.",
+      "raised": [
+        {
+          "from": "challenger-emission",
+          "raise": "Link state is carried by the stub's form — intact, torn, joined — and by the stamp, never by hue alone."
+        },
+        {
+          "from": "challenger-bitmap",
+          "raise": "The perforation is a real dot grid rendered pixel-honest, and the claim number is proved at three sizes."
+        },
+        {
+          "from": "challenger-catalog",
+          "raise": "The account index repacks in whole cells, never fluid fractions, and every row carries its own code and date."
+        }
+      ],
+      "wireframe": {
+        "cols": 12,
+        "rows": 10,
+        "regions": [
+          { "label": "top bar", "x": 0, "y": 0, "w": 12, "h": 1 },
+          { "label": "claim check — the two halves", "x": 0, "y": 1, "w": 8, "h": 5, "accent": true },
+          { "label": "account fields", "x": 8, "y": 1, "w": 4, "h": 5 },
+          { "label": "linked accounts index", "x": 0, "y": 6, "w": 12, "h": 4 }
+        ]
+      }
+    },
+    {
+      "id": "model-pick",
+      "label": "Server List Entry",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "the multiplayer server list",
+      "thesis": "The panel as the server's own listing: one entry, its status, and who is on it.",
+      "palette": ["#1B1D22", "#8FBF4A", "#D8DEE9", "#E0A33A"],
+      "materials": ["game menu chrome", "status lamps"],
+      "viewport": "A dark listing ground with the server held as the page's one large row — MOTD, player count, ping — and your link state as that entry's status lamp.",
+      "risk": "The most obvious Minecraft-panel move there is, and a costume the moment the layout copies the game menu.",
+      "wireframe": {
+        "cols": 12,
+        "rows": 10,
+        "regions": [
+          { "label": "top bar", "x": 0, "y": 0, "w": 12, "h": 1 },
+          { "label": "server entry — status lamp", "x": 0, "y": 1, "w": 12, "h": 3, "accent": true },
+          { "label": "account fields", "x": 0, "y": 4, "w": 7, "h": 3 },
+          { "label": "linked accounts", "x": 7, "y": 4, "w": 5, "h": 3 },
+          { "label": "recent activity", "x": 0, "y": 7, "w": 12, "h": 3 }
+        ]
+      }
+    },
+    {
+      "id": "challenger-transit",
+      "label": "Midnight Transit Diagram",
+      "verdict": "competitive",
+      "lineage": "enamel transit wayfinding murals",
+      "thesis": "The link as a journey: your account and your in-game name are two stations, and the segment between them is the state.",
+      "palette": ["#141B33", "#F2F4F7", "#C0392B", "#2E86C1"],
+      "materials": ["enamel ground", "porcelain ticks", "line inks"],
+      "viewport": "A midnight-blue ground. Two stations on one corridor, the segment between them solid once linked and dashed while it is not, with the code as the ticket you have not yet punched.",
+      "case": "Holds audience identification — wayfinding is universal and every server ships a web map — but it names the metaphor rather than the mechanism: nothing in it is actually a claim check.",
+      "risk": "Reads as a transit poster the moment the shell copies a station map.",
+      "hero": "https://impeccable.style/worlds/cards/wayfinding-cartography-signage-midnight-transit-diagram-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/wayfinding-cartography-signage-midnight-transit-diagram.webp",
+      "wireframe": {
+        "cols": 12,
+        "rows": 10,
+        "regions": [
+          { "label": "top bar", "x": 0, "y": 0, "w": 12, "h": 1 },
+          { "label": "the corridor — two stations", "x": 0, "y": 1, "w": 8, "h": 4, "accent": true },
+          { "label": "journey detail", "x": 8, "y": 1, "w": 4, "h": 4 },
+          { "label": "account fields", "x": 0, "y": 5, "w": 12, "h": 2 },
+          { "label": "linked accounts", "x": 0, "y": 7, "w": 12, "h": 3 }
+        ]
+      }
+    },
+    {
+      "id": "challenger-lexicon",
+      "label": "Lexicon Shoulder and Plate",
+      "verdict": "competitive",
+      "lineage": "nineteenth-century lexicon pages",
+      "thesis": "The panel as a reference page: text to a fixed measure, a shoulder index down the outside, guide words at the head.",
+      "palette": ["#F4EFE3", "#141210", "#C64B2C", "#1F5C8B"],
+      "materials": ["engraving black", "uncoated stock", "bordered colour plates"],
+      "viewport": "A ruled head carrying the first and last item in view, a text column at a fixed measure, and a shoulder margin where the account index lives.",
+      "case": "Holds product clarity — a stranger can read the linking ritual as a documented procedure — but its voice is a reference book's, not a player's.",
+      "risk": "Drifts into editorial pastiche the moment the rules stop doing work.",
+      "hero": "https://impeccable.style/worlds/cards/rw-lexicon-shoulder-and-plate-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/rw-lexicon-shoulder-and-plate.webp",
+      "wireframe": {
+        "cols": 12,
+        "rows": 10,
+        "regions": [
+          { "label": "guide words", "x": 0, "y": 0, "w": 12, "h": 1 },
+          { "label": "shoulder index", "x": 0, "y": 1, "w": 3, "h": 9, "accent": true },
+          { "label": "claim check, set as an entry", "x": 3, "y": 1, "w": 9, "h": 5 },
+          { "label": "account entry", "x": 3, "y": 6, "w": 9, "h": 4 }
+        ]
+      }
+    },
+    {
+      "id": "challenger-crouwel",
+      "label": "Crouwel Grid Specimen",
+      "verdict": "competitive",
+      "lineage": "Wim Crouwel's gridded specimens",
+      "thesis": "The screen built on a visible construction grid, every field snapped to its cells.",
+      "palette": ["#FFFFFF", "#12131A", "#2B5BD7", "#E8E8E8"],
+      "materials": ["construction hairlines", "stark ground"],
+      "viewport": "A white ground ruled by faint construction hairlines; the account's fields and the claim check snap to whole cells, with the grid left visible as the armature.",
+      "case": "Holds product clarity — a visible grid is a legitimate working armature — but audience identification is thin: it is a designer's reference, not a player's.",
+      "risk": "A visible grid becomes decoration the moment nothing actually snaps to it.",
+      "hero": "https://impeccable.style/worlds/cards/crouwel-grid-specimen-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/crouwel-grid-specimen.webp",
+      "wireframe": {
+        "cols": 12,
+        "rows": 10,
+        "regions": [
+          { "label": "top bar", "x": 0, "y": 0, "w": 12, "h": 1 },
+          { "label": "claim check on the grid", "x": 0, "y": 1, "w": 8, "h": 5, "accent": true },
+          { "label": "account fields", "x": 8, "y": 1, "w": 4, "h": 5 },
+          { "label": "linked accounts", "x": 0, "y": 6, "w": 12, "h": 4 }
+        ]
+      }
+    },
+    {
+      "id": "challenger-emission",
+      "label": "Emission Line Rail",
+      "verdict": "declined",
+      "lineage": "spectrogram plates",
+      "thesis": "Every account a tick on one calibrated rail, with state carried by line form rather than colour.",
+      "palette": ["#1A1C1E", "#E8E2D6", "#F5D64C"],
+      "materials": ["charcoal continuum", "hairline emission lines"],
+      "viewport": "A charcoal ground crossed by needle-thin lines, every destination a tick on one off-centre rail.",
+      "case": "Fuses poorly: a physics plate is not a world a Minecraft player identifies with, and one rail cannot hold an account index.",
+      "kept": "State carried by form — solid, dashed, struck — rather than by hue.",
+      "hero": "https://impeccable.style/worlds/cards/operate-c-emission-line-rail-hero.webp"
+    },
+    {
+      "id": "challenger-bitmap",
+      "label": "Emigre Bitmap Specimen",
+      "verdict": "declined",
+      "lineage": "Emigre bitmap type specimens",
+      "thesis": "Coarse pixel letterforms set proudly at poster scale, with the low resolution as the aesthetic.",
+      "palette": ["#F2F0EB", "#111111", "#FF3B00"],
+      "materials": ["halftone", "dot matrix"],
+      "viewport": "A headline built from visible pixels towering over dense justified columns.",
+      "case": "Fuses poorly: pixels are the game's own surface, so the panel wears the game as a costume, and coarse type endangers a code that must be retyped exactly.",
+      "kept": "One form proved at several sizes, and pixel-honest rendering wherever the material is a grid.",
+      "hero": "https://impeccable.style/worlds/cards/emigre-bitmap-specimen-hero.webp"
+    },
+    {
+      "id": "challenger-catalog",
+      "label": "Doujin Event Catalog",
+      "verdict": "declined",
+      "lineage": "convention circle catalogs",
+      "thesis": "The page as a packed index of postage-stamp cells, each carrying its own code.",
+      "palette": ["#EDE9E0", "#1A1A1A", "#D2452C"],
+      "materials": ["newsprint", "spot ink"],
+      "viewport": "Hundreds of tiny cells packed edge to edge in a numbered grid.",
+      "case": "Fuses poorly: an account list holds one or two entries, so the catalog's entire reason for being is empty here.",
+      "kept": "Whole-cell repacking — the layout changes in complete units, never fluid fractions.",
+      "hero": "https://impeccable.style/worlds/cards/pop-culture-shelf-doujin-event-catalog-hero.webp"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "buildPath": { "value": "code" },
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "thesis": "A centred white card with a blue primary button, executed impeccably.",
+    "palette": ["#FFFFFF", "#111827", "#2563EB"],
+    "materials": ["clean grid", "soft shadow"],
+    "viewport": "A centred column: one heading, labelled inputs, one primary action.",
+    "risk": "Indistinguishable from any other auth page by design."
+  },
+  "steer": true
+}

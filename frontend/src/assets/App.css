@@ -1,90 +1,672 @@
-#root {
+/* --- Shell ---------------------------------------------------------------- */
+
+.shell {
   min-height: 100vh;
   min-height: 100dvh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  display: flex;
+  flex-direction: column;
 }
 
-main {
-  width: min(100%, 440px);
-  padding: 32px;
-  background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 12px 36px rgba(28, 45, 77, 0.1);
+.topbar {
+  border-bottom: 1px solid var(--rule);
 }
 
-h1 {
-  margin: 0 0 24px;
-  font-size: 1.8rem;
+/* The bar's contents sit on the same 62rem grid as the page, so the wordmark lines
+   up with the title beneath it instead of hugging the window edge. The rule itself
+   still runs edge to edge. */
+.topbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  max-width: var(--shell);
+  min-height: 64px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--step-0);
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: block;
+  flex: none;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.nav-link {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--bone-dim);
+  font-size: var(--step--1);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.nav-link:hover {
+  color: var(--bone);
+  background: var(--ground-row);
+}
+
+.nav-link[aria-current='page'] {
+  color: var(--bone);
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: var(--shell);
+  margin: 0 auto;
+  padding: 36px 24px 96px;
+}
+
+/* --- Page head ------------------------------------------------------------ */
+
+.page-head {
+  margin-bottom: 28px;
+}
+
+/* The page title stays modest on purpose: the entry below it is the answer the
+   player came for, so it carries the display size, not the heading. */
+.page-head h1 {
+  font-size: var(--step-2);
   line-height: 1.2;
 }
 
-form {
-  display: grid;
-  gap: 14px;
-}
-
-input,
-button {
-  width: 100%;
-  min-height: 48px;
-  font: inherit;
-  border-radius: 8px;
-}
-
-input {
-  padding: 0 14px;
-  color: #172033;
-  background: #fff;
-  border: 1px solid #aeb9c9;
-}
-
-input::placeholder {
-  color: #526174;
-}
-
-input:focus-visible,
-button:focus-visible {
-  outline: 3px solid #8fb3ff;
-  outline-offset: 2px;
-}
-
-button {
+.page-sub {
   margin-top: 6px;
-  color: #fff;
-  background: #2456b7;
-  border: 0;
+  font-size: var(--step--1);
+  color: var(--bone-dim);
+}
+
+.page-sub strong {
+  color: var(--bone);
+}
+
+/* --- The entry: the page's one signature move ----------------------------- */
+
+/* The band is the game's own button — the same face, the same bevel, the same
+   white type — because it is the one thing on the page a player came to look at.
+   Its chrome is declared in index.css with every other widget's. */
+.entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 22px 24px;
+  background: var(--gui-face);
+  color: var(--gui-text);
+  border-radius: var(--radius);
+}
+
+.entry[data-state='linked'] {
+  --lamp: var(--live);
+}
+
+/* Red, not amber: the state is a traffic light — linked is green, and anything
+   else is a problem the player is meant to fix. */
+.entry[data-state='pending'] {
+  --lamp: var(--down);
+}
+
+/* A slot, not a button: the game shows state with a coloured block in an inset,
+   so the block carries green or red and no text has to be tinted to do it. */
+.lamp {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  background: var(--gui-slot);
+}
+
+.lamp::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  background: var(--lamp, var(--bone-dim));
+  transition: background-color 220ms ease;
+}
+
+.entry-name {
+  font-size: var(--step-3);
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.entry-motd {
+  margin-top: 5px;
+  font-size: var(--step--1);
+  color: var(--gui-text);
+}
+
+/* On a #6f6f6f face the only text that clears 4.5:1 is white, so the state keeps
+   its colour by moving onto its own inset — the same trick as the lamp, and the
+   one place in the game where coloured type still lives. */
+.entry-state {
+  justify-self: start;
+  padding: 4px 8px;
+  border: 1px solid var(--gui-edge);
+  background: var(--gui-slot);
+  box-shadow:
+    inset 2px 2px 0 #1f1f1f,
+    inset -2px -2px 0 var(--gui-slot-lo);
+  color: var(--lamp, var(--bone-dim));
+  font-size: var(--step--2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* --- Sections ------------------------------------------------------------- */
+
+.section {
+  margin-top: 44px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.section-action {
+  margin-left: auto;
+}
+
+.section-head h2 {
+  font-size: var(--step--2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--bone-dim);
+}
+
+.count {
+  font-size: var(--step--2);
+  color: var(--bone-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.lede {
+  max-width: 62ch;
+  margin-bottom: 18px;
+  color: var(--gui-text);
+}
+
+/* A chip on a grey panel is an inset: dark enough that the type on it can stay
+   the page's bone, and square like everything else. The command lives on an inset,
+   not on the plank — the wood is only for the code you copy out. */
+.lede code {
+  padding: 2px 6px;
+  border: 1px solid var(--gui-edge);
+  background: var(--gui-slot);
+  color: var(--bone);
+  font-size: var(--step--1);
+}
+
+/* --- Buttons -------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-sm);
+  background: var(--gui-face);
+  color: var(--gui-text);
   cursor: pointer;
-  font-weight: 600;
-  transition: background-color 150ms ease;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-button:hover {
-  background: #19438f;
+/* The highlighted sprite, exactly: a lighter face, a brighter bevel and a white
+   outline instead of a black one. That outline is how the game says "this one". */
+.btn:hover:not(:disabled) {
+  background: var(--gui-face-hover);
+  border-color: var(--gui-edge-hover);
+  box-shadow:
+    inset 2px 2px 0 var(--gui-hi-hover),
+    inset -2px -2px 0 var(--gui-lo-hover);
 }
 
-p {
-  margin: 18px 0 0;
-  line-height: 1.5;
+/* The disabled sprite, exactly: a #2c2c2c face with a bevel a shade either side,
+   not a faded copy of the live button. */
+.btn:disabled {
+  background: var(--gui-face-disabled);
+  color: var(--gui-text-disabled);
+  box-shadow:
+    inset 2px 2px 0 #2b2b2b,
+    inset -2px -2px 0 #292929;
+  cursor: not-allowed;
 }
 
-p[role="alert"] {
-  color: #a12626;
+/* The primary action keeps the game's chrome and takes its lightest face — the
+   grey of the container itself — so it is the brightest button on the page without
+   ever leaving the palette. Dark type is what makes it read as a different thing
+   rather than a bigger version of its neighbours. */
+.btn-primary {
+  background: var(--gui-face-primary);
+  color: var(--ink);
+  box-shadow:
+    inset 2px 2px 0 var(--gui-hi-primary),
+    inset -2px -2px 0 var(--gui-lo-primary);
 }
 
-@media (max-width: 480px) {
-  #root {
-    padding: 16px;
+.btn-primary:hover:not(:disabled) {
+  background: var(--gui-face-primary-hover);
+  box-shadow:
+    inset 2px 2px 0 var(--gui-hi-primary),
+    inset -2px -2px 0 #6b6b6b;
+}
+
+.btn-quiet {
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: var(--step--1);
+}
+
+/* Only the one action that destroys something turns red, and it turns its whole
+   face — a destructive button should look different, not just sound different. */
+.btn-danger:hover:not(:disabled) {
+  background: var(--down-deep);
+  color: var(--bone);
+  box-shadow:
+    inset 2px 2px 0 #bf5a48,
+    inset -2px -2px 0 #71291c;
+}
+
+.btn-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* --- The claim check ------------------------------------------------------ */
+
+.claim {
+  padding: 20px 22px;
+  background: var(--gui-face);
+  color: var(--gui-text);
+  border-radius: var(--radius);
+}
+
+.claim .lede {
+  margin-bottom: 16px;
+}
+
+/* --- The wood well: the code ---------------------------------------------- */
+
+/* The well holding the code is a piece of the world rather than a hole in the page:
+   the game's own oak planks, tiled at the size a 16px texture takes at the game's
+   default GUI scale of 2, under the same kind of scrim the dirt gets — the raw block
+   is a mid-tone that spans only 3:1 end to end, so no type colour reaches 4.5:1 on
+   it. It keeps the shared sunken chrome: planks set into a GUI are a recess, not a
+   button. */
+.code {
+  background-color: var(--wood-face);
+  background-image:
+    linear-gradient(var(--wood-scrim), var(--wood-scrim)),
+    url('./wood.png');
+  background-size:
+    100% 100%,
+    32px 32px;
+  background-repeat: no-repeat, repeat;
+  image-rendering: pixelated;
+}
+
+/* The code is the one thing on the page you are meant to copy into the game, so it
+   gets the largest piece of wood. Its text is white like every other widget's: a
+   dimmed label would not clear 4.5:1 on the scrimmed planks, so the label is
+   separated from the code by size and case instead of by tone. */
+.code {
+  display: grid;
+  grid-template-areas:
+    'label label'
+    'value copy'
+    'expiry copy';
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 18px;
+  margin-top: 20px;
+  padding: 18px 20px;
+  color: var(--gui-text);
+  border-radius: var(--radius);
+}
+
+.code-label {
+  grid-area: label;
+  margin-bottom: 6px;
+  font-size: var(--step--2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--gui-text);
+}
+
+.code-value {
+  grid-area: value;
+  font-size: var(--step-4);
+  letter-spacing: 2px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.code-expiry {
+  grid-area: expiry;
+  font-size: var(--step--1);
+  color: var(--gui-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The page's amber is too dark to sit on the scrimmed planks, so the expiry takes it
+   lightened: the same hue, the way it would be lit on a dark surface. */
+.code .code-expiry {
+  color: var(--amber-light);
+}
+
+.code-copy {
+  grid-area: copy;
+}
+
+.code-hint {
+  margin-top: 14px;
+  font-size: var(--step--1);
+  color: var(--gui-text);
+}
+
+.code-hint code {
+  padding: 2px 6px;
+  border: 1px solid var(--gui-edge);
+  background: var(--gui-slot);
+  color: var(--bone);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .code {
+    animation: code-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+@keyframes code-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* --- Panels: the data sections -------------------------------------------- */
+
+/* The entry and the claim are grey boxes; the account details and the linked
+   accounts get the same box, so the data rests on the game's surface instead of
+   floating on the dirt. The chrome is the shared raised one. */
+.panel {
+  padding: 6px 20px;
+  background: var(--gui-face);
+  color: var(--gui-text);
+  border-radius: var(--radius);
+}
+
+/* Inside a panel the panel's own edge is the boundary, so the tables drop their
+   opening rule and the last row drops its closing one. */
+.panel .rows,
+.panel .fields {
+  border-top: 0;
+}
+
+.panel .row:last-child,
+.panel .fields > div:last-child {
+  border-bottom: 0;
+}
+
+/* --- Ruled rows: linked accounts ------------------------------------------ */
+
+.rows {
+  border-top: 1px solid var(--rule);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 20px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.row-name {
+  font-size: var(--step-1);
+  overflow-wrap: anywhere;
+}
+
+/* On a #6f6f6f panel white is the only text colour that clears 4.5:1, so the
+   metadata is separated from the name by size instead of by tone. */
+.row-id {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--step--1);
+  color: var(--gui-text);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-date {
+  font-size: var(--step--1);
+  color: var(--gui-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: 20px 0;
+  color: var(--bone-dim);
+  border-bottom: 1px solid var(--rule);
+}
+
+/* --- Fields: account details ---------------------------------------------- */
+
+.fields {
+  border-top: 1px solid var(--rule);
+}
+
+.fields > div {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.fields dt {
+  font-size: var(--step--2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--gui-text);
+}
+
+.fields dd {
+  font-size: var(--step-1);
+  overflow-wrap: anywhere;
+}
+
+/* --- Forms ---------------------------------------------------------------- */
+
+.form {
+  display: grid;
+  gap: 18px;
+  max-width: 26rem;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field > label {
+  font-size: var(--step--2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--bone-dim);
+}
+
+/* A field wears the same chrome sunken instead of raised, so it reads as a well
+   you type into rather than a button you press. */
+.field input {
+  min-height: 48px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  background: var(--gui-face);
+  color: var(--gui-text);
+  transition: border-color 140ms ease;
+}
+
+.field input:hover {
+  border-color: var(--gui-edge-hover);
+}
+
+.field input:focus {
+  border-color: var(--gui-edge-hover);
+}
+
+.field-hint {
+  font-size: var(--step--1);
+  color: var(--bone-dim);
+}
+
+.field-error {
+  font-size: var(--step--1);
+  color: var(--down);
+}
+
+.form-foot {
+  margin-top: 22px;
+  font-size: var(--step--1);
+  color: var(--bone-dim);
+}
+
+.form-foot a {
+  color: var(--bone);
+}
+
+/* --- Notes ---------------------------------------------------------------- */
+
+.note {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  background: var(--gui-face);
+  color: var(--gui-text);
+  border-radius: var(--radius-sm);
+  font-size: var(--step--1);
+}
+
+/* The tone is a block, outlined so it stays a block on the grey, exactly the way
+   the lamp shows the entry's state. */
+.note::before {
+  content: '';
+  flex: none;
+  align-self: center;
+  width: 10px;
+  height: 10px;
+  background: var(--tone);
+  box-shadow: 0 0 0 1px var(--gui-edge);
+}
+
+.note[data-tone='ok'] {
+  --tone: var(--live);
+}
+
+.note[data-tone='error'] {
+  --tone: var(--down);
+}
+
+/* --- Loading -------------------------------------------------------------- */
+
+.loading {
+  padding: 40px 0;
+  color: var(--bone-dim);
+}
+
+/* --- Narrow screens ------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .topbar-inner {
+    padding: 0 16px;
   }
 
-  main {
-    padding: 24px;
+  .main {
+    padding: 24px 16px 72px;
   }
-}
 
-@media (prefers-reduced-motion: reduce) {
-  button {
-    transition: none;
+  .entry {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 12px;
+  }
+
+  .entry-state {
+    grid-column: 2;
+  }
+
+  .entry-name {
+    font-size: var(--step-2);
+  }
+
+  .code-value {
+    font-size: var(--step-3);
+  }
+
+  /* The code is one unbroken token, so on a phone the Copy button drops to its own
+     line rather than squeezing the code until it wraps mid-value. */
+  .code {
+    grid-template-areas:
+      'label'
+      'value'
+      'expiry'
+      'copy';
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 4px;
+  }
+
+  .code-copy {
+    justify-self: start;
+    margin-top: 8px;
+  }
+
+  .fields > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .row-date {
+    grid-column: 1;
+    grid-row: 2;
   }
 }

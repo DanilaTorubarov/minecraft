@@ -18,3 +18,16 @@ AGENTS.md
 .idea/
 .vscode/
 
+# Minecraft server runtime data: worlds, downloaded jars, plugins and the
+# forwarding secret. Config templates live in mc-config/ and ARE committed.
+/mc/
+
+# LinkBridge plugin build output. The plugin source in /plugin/ IS committed;
+# only the Gradle output and the downloaded compile-time jars are not.
+/.plugin-build/
+/plugin/build/
+/plugin/.gradle/
+
+# Export bundles
+/project-export-*.tar.gz
+

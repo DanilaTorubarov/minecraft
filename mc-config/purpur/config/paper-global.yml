@@ -1,0 +1,18 @@
+# Paper global configuration (Purpur, Paper and Pufferfish all read this file).
+#
+# Mounted read-only at /config/config/paper-global.yml and synced into
+# /data/config/paper-global.yml. The ${CFG_VELOCITY_SECRET} placeholder is
+# interpolated by the container from VELOCITY_SECRET in .env.docker, so the
+# secret never appears in this file or in git.
+#
+# Keys that are absent fall back to Paper's defaults.
+
+proxies:
+  velocity:
+    # Trust Velocity's modern-forwarding login. The backend publishes no port, so
+    # only the proxy can reach it — that is what makes this safe.
+    enabled: true
+    # Must match the proxy's online-mode. Velocity is offline, but the backend
+    # still uses the proxy's forwarded identity rather than doing its own auth.
+    online-mode: true
+    secret: '${CFG_VELOCITY_SECRET}'

@@ -1,12 +1,253 @@
+/* Minecraft Rus, self-hosted.
+   The face is drawn on an 8px em — a stem is exactly 1/8 em — so every size below
+   is a multiple of 4, which lands on that grid at both 1x and 2x. An off-grid size
+   is the one thing a pixel face cannot survive: the stems go soft and the whole
+   thing reads as a blurred sans.
+   It ships a single weight, so nothing here asks for a bold and body turns font
+   synthesis off; hierarchy is size, colour and case, the way the game's own
+   interface does it.
+   Font: "Minecraft Rus", © 2004–2012 BOGDAN Software. */
+@font-face {
+  font-family: 'Minecraft Rus';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/minecraft.ttf') format('truetype');
+}
+
+/* The world: the game's own ground. A 16px dirt block, tiled at 64px and kept
+   crisp, sits under everything, and the surfaces above it are the game's own
+   widgets. Colour still does jobs — green is linked, red is failure, amber is the
+   focus ring — so the dirt never has to carry meaning, only material. */
+:root {
+  --ground: #1b1d22;
+  --ground-row: #262a31;
+  --rule: #333841;
+  --rule-strong: #4a515e;
+
+  --bone: #d8dee9;
+  /* Lifted from #98a1b0: secondary text no longer sits on flat ground but on a
+     mid-tone texture, and at the old value it fell under 4.5:1. */
+  --bone-dim: #a4adbb;
+
+  --live: #8fbf4a;
+  --amber: #e0a33a;
+  /* Bright enough to read as text on the dirt; the deeper one is the face a
+     destructive button turns when you hover it. */
+  --down: #f0937f;
+  --down-deep: #a33b2a;
+
+  /* The dark a light surface takes: selection, and the primary button's type. */
+  --ink: #1b1d22;
+
+  /* The game's widgets, sampled from the 1.20.2 sprites rather than guessed at.
+     `button.png` is a #6f6f6f face with a #aaaaaa top-left bevel and a #565656
+     bottom-right, inside a 1px #000000 outline; `button_highlighted.png` brightens
+     the face to #757575 and swaps the outline for #ffffff; `button_disabled.png`
+     drops the face to #2c2c2c. Text on all of them is white. #373737 and #555555
+     are the palette's darker greys, used for slots and insets. */
+  --gui-face: #6f6f6f;
+  --gui-face-hover: #757575;
+  --gui-face-disabled: #2c2c2c;
+  --gui-hi: #aaaaaa;
+  --gui-hi-hover: #afafaf;
+  --gui-lo: #565656;
+  --gui-lo-hover: #5c5c5c;
+  --gui-edge: #000000;
+  --gui-edge-hover: #ffffff;
+  --gui-text: #ffffff;
+  --gui-text-disabled: #9a9a9a;
+  --gui-slot: #373737;
+  --gui-slot-lo: #555555;
+
+  /* The well that holds a code is not a hole in the page: it is the game's own oak
+     planks, sampled from `oak_planks.png` and tiled at 32px — a 16px texture at the
+     game's default GUI scale of 2, the same scale the widget bevels are drawn at.
+     The raw block is a mid-tone and spans only 3:1 end to end, so *no* type colour
+     can reach 4.5:1 on it; the scrim takes it down until white does, exactly as the
+     dirt's scrim does for bone. `--amber-light` is the page's amber lightened for a
+     dark surface, which is what the expiry needs here. */
+  --wood-face: #66502f;
+  --wood-scrim: rgba(28, 18, 8, 0.45);
+  --amber-light: #f8dca0;
+
+  /* The primary action wears the light grey of the game's own container chrome —
+     the brightest face in the palette, so the button you are meant to press is the
+     one that reads as brighter. It is also the only face light enough to carry dark
+     type, which is what stops it being just another grey button. */
+  --gui-face-primary: #c6c6c6;
+  --gui-face-primary-hover: #d8d8d8;
+  --gui-hi-primary: #ffffff;
+  --gui-lo-primary: #555555;
+
+  --font: 'Minecraft Rus', ui-monospace, monospace;
+
+  /* Multiples of 4. 8px is the size the game itself uses and is unreadable here. */
+  --step--2: 0.75rem; /* 12 */
+  --step--1: 1rem; /* 16 */
+  --step-0: 1rem; /* 16 */
+  --step-1: 1.25rem; /* 20 */
+  --step-2: 1.5rem; /* 24 */
+  --step-3: 2rem; /* 32 */
+  --step-4: 3rem; /* 48 */
+
+  --shell: 62rem;
+
+  /* Square. A pixel face inside a 12px radius is two worlds arguing. */
+  --radius: 0;
+  --radius-sm: 0;
+
+  /* Painted over the dirt, so the texture shows through at 30%. Tuned against the
+     texture's brightest speckle, not its average: bone on the raw block is 1.6:1,
+     and at 45% the dirt became the loudest surface on the page. */
+  --dirt-scrim: rgba(27, 29, 34, 0.7);
+
+  color-scheme: dark;
+}
+
 *,
 *::before,
 *::after {
   box-sizing: border-box;
 }
 
+html {
+  /* The page is dark from the first paint, so loading never flashes white. */
+  background: var(--ground);
+}
+
 body {
   margin: 0;
-  font-family: system-ui, sans-serif;
-  color: #172033;
-  background: #f3f6fb;
+  font-family: var(--font);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  color: var(--bone);
+  background-color: var(--ground);
+  background-image:
+    linear-gradient(var(--dirt-scrim), var(--dirt-scrim)),
+    url('./assets/dirt.png');
+  background-size:
+    100% 100%,
+    64px 64px;
+  background-repeat: no-repeat, repeat;
+  image-rendering: pixelated;
+  /* One weight only. A synthesised bold smears the pixels, which is the single
+     thing a pixel face cannot survive. */
+  font-synthesis: none;
+  -webkit-font-smoothing: none;
+  /* The game's own answer to text over a texture: a hard drop shadow, so the
+     glyphs darken what is behind them instead of the dirt being scrimmed away
+     to nothing. */
+  text-shadow: 1px 1px 0 rgba(10, 11, 13, 0.72);
+}
+
+/* A surface with its own ground already separates its text from the dirt, and the
+   shadow only muddies it there. Every one of these is a game widget now, and the
+   game draws its own text plainly. */
+.entry,
+.claim,
+.panel,
+.code,
+.field input,
+.btn,
+.note,
+.lamp {
+  text-shadow: none;
+}
+
+/* The game's widget chrome, shared by everything that is a box: a 1px black
+   outline with a 2px bevel inside it — the sprite's 1px bevel at the game's
+   default GUI scale of 2. Raised is a button or a panel; sunken is a slot or a
+   field, and the direction is what says which one you are looking at. */
+.entry,
+.claim,
+.panel,
+.btn,
+.note {
+  border: 1px solid var(--gui-edge);
+  box-shadow:
+    inset 2px 2px 0 var(--gui-hi),
+    inset -2px -2px 0 var(--gui-lo);
+}
+
+.field input,
+.code,
+.lamp {
+  border: 1px solid var(--gui-edge);
+  box-shadow:
+    inset 2px 2px 0 var(--gui-lo),
+    inset -2px -2px 0 var(--gui-hi);
+}
+
+h1,
+h2,
+h3,
+p,
+dl,
+dd,
+dt,
+ul,
+ol,
+figure {
+  margin: 0;
+  padding: 0;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+a {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 0.22em;
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+/* The parts nobody draws still belong to the design. */
+::selection {
+  color: var(--ink);
+  background: var(--amber);
+}
+
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+html {
+  caret-color: var(--amber);
+  scrollbar-color: var(--rule-strong) var(--ground);
+}
+
+/* Inline code is a chip in the panel's own type, not a second typeface: the game
+   has one font, and inventing a mono for it would be the only borrowed voice on
+   the page. Whole-pixel tracking keeps the chip's letters on the grid. */
+code,
+kbd {
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }

@@ -1,43 +1,104 @@
 import { useState, type SubmitEvent } from 'react'
-import '../assets/App.css'
+import { Link, useNavigate, useSearchParams } from 'react-router'
+import { ApiError, sharedMessage } from '../lib/api'
+import { useAuth } from '../lib/auth-context'
 
-function LoginPage () {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [passwordError, setPasswordError] = useState('')
-  const [output, setOutput] = useState('')
-  async function register(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (password.length<15) {
-      setPasswordError('Password is too short')
-      return
+function messageFor(error: unknown): string {
+  if (error instanceof ApiError) {
+    const shared = sharedMessage(error.status)
+    if (shared !== null) {
+      return shared
     }
-    setPasswordError('')
-    const response = await fetch ('/api/login', {
-      method: 'POST',
-      headers: {'Content-type': 'application/json'},
-      body: JSON.stringify ({
-        'email': email,
-        'password': password
-      })
-    })
-    if (response.ok) {
-      setOutput('Sucsessfully logged in')
-    } else {
-      setOutput('There is Error')
+    if (error.status === 401) {
+      // The panel answers an unknown email and a wrong password identically, and so
+      // does this copy: it must not hint at which accounts exist.
+      return 'That email and password do not match an account.'
     }
   }
+  return 'Something went wrong. Try again.'
+}
+
+function LoginPage() {
+  const { signIn } = useAuth()
+  const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const justRegistered = params.get('registered') === '1'
+
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function onSubmit(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setBusy(true)
+    try {
+      await signIn(email, password)
+      navigate('/cabinet', { replace: true })
+    } catch (problem) {
+      setError(messageFor(problem))
+      setBusy(false)
+    }
+  }
+
   return (
-    <main>
-      <h1>Welcome</h1>
-      <form onSubmit={register}>
-        <input value={email} type="email" placeholder="Email (example@gmail.com)" onChange={(event) => setEmail(event.target.value)} required/>
-        <input value={password} type="password" placeholder="Password (minimal length 15)" onChange={(event) => setPassword(event.target.value)} required/>
-        <button type="submit">Register</button>
+    <>
+      <div className="page-head">
+        <h1>Log in</h1>
+        <p className="page-sub">Sign in to see your linked Minecraft accounts.</p>
+      </div>
+
+      {justRegistered && (
+        <p className="note" data-tone="ok">
+          Account created. Log in to link your in-game name.
+        </p>
+      )}
+
+      {error !== '' && (
+        <p className="note" data-tone="error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <form className="form" onSubmit={onSubmit}>
+        <div className="field">
+          <label htmlFor="email">Email</label>
+          <input
+            id="email"
+            name="email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor="password">Password</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+        </div>
+
+        <div className="btn-row">
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            {busy ? 'Logging in…' : 'Log in'}
+          </button>
+        </div>
       </form>
-      {passwordError && <p role="alert">{passwordError}</p>}
-      {output && <p role="alert">{output}</p>}
-    </main>
+
+      <p className="form-foot">
+        No account yet? <Link to="/register">Register</Link>, then link your in-game name.
+      </p>
+    </>
   )
 }
 
