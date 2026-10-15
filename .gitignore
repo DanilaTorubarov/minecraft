@@ -8,7 +8,6 @@
 
 # Local configuration and secrets
 .env*
-AGENTS.md 
 !.env.example
 !.env.docker.example
 
