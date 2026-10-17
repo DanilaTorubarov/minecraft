@@ -1,6 +1,7 @@
 import { useState, type SubmitEvent } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router'
 import { ApiError, sharedMessage } from '../lib/api'
+import { playSound } from '../lib/sounds'
 import { useAuth } from '../lib/auth-context'
 
 function messageFor(error: unknown): string {
@@ -21,6 +22,8 @@ function messageFor(error: unknown): string {
 function LoginPage() {
   const { signIn } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const securityNotice = typeof location.state?.securityNotice === 'string' ? location.state.securityNotice : ''
   const [params] = useSearchParams()
   const justRegistered = params.get('registered') === '1'
 
@@ -35,6 +38,7 @@ function LoginPage() {
     setBusy(true)
     try {
       await signIn(email, password)
+      playSound('done')
       navigate('/cabinet', { replace: true })
     } catch (problem) {
       setError(messageFor(problem))
@@ -54,6 +58,7 @@ function LoginPage() {
           Account created. Log in to link your in-game name.
         </p>
       )}
+      {securityNotice && <p className="note" data-tone="ok" role="status">{securityNotice}</p>}
 
       {error !== '' && (
         <p className="note" data-tone="error" role="alert">

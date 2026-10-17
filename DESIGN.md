@@ -1,202 +1,216 @@
-# Design
+---
+name: Minecraft account portal
+description: An old Mac desktop with Frutiger Aero glass over the supplied Asadal landscape.
+colors:
+  text: "#173c50"
+  muted: "#355467"
+  link: "#09658f"
+  surface: "#f8fcff"
+  surface-soft: "#eaf3f8"
+  field: "#fff"
+  line: "#bfd2df"
+  frame: "#b5d3df"
+  chrome-top: "rgb(247 253 255 / 72%)"
+  chrome-bottom: "rgb(162 208 230 / 35%)"
+  glass: "rgb(243 250 255 / 75%)"
+  workspace-glass: "rgb(235 247 255 / 25%)"
+  content-glass: "rgb(248 252 255 / 88%)"
+  panel-glass: "rgb(244 251 255 / 70%)"
+  glass-edge: "rgb(255 255 255 / 72%)"
+  reflection: "rgb(255 255 255 / 44%)"
+  primary-top: "#1875a4"
+  primary-bottom: "#086699"
+  primary-edge: "#075c8b"
+  primary-text: "#fff"
+  success: "#247141"
+  success-bg: "#e4f4e6"
+  danger: "#a9342b"
+  danger-bg: "#fff0e9"
+  focus: "#006da6"
+  backdrop: "#9dcbdc"
+  dark-text: "#e4f4fb"
+  dark-muted: "#a6c3d2"
+  dark-link: "#86d7fb"
+  dark-surface: "#172d3c"
+  dark-surface-soft: "#1d3849"
+  dark-field: "#102534"
+  dark-line: "#3d5a6c"
+  dark-frame: "#466477"
+  dark-chrome-top: "rgb(107 149 174 / 48%)"
+  dark-chrome-bottom: "rgb(15 39 59 / 28%)"
+  dark-glass: "rgb(12 35 53 / 78%)"
+  dark-workspace-glass: "rgb(12 31 48 / 24%)"
+  dark-content-glass: "rgb(14 34 51 / 90%)"
+  dark-panel-glass: "rgb(38 65 84 / 54%)"
+  dark-glass-edge: "rgb(185 226 255 / 28%)"
+  dark-reflection: "rgb(205 238 255 / 12%)"
+  dark-primary-top: "#1875a4"
+  dark-primary-bottom: "#13658e"
+  dark-primary-edge: "#56b9df"
+  dark-primary-text: "#fff"
+  dark-success: "#9ee4ad"
+  dark-success-bg: "#1a4235"
+  dark-danger: "#ffb4a2"
+  dark-danger-bg: "#492e30"
+  dark-focus: "#7bdcff"
+  dark-backdrop: "#071521"
+typography:
+  display:
+    fontFamily: "'Open Sans', 'Segoe UI', sans-serif"
+    fontSize: "24px"
+    fontWeight: 400
+    lineHeight: 1.25
+    letterSpacing: "-.5px"
+  headline:
+    fontFamily: "'Open Sans', 'Segoe UI', sans-serif"
+    fontSize: "29px"
+    fontWeight: 400
+    lineHeight: 1.25
+    letterSpacing: "-.7px"
+  title:
+    fontFamily: "'Open Sans', 'Segoe UI', sans-serif"
+    fontSize: "16px"
+    fontWeight: 600
+    letterSpacing: "-.2px"
+  body:
+    fontFamily: "'Open Sans', 'Segoe UI', sans-serif"
+    fontSize: "14px"
+    fontWeight: 400
+    lineHeight: 1.6
+  label:
+    fontFamily: "'Open Sans', 'Segoe UI', sans-serif"
+    fontSize: "13px"
+    fontWeight: 600
+  code:
+    fontFamily: "'Consolas', monospace"
+    fontSize: "clamp(25px, 3vw, 34px)"
+    fontWeight: 600
+    lineHeight: 1.4
+    letterSpacing: "2px"
+rounded:
+  field: "5px"
+  control: "5px"
+  note: "6px"
+  claim: "7px"
+  entry: "8px"
+  dock: "15px"
+  window: "12px"
+spacing:
+  button: "8px 17px"
+  field: "9px 11px"
+  note: "13px 16px"
+  claim: "21px"
+  entry: "23px"
+  main: "28px 32px 32px"
+  settings: "28px"
+components:
+  button-primary:
+    backgroundColor: "linear-gradient(var(--primary-top), #176c98 49%, var(--primary-bottom) 50%, #126b99)"
+    textColor: "{colors.primary-text}"
+    rounded: "{rounded.control}"
+    padding: "{spacing.button}"
+  button-secondary:
+    textColor: "{colors.text}"
+    rounded: "{rounded.control}"
+    padding: "{spacing.button}"
+  button-danger:
+    textColor: "{colors.danger}"
+    rounded: "{rounded.control}"
+  field:
+    backgroundColor: "{colors.field}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.field}"
+    padding: "{spacing.field}"
+  claim:
+    backgroundColor: "linear-gradient(var(--reflection), transparent 55%), var(--panel-glass)"
+    rounded: "{rounded.claim}"
+    padding: "{spacing.claim}"
+  entry:
+    backgroundColor: "linear-gradient(110deg, var(--reflection), transparent 60%), var(--panel-glass)"
+    rounded: "{rounded.entry}"
+    padding: "{spacing.entry}"
+  note:
+    backgroundColor: "{colors.surface-soft}"
+    rounded: "{rounded.note}"
+    padding: "{spacing.note}"
+---
+# Design System: Minecraft account desktop
 
-The panel's look is the game's own. It stands on the Minecraft dirt block, is set
-entirely in **Minecraft Rus**, and every box on it is a **Minecraft widget**. None of it
-is fetched at runtime; the face and the texture are committed assets, and the widgets are
-built from the game's own sprite colours.
+## Overview
 
-## The world: an interface on dirt
+**Creative North Star: "Old Mac desktop / Frutiger Aero"**
 
-Earlier drafts treated the page as a dim, text-led surface. The brief changed twice: the
-operator asked for the dirt block as the ground for the whole site and for the game's
-font, and then for the boxes on it — the entry band and the form fields — to be *the
-game's buttons*. That is the world now, and everything below follows from it.
+Account linking lives in a small desktop: a pearl menu bar, a bottom dock, three independent glass windows — Account, Statistics, and Settings — and a quiet animated music player beside the dock. Aqua traffic lights and glossy blue controls bring the old Mac silhouette into the user-approved Frutiger Aero world. Light is the fresh-browser default; optional Dark uses smoked blue with the same wallpaper.
 
-The reference is the game's **texture and its widgets** — a 16×16 block, a face with no
-weights, and a grey beveled button sitting on top of it.
+The supplied Asadal landscape is decorative, never a depiction of the real server. The portal still has one practical job: register, sign in, and link an in-game identity. Window controls support that work without changing authentication state.
 
-## Ground and material
+**Key Characteristics:**
 
-- The page is `frontend/src/assets/dirt.png`, the game's 16×16 dirt block, tiled at
-  **64px** with `image-rendering: pixelated`. At its native 16px it reads as noise; at
-  64px it reads as blocks.
-- `--dirt-scrim` (`rgba(27, 29, 34, 0.7)`) is painted over it, so the texture shows
-  through at 30%. It is tuned against the texture's **brightest speckle**
-  (185,135,135), not its average: bone on the raw block is only 1.6:1 there, and at
-  45% the dirt became the loudest surface on the page.
-- Text sitting *directly* on the dirt carries the game's hard shadow,
-  `1px 1px 0 rgba(10, 11, 13, 0.72)`. It is switched off on every widget — `.entry`,
-  `.claim`, `.panel`, `.code`, `.field input`, `.btn`, `.note`, `.lamp` — because those
-  have their own ground and the game draws its own text plainly.
-- The widgets are opaque, so they read as interface windows resting on the material
-  rather than as translucent overlays.
+- A menu bar and dock launch three usable applications; an animated dock-side music player supplies quiet background music.
+- Readable pearl or smoked glass, reflective edges, sourced Vista artwork.
+- Truthful account status, explicit controls, keyboard access, and responsive windows.
 
-## The widgets
+## Colors
 
-Every box is one chrome: a **1px `#000000` outline** with a **2px bevel** inside it. The
-2px is the sprite's own 1px bevel at the game's default GUI scale of 2. Two directions,
-and the direction is the affordance:
+The frontmatter records actual semantic CSS values: unprefixed entries are Light; `dark-` entries are Dark counterparts. `frontend/src/index.css` overrides the same roles under `data-theme='dark'`.
 
-- **Raised** — `.entry`, `.claim`, `.panel`, `.btn`, `.note`. Light top-left, dark
-  bottom-right. A thing you press or read.
-- **Sunken** — `.field input`, `.code`, `.lamp`. Dark top-left, light bottom-right. A
-  well you type into or a slot that holds something.
+- **Primary:** `primary-top`, `primary-bottom`, `primary-edge`, and `primary-text` create reflective blue actions; `link` colors text links.
+- **Neutral:** `text` and `muted` separate facts and supporting copy. `surface`, `surface-soft`, and `field` provide readable grounds. `line` and `frame` define boundaries. `glass`, `content-glass`, `panel-glass`, `chrome-top`, `chrome-bottom`, `reflection`, and `glass-edge` build the desktop materials; `backdrop` is the wallpaper fallback.
+- **Semantic:** success marks confirmed links; danger marks errors and destructive actions. Sourced Firewall On/Off/Warning artwork accompanies explicit state text. These symbols describe account states, never actual firewall monitoring. `focus` identifies keyboard focus.
 
-The colours are **sampled from the 1.20.2 sprites**, not guessed at:
+## Typography
 
-| State | Face | Top-left | Bottom-right | Outline |
-| --- | --- | --- | --- | --- |
-| `button.png` | `#6f6f6f` | `#aaaaaa` | `#565656` | `#000000` |
-| `button_highlighted.png` | `#757575` | `#afafaf` | `#5c5c5c` | `#ffffff` |
-| `button_disabled.png` | `#2c2c2c` | `#2b2b2b` | `#292929` | `#000000` |
-| the primary action | `#c6c6c6` | `#ffffff` | `#555555` | `#000000` |
+Open Sans is self-hosted from `frontend/src/assets/fonts/open-sans.ttf`, with Segoe UI and sans-serif fallbacks, weights 300–800, and `font-display: swap`. Preserve its SIL Open Font License. Body copy uses 14px/1.6, labels and actions 600 weight, and the neutral Minecraft menu label 700. Page headings use 29px/1.25 at weight 400; the welcome heading uses 24px/1.25. Window titles are 13px/600; menu controls 12px; dock labels 11px; window footer text 10px.
 
-- Hover is the **highlighted sprite**, and its white outline — not a lighter fill — is how
-  the game says "this one".
-- Disabled is the **disabled sprite**, a whole different face, not a faded live button.
-- `#373737` and `#555555` are the palette's darker greys; they are the insets.
+Code uses Consolas and monospace fallbacks, spaced characters and tabular expiry numerals. Mobile inputs use 16px, page headings 26px, and code 24px with 1px tracking. Long usernames and UUIDs wrap.
 
-### The primary action
+## Layout
 
-The game has no primary button, so the panel borrows the one face its palette has that
-reads as brighter: **`#c6c6c6`**, the light grey of the container chrome. It keeps the
-same outline, the same 2px bevel and the same shape as every other button, and it is the
-only widget face light enough to carry **dark type** — which is what makes it read as a
-different kind of object rather than a bigger version of its neighbours. An amber primary
-was the first attempt and it was wrong: it was the only thing on the page that was not the
-game's colour.
+The desktop has a 40px menu bar and a stage `calc(100dvh - 148px)` high, with a 280px minimum. The dock is fixed bottom-center, 16px above the viewport edge. A single full-viewport Asadal wallpaper sits at `center calc(50% + 130px) / cover`. There is no floating tagline or second wallpaper in the authentication sidebar.
 
-### The wood well
+Account initially opens centered horizontally at y=20px, up to 1000×650px, constrained by the available stage. Statistics initially opens centered at y=42px, up to 900×560px. Settings initially opens at 440×410px, offset toward the right at y=62px. Desktop windows have minimum widths of 520px (Account and Statistics) and 380px (Settings), a 240px minimum height, and fit within 12px horizontal / 8px vertical stage gutters. Small stages take precedence over minimum sizes. The active window sits above the other. Contents scroll within each window between title bar and footer. The music player is fixed to the bottom-right at 360px wide and exactly the dock's height: both share a 94px desktop / 84px mobile token. It stays aligned with the dock on wide screens and lifts above it at ≤1100px to prevent overlap. At ≤760px it fits within 8px viewport gutters, with transport, volume, and seeking always visible.
 
-The one well that is not a grey is the **code well**. It is not a hole in the page either:
-`.code` is the game's own **oak planks**, committed as `frontend/src/assets/wood.png` and
-tiled at **32px** — a 16px texture at the game's default GUI scale of 2, the same scale the
-widget bevels are drawn at. It keeps the shared sunken chrome, because planks set into a
-GUI are a recess, not a button.
+Motion is the old window manager filtered through early-2000s desktop effects: windows flex on opening, deform subtly from drag velocity, and settle through a damped wobbly-glass oscillation when released. Maximize, restore, and Reset use a fast decelerating glide without positional overshoot. Drags follow the pointer 1:1 with no geometry transition; hover and content changes ease in softly. Small concentric click waves expand around pointer clicks (or the activated control for keyboard clicks), above the UI without intercepting input. They are bounded to eight transient elements and cleaned up on completion, hidden tabs, or preference changes. All spatial motion is disabled by `prefers-reduced-motion`.
 
-The planks are a **mid-tone**, and that is the whole difficulty with them: end to end they
-span only **3:1** (`#67502c` to `#c29d62`), so *no* type colour can reach 4.5:1 on the raw
-block — white tops out at 2.5:1 and ink at 2.2:1. So the wood gets what the dirt gets, a
-**scrim**: `--wood-scrim` at 45% takes the brightest plank down to where white clears it
-(6.1:1) and still shows the grain and the plank seams. The expiry wants the page's amber,
-which is far too dark for a scrimmed plank, so it takes `--amber-light` — the same hue,
-lit for a dark surface (4.6:1).
+The Asadal scene is also the live wallpaper. A small dependency-free WebGL shader preserves the sourced image while adding layered ambient movement in the water, autonomous ripple rings, brighter caustic light, cursor parallax, localized RGB refraction, Vista-like lens bloom, and expanding pointer/touch ripples. Large translucent bubbles rise at varied depths with refracted rims, curved highlights, internal reflections, and soft colored shadows, while sunbeams and traveling glints shimmer above the image. The shader's ambient stem and every decorative CSS layer return to their starting state on exact seamless loops, so there is no visible hard cut. It pauses while the page is hidden, caps its pixel budget for stable frame times, follows Light/Dark treatment, and falls back to the unmodified static CSS wallpaper if WebGL is unavailable. Reduced Motion always receives the static wallpaper.
 
-The wood is for the code itself and nothing else. The `/link <code>` chips around it stay
-the `#373737` inset they always were: a command is written on an inset, and the well is for
-the one string you copy out of it.
+Bubble optics use CSS approximations of Fresnel reflection (a bright grazing-angle rim fading into a clear center), thin-film interference (cyan/magenta/gold bands that shift as the film rotates), and sharp white specular reflections. Visual references: [UNSW Physclips soap bubbles](https://animations.physics.unsw.edu.au/jw/light/soap-bubbles.htm) and [Pksois23's macro photograph](https://commons.wikimedia.org/wiki/File:Thin_Film_Interference_Soap_Bubble.jpg). These are references only; no bubble photographs, generated images, or other raster assets are embedded.
 
-### Colour cannot be type here
+Bubble specular detail uses small white highlights only; omit closed inner oval reflections that read as a second bubble inside the sphere.
 
-`#6f6f6f` sits in the middle of the luminance range: to clear 4.5:1 on it, text has to be
-**white** (5.02:1). Nothing dimmer passes, and no colour at all does — `--live` on that
-grey is 2.3:1. So the game's own answer applies:
+Account contains a route toolbar and workspace. Authentication uses a 32% welcome sidebar and remaining form column; the sidebar contains sourced icons and explanatory copy. The cabinet places status first across both columns, then linking beside a 285px account-details column with a 28px gap. Registration places name/surname side by side. Main padding is 28px 32px 32px.
 
-- **Widget text is white.** Hierarchy comes from **size and case**, which is exactly how
-  the game does it. The entry band's name is 32px, its message 16px, its state 12px; a
-  data row's name is 20px and its metadata 16px.
-- **Colour moved into blocks and wells.** The lamp is a coloured block in a dark slot; the
-  note's tone is an outlined block; the entry's state is a chip — coloured type on a
-  `#373737` inset, where green is 5.5:1 and red 5.2:1.
-- **The code well is wood.** `.code` is the one surface that is a **material** rather than a
-  grey — the game's own oak planks under a scrim, with white type. It is the honest shape
-  for the one string you carry into the game, and the scrim is what buys white the 6.1:1
-  the raw planks cannot give it. See "The wood well" above.
+At window container widths ≤740px, cabinet content stacks in DOM order, the authentication sidebar hides, and main padding becomes 25px 22px. At viewport widths ≤760px, the menu bar sticks to the top, windows stack at full available width with 10px gutters, and page content scrolls naturally above the fixed dock. Dragging/resizing and maximize/reset controls are disabled or hidden there. Each menu/dock activation focuses its title bar and scrolls the selected mobile window into view, including repeated activation. At ≤380px, registration fields also stack. The HTML minimum width is 320px.
 
-### Consequences that are deliberate
+## Elevation & Depth
 
-- **No placeholders.** On `#6f6f6f` the only placeholder that clears 4.5:1 is white, which
-  is indistinguishable from typed text. Rather than ship an empty field that looks filled,
-  the email placeholders were removed — and the form is now consistent, since no other
-  field ever had one.
-- **The entry band is not clickable** even though it wears the button chrome. In the game,
-  panels and buttons share the chrome; here the hover outline is what marks the real
-  buttons.
-- **The data sections sit on a panel too.** The account details and the linked accounts
-  rest on the same grey box as the entry and the claim, so nothing floats on the dirt.
-  A grey panel cannot dim its own text, so those tables separate label from value by
-  **size and case** instead of by tone.
+Window glass is 75% in Light and 78% in Dark; content glass is 88%/90%, and panel glass 70%/54%. Readable content wells sit inside diagonal reflection gradients and bright edges. Window, dock and menu materials use 24px backdrop blur with 145% saturation. Light and Dark window shadows are recorded in the sidecar from `--shadow`. Unsupported backdrop filtering uses solid theme surfaces.
 
-## Type
+Buttons carry inset highlights and small external shadows; active controls press inward. The dock rises 5px on hover over 180ms; buttons brighten over 140ms. Reduced motion removes transitions, animation, and smooth scrolling.
 
-One face, **Minecraft Rus** (© 2004–2012 BOGDAN Software), self-hosted as a single TTF.
+## Shapes
 
-- It is drawn on an **8px em** — a stem is exactly 1/8 em — so every `--step-*` is a
-  multiple of 4. That keeps the stems on the grid at both 1× and 2×; an off-grid size
-  goes soft and the whole thing reads as a blurred sans. 8px is the size the game
-  itself uses and is unreadable here, so the scale starts at 12px.
-- There is **one weight**. `font-synthesis: none` stops the browser faking a bold,
-  which would smear the pixels, so hierarchy is **size, colour and case** — never
-  weight. Nothing may ask for `font-weight: 600`.
-- `-webkit-font-smoothing: none` keeps the glyphs snapped.
-- Letter-spacing is whole pixels only; a fractional track moves glyph origins off the
-  grid.
+Windows use 12px corners, the dock 15px, status entries 8px, linking containers 7px, and panels/notices 6px. Buttons and fields use 5px corners. Borders are generally 1px. Traffic-light buttons have 24×28px targets with 14px circular CSS lights; they are native labeled buttons, not raster icons. The supplied status shields render at 48px.
 
-## Palette
+## Components
 
-Two palettes, and they do not mix: the **world's** (text on dirt) and the **game's**
-(everything inside a widget). The code well is the one place a **block** appears inside
-the interface, and it is still governed by the game's palette: white type, and a scrim
-standing in for the grey it does not have.
+- **Desktop navigation:** menu and dock launch Account, Statistics, or Settings. The Globe is the Account icon; the Performance Center artwork is the Statistics icon; Personalization is the Settings icon. Dock dots indicate open windows. Closing or minimizing hides a window, retains its mounted contents and geometry, and returns focus to its dock control; reopening raises and focuses it. Closing Account never logs out. Logout remains a separate menu action with failure feedback in Account.
+- **Music player:** a horizontal transport beside the bottom dock, matching its height. Track selection, previous / play-pause / stop / next, mute, volume (default 30%), looping, and seek with time readout remain visible. Stop pauses and rewinds to zero. Skipping preserves playback intent. Small level bars animate only during playback while the page is visible; controls press gently on activation. No decorative disc or new image assets are used. It starts paused and remembers track/volume/mute. A labeled Credits button opens the full track, artist, and Creative Commons attribution above the strip, dismissible outside or with Escape.
+- **Window controls:** drag a title bar or focus it and use arrow keys to move in 10px increments, Shift for 40px. The lower-right grip supports pointer or arrow-key resizing with the same steps. Double-click the title bar or use the green control to maximize/restore; Reset restores initial geometry. Bounds are clamped after changes and viewport resizing. Close, minimize, maximize/restore and Reset have explicit accessible names.
+- **Account navigation:** React Router links in `.account-toolbar` use compact `.btn-quiet` chrome and a focus-colored current-route border. A skip link opens Account and focuses main content.
+- **Settings:** Appearance contains the visible Color theme label and native Light / Dark / System select. `minecraft-theme` persists explicit preferences. New, invalid, missing or unavailable storage defaults to Light; existing Dark/System choices remain valid. System follows OS changes, and storage events synchronize tabs. The early HTML script and `lib/theme.ts` must agree to avoid a theme flash. Storage failure still permits a current-page selection.
+- **Interface sounds:** one delegated system provides a quiet click for buttons and links (including keyboard activation) and for discrete selection changes. Opening/closing use their own lower gains; successful copy uses the short click rather than the download chime. Completion cues follow confirmed success. Only one effect may play at once; typing, focus, dragging, and continuous sliders remain silent. The Sound setting immediately stops effects when disabled and synchronizes playback across tabs. Music keeps its independent volume. Sources and gain details are recorded in `frontend/src/assets/sounds/SOURCES.md`.
+- **Buttons and fields:** reflective 38px-minimum buttons, 33px compact actions, and 42px-minimum fields keep visible labels and semantic error text. Primary buttons use blue chrome and white text; destructive controls use danger roles. Disabled controls reduce opacity/saturation and retain a semantic cursor. Focus is a 3px outline with 3px offset; the title bar draws it inside its frame.
+- **Status and linking:** original Vista shields accompany explicit linked/not-linked text. Failed loading offers retry rather than inventing an unlinked state. Code issuance, selectable code, expiry, link polling, account details and Unlink retain their real server-backed states. **Copy command** copies the full `/website link <displayed-code>` command, confirms success accessibly, and leaves a selectable command with manual-copy instructions when clipboard access fails. Panels use ruled rows and definition lists.
+- **Notices:** semantic error/success surfaces pair sourced shields with text. Validation, loading failures and logout errors stay readable; failed logout keeps the session state visible.
+- **Sourced artwork and audio:** preserve `frontend/src/assets/icons/SOURCES.md`, `cursors/SOURCES.md`, `sounds/SOURCES.md`, `music/SOURCES.md`, font licensing, `ARTWORK.md`, and the wallpaper `.webp.json` provenance/rights sidecar. The original Search Globe, Performance Center, Personalization and Firewall PNGs remain sourced, never generated or redrawn; the music and interface sounds are original archive files, byte-for-byte as served, with the Kevin MacLeod tracks licensed Creative Commons Attribution 3.0 and credited in the player. Green Aero CUR files retain native hotspots and semantic fallbacks, apply only to hover/fine pointers outside forced colors, and leave touch native. Both themes share `asadal-stock-18.webp`; Dark uses `brightness(.5) saturate(.85)`. No new raster or audio was generated for the desktop. Previous generated scenery is removed; former Minecraft font, dirt and wood are unused historical assets.
 
-| Token | Value | Job |
-| --- | --- | --- |
-| `--ground` | `#1b1d22` | the dark the dirt is scrimmed toward |
-| `--ground-row`, `--rule`, `--rule-strong` | `#262a31`, `#333841`, `#4a515e` | ruled rows, hairlines, scrollbar |
-| `--bone` | `#d8dee9` | text on the dirt, and on dark insets |
-| `--bone-dim` | `#a4adbb` | secondary text on the dirt — lifted from `#98a1b0`, which fell under 4.5:1 once it sat on a mid-tone texture instead of flat ground |
-| `--live` | `#8fbf4a` | linked — as a block, or as type on a dark inset |
-| `--amber` | `#e0a33a` | the focus ring, and selection |
-| `--amber-light` | `#f8dca0` | the code's expiry — the same hue, lit for the scrimmed planks |
-| `--down` | `#f0937f` | failure text on the dirt, and the **not-linked** state — raised from `#e0705f`, which was 4.08:1 there |
-| `--down-deep` | `#a33b2a` | the face a destructive button turns when hovered |
-| `--ink` | `#1b1d22` | the dark that light surfaces take — selection, and the primary button |
-| `--wood-face`, `--wood-scrim` | `#66502f`, `rgba(28, 18, 8, 0.45)` | the code well: the fallback under the planks, and the scrim that makes white clear 4.5:1 on them |
-| `--gui-face` … `--gui-slot-lo` | see the table above | the game's widgets — faces, bevels, outlines, and the `#373737`/`#555555` insets |
+## Do's and Don'ts
 
-Red means **a problem**, and there are exactly two: the account is not linked, or you are
-about to destroy something. The state is a traffic light — green is linked, red is
-anything else — and only `.btn-danger` (Unlink) turns red as a button, and it turns its
-**whole face**, because a destructive action should look different, not just sound
-different. Nothing else on the page is red.
-
-## Geometry and motion
-
-- **Square corners everywhere** (`--radius: 0`). A pixel face inside a 12px radius is
-  two worlds arguing.
-- Elevation is the bevel, never a drop shadow.
-- The signature move is the **entry band**: a status lamp, a large in-game name, and a
-  two-line message — the shape of a multiplayer server list entry, drawn as the game's
-  button. The lamp is a square block, not a circle.
-- Motion is a 140ms colour/border transition. Nothing slides, nothing bounces.
-
-## What is deliberately absent
-
-- **No invented server name.** The wordmark is a signal glyph, because the operator
-  never named the server and inventing one would be a claim they never made.
-- **No statistics.** The panel shows what it knows — `1` linked account — and does not
-  fabricate numbers to fill space.
-- **No imagery, icon set or illustration.** The texture, the face and the widgets carry
-  the world.
-
-## When changing the panel
-
-- A new size must be a multiple of 4, or it will be soft.
-- Text on the dirt needs the shadow; text in a widget must not have it.
-- **Nothing but white text goes on a `#6f6f6f` face.** If a colour is needed, put it in a
-  block or on a dark inset. The one exception is the primary button, which is `#c6c6c6`
-  and therefore takes `--ink`.
-- A new widget takes the shared chrome from `index.css` and only sets its own face and
-  type — never its own `border` or base `box-shadow`, which would override the chrome.
-- There is **one primary per screen**, and it is the light grey, never a new colour. If
-  everything is emphasised, nothing is.
-- Anything that is data rather than an action goes in a `.panel`, so it rests on the
-  game's surface instead of the dirt.
-- The bar's contents live in `.topbar-inner`, which mirrors `.main`'s `--shell` width.
-  Padding on `.topbar` itself puts the wordmark on a different grid from the page — a
-  47px offset at 1086px, and 464px at 1920px.
-- A new scrim value has to be re-tuned against the texture's brightest speckle, not
-  its mean — the dirt's against `(185, 135, 135)`, the planks' against `#c29d62`. The
-  planks need it at all because they span only 3:1 end to end: on the raw block white
-  is 2.5:1 and ink 2.2:1, so no type colour clears 4.5:1 without the scrim.
-- The wood is only for the code. A command goes on a `#373737` inset, as it always did.
+- Do use semantic tokens in both themes and preserve the readable glass opacity hierarchy.
+- Do keep window gestures, keyboard alternatives, bounds, focus return and mobile activation together.
+- Do preserve theme persistence, early-boot parity, cross-tab updates and OS-following System.
+- Do keep labels, semantic states, reduced motion, clipboard fallback, polling and error feedback.
+- Do keep live-wallpaper effects subtle enough that the readable glass windows remain the focus, and retain the static-image fallback.
+- Don't present wallpaper as a real server view or introduce fake counts, balances, activity, map, trading or currency navigation.
+- Don't reintroduce pixel-font, dirt, wood or Minecraft sprite chrome, duplicate the wallpaper in Account, or generate replacement artwork.

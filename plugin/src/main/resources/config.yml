@@ -1,6 +1,6 @@
 # The panel on the internal Compose network, not the public URL: /internal/* is
 # blocked at the reverse proxy, so the public hostname would only ever answer 404.
-# Both /internal/link/claim and /internal/link/status are derived from this.
+# Link, status, email-hint, and statistics endpoints are derived from this.
 api-base: "http://app:8080"
 
 # Where a player who has not linked yet is sent. This one is the public site,
@@ -8,15 +8,20 @@ api-base: "http://app:8080"
 # CFG_SITE_ADDRESS into it, from SITE_ADDRESS in .env.docker.
 panel-url: "https://${CFG_SITE_ADDRESS}/cabinet"
 
-# Shared secret for both /internal endpoints. The value below is not literal:
+# Shared secret for the /internal endpoints. The value below is not literal:
 # compose.yaml interpolates the CFG_LINK_SERVICE_TOKEN variable into it, from
 # LINK_SERVICE_TOKEN in .env.docker. Never put a real token in this file.
 service-token: "${CFG_LINK_SERVICE_TOKEN}"
 
-# Minimum seconds between two /link attempts by the same player. Every player
+# Minimum seconds between two /website attempts by the same player. Every player
 # reaches the panel from the same source address, so this also protects the
 # panel's per-IP claim budget from being spent by one person.
 cooldown-seconds: 3
+
+# How often the measured activity (play time, blocks placed and broken) is
+# reported to the panel. Activity is also reported when a player quits and on
+# server shutdown.
+stats-report-seconds: 300
 
 # How long to wait for the panel before giving up on a request.
 timeout-seconds: 10

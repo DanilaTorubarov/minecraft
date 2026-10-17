@@ -8,6 +8,7 @@ export type Auth = {
   ready: boolean
   signIn: (email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
+  refresh: () => Promise<void>
 }
 
 export const AuthContext = createContext<Auth | null>(null)

@@ -1,7 +1,6 @@
 export type Me = {
   id: number
-  name: string
-  surname: string
+  displayed_nickname: string
   email: string
   login_displayed: string
 }
@@ -12,14 +11,42 @@ export type LinkedAccount = {
   linked_at: string
 }
 
+export type AccountStats = {
+  play_seconds: number
+  blocks_placed: number
+  blocks_broken: number
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export type StatsAccount = {
+  uuid: string
+  username: string
+  linked_at: string
+  /** null when the game server has not reported activity for this UUID yet */
+  stats: AccountStats | null
+}
+
+export type StatsSummary = {
+  accounts: number
+  accounts_with_stats: number
+  play_seconds: number
+  blocks_placed: number
+  blocks_broken: number
+}
+
+export type StatsView = {
+  accounts: StatsAccount[]
+  summary: StatsSummary
+}
+
 export type LinkCode = {
   code: string
   expires_in: number
 }
 
 export type Registration = {
-  name: string
-  surname: string
+  displayed_nickname: string
   login: string
   email: string
   password: string
@@ -91,7 +118,10 @@ export async function register(input: Registration): Promise<void> {
 }
 
 export async function logOut(): Promise<void> {
-  await send('POST', '/api/logout')
+  const response = await send('POST', '/api/logout')
+  if (!response.ok) {
+    throw new ApiError(response.status)
+  }
 }
 
 export async function listLinks(): Promise<LinkedAccount[]> {
@@ -101,6 +131,37 @@ export async function listLinks(): Promise<LinkedAccount[]> {
   }
   const body = (await response.json()) as { accounts: LinkedAccount[] }
   return body.accounts
+}
+
+export type SecurityView = { email_verified: boolean; email_delivery: 'preview' | 'smtp' | 'unavailable' }
+
+export async function getSecurity(): Promise<SecurityView> {
+  const response = await send('GET', '/api/security')
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as SecurityView
+}
+
+export async function changePassword(current_password: string, new_password: string): Promise<void> {
+  const response = await send('POST', '/api/security/password', { current_password, new_password })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function requestEmailConfirmation(current_password: string, new_email: string): Promise<void> {
+  const response = await send('POST', '/api/security/email', { current_password, new_email })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function confirmEmail(token: string): Promise<void> {
+  const response = await send('POST', '/api/security/email/confirm', { token })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function getStats(): Promise<StatsView> {
+  const response = await send('GET', '/api/stats')
+  if (!response.ok) {
+    throw new ApiError(response.status)
+  }
+  return (await response.json()) as StatsView
 }
 
 export async function startLink(): Promise<LinkCode> {
@@ -129,6 +190,32 @@ export function formatDate(value: string): string {
     month: 'short',
     year: 'numeric',
   })
+}
+
+/**
+ * Seconds as a compact duration: `2d 4h`, `58m`, or `45s`. Whole units only, so
+ * a play time never reads as a countdown or a fraction.
+ */
+export function formatDuration(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds))
+  const days = Math.floor(safe / 86400)
+  const hours = Math.floor((safe % 86400) / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  const seconds = safe % 60
+  const parts: string[] = []
+  if (days > 0) {
+    parts.push(`${days}d`)
+  }
+  if (hours > 0) {
+    parts.push(`${hours}h`)
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}m`)
+  }
+  if (parts.length === 0) {
+    parts.push(`${seconds}s`)
+  }
+  return parts.join(' ')
 }
 
 /** Seconds as `4:58`, so a countdown never reads as an ambiguous number. */

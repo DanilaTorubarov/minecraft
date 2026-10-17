@@ -25,7 +25,7 @@ The panel never sees or stores a Minecraft password. In-game authentication stay
 - The whole stack is self-hosted in Docker and is meant to be moved to another host by copying files. There is no managed service behind it.
 - Players reach the panel over HTTPS at the operator's own domain, or at `https://localhost` during local development.
 - The in-game half is a small Java plugin. When a player authenticates in game, it tells them in chat that their account is not linked, and where to link it.
-- Linking is a two-sided ritual: ask the site for a short code, then type `/link <code>` in game. Both halves are required, and neither one alone proves anything.
+- Linking is a two-sided ritual: ask the site for a short code, then type `/website link <code>` in game. Both halves are required, and neither one alone proves anything.
 - The server is cracked, so an in-game account is a username rather than a Mojang-verified identity. The panel's link is what gives that username a real owner.
 
 ## Capabilities and Constraints
@@ -33,12 +33,17 @@ The panel never sees or stores a Minecraft password. In-game authentication stay
 Confirmed:
 - Register, log in, log out, and a session that lasts 24 hours, absolute.
 - One website account may own one or more linked Minecraft accounts, and can unlink them.
+- After in-game authentication, `/website email` privately reminds the player of their linked website email using a masked address. It does not verify the email or reset a password.
 - A link code is single-use, valid for five minutes, and only the newest one per account works.
 - The cabinet shows the account's link state, and can mint a code to redeem in game while unlinked.
 - Rate limiting and account lockout are enforced server-side, and a locked account is indistinguishable from a wrong password.
+- The statistics window shows, per linked account, play time (time online after in-game login), blocks placed, blocks broken, first-seen and last-active, and a summary across all of the user's linked accounts. The numbers are measured by the game server's plugin and reported to the panel; the panel never measures or invents them, and shows an honest empty state until the server has reported activity.
+- The corner music player plays only sourced, attributed audio (Creative Commons tracks credited on-screen, plus the archive's own ambience loop); it starts paused, keeps its own quiet volume, and the interface-sound toggle in Settings is persisted per browser. No audio or artwork is generated; everything carries a provenance sidecar.
+
+Planned, not implemented:
+- A server map and player trading with an in-game currency are user-confirmed future directions. Their data sources, mechanics, and interface are not implemented; do not show a map, market, balance, or related navigation as available today.
 
 Deliberately undecided:
-- What statistics the cabinet will show. The page is shaped to grow into real per-player data later, but nothing is displayed that the server does not actually know, and no placeholder numbers are invented.
 - The server's name. The panel's copy stays neutral until there is one.
 
 ## Brand Commitments
@@ -47,7 +52,7 @@ None. There is no name, logo, or established voice yet, and copy stays plain and
 
 ## Evidence on Hand
 
-Real material the panel can show: the account's own name, surname, login, and email; whether it is linked; the linked account's Minecraft username and UUID; and when the link happened. There are no testimonials, player counts, benchmarks, or statistics of any kind, and none may be fabricated.
+Real material the panel can show: the account's own name, surname, login, and email; whether it is linked; the linked account's Minecraft username and UUID; when the link happened; and, for linked accounts, the play time, blocks placed, blocks broken, first-seen and last-active that the game server reported. There are no testimonials, player counts, or benchmarks, and none may be fabricated.
 
 ## Product Principles
 

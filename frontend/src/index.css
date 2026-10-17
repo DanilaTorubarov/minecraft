@@ -1,253 +1,193 @@
-/* Minecraft Rus, self-hosted.
-   The face is drawn on an 8px em — a stem is exactly 1/8 em — so every size below
-   is a multiple of 4, which lands on that grid at both 1x and 2x. An off-grid size
-   is the one thing a pixel face cannot survive: the stems go soft and the whole
-   thing reads as a blurred sans.
-   It ships a single weight, so nothing here asks for a bold and body turns font
-   synthesis off; hierarchy is size, colour and case, the way the game's own
-   interface does it.
-   Font: "Minecraft Rus", © 2004–2012 BOGDAN Software. */
 @font-face {
-  font-family: 'Minecraft Rus';
+  font-family: 'Open Sans';
   font-style: normal;
-  font-weight: 400;
+  font-weight: 300 800;
   font-display: swap;
-  src: url('./assets/fonts/minecraft.ttf') format('truetype');
+  src: url('./assets/fonts/open-sans.ttf') format('truetype');
 }
 
-/* The world: the game's own ground. A 16px dirt block, tiled at 64px and kept
-   crisp, sits under everything, and the surfaces above it are the game's own
-   widgets. Colour still does jobs — green is linked, red is failure, amber is the
-   focus ring — so the dirt never has to carry meaning, only material. */
 :root {
-  --ground: #1b1d22;
-  --ground-row: #262a31;
-  --rule: #333841;
-  --rule-strong: #4a515e;
+  font-family: 'Open Sans', 'Segoe UI', sans-serif;
+  color-scheme: light;
+  --text: #173c50;
+  --muted: #355467;
+  --link: #09658f;
+  --surface: #f8fcff;
+  --surface-soft: #eaf3f8;
+  --field: #fff;
+  --line: #bfd2df;
+  --frame: #b5d3df;
+  --chrome-top: rgb(247 253 255 / 72%);
+  --chrome-bottom: rgb(162 208 230 / 35%);
+  --glass: rgb(243 250 255 / 75%);
+  --workspace-glass: rgb(235 247 255 / 25%);
+  --content-glass: rgb(248 252 255 / 88%);
+  --panel-glass: rgb(244 251 255 / 70%);
+  --glass-edge: rgb(255 255 255 / 72%);
+  --reflection: rgb(255 255 255 / 44%);
+  --primary-top: #1875a4;
+  --primary-bottom: #086699;
+  --primary-edge: #075c8b;
+  --primary-text: #fff;
+  --success: #247141;
+  --success-bg: #e4f4e6;
+  --danger: #a9342b;
+  --danger-bg: #fff0e9;
+  --focus: #006da6;
+  --backdrop: #9dcbdc;
+  --shadow: 0 16px 48px rgb(13 49 67 / 24%), 0 2px 6px rgb(13 49 67 / 15%);
+  --scene-shade: linear-gradient(90deg, rgb(5 35 56 / 56%), transparent 85%);
+  --scene-image: url('./assets/asadal-stock-18.webp');
+  --scene-filter: none;
+  --shell: 1120px;
+  --motion-glide: cubic-bezier(.16, 1, .3, 1);
+}
 
-  --bone: #d8dee9;
-  /* Lifted from #98a1b0: secondary text no longer sits on flat ground but on a
-     mid-tone texture, and at the old value it fell under 4.5:1. */
-  --bone-dim: #a4adbb;
-
-  --live: #8fbf4a;
-  --amber: #e0a33a;
-  /* Bright enough to read as text on the dirt; the deeper one is the face a
-     destructive button turns when you hover it. */
-  --down: #f0937f;
-  --down-deep: #a33b2a;
-
-  /* The dark a light surface takes: selection, and the primary button's type. */
-  --ink: #1b1d22;
-
-  /* The game's widgets, sampled from the 1.20.2 sprites rather than guessed at.
-     `button.png` is a #6f6f6f face with a #aaaaaa top-left bevel and a #565656
-     bottom-right, inside a 1px #000000 outline; `button_highlighted.png` brightens
-     the face to #757575 and swaps the outline for #ffffff; `button_disabled.png`
-     drops the face to #2c2c2c. Text on all of them is white. #373737 and #555555
-     are the palette's darker greys, used for slots and insets. */
-  --gui-face: #6f6f6f;
-  --gui-face-hover: #757575;
-  --gui-face-disabled: #2c2c2c;
-  --gui-hi: #aaaaaa;
-  --gui-hi-hover: #afafaf;
-  --gui-lo: #565656;
-  --gui-lo-hover: #5c5c5c;
-  --gui-edge: #000000;
-  --gui-edge-hover: #ffffff;
-  --gui-text: #ffffff;
-  --gui-text-disabled: #9a9a9a;
-  --gui-slot: #373737;
-  --gui-slot-lo: #555555;
-
-  /* The well that holds a code is not a hole in the page: it is the game's own oak
-     planks, sampled from `oak_planks.png` and tiled at 32px — a 16px texture at the
-     game's default GUI scale of 2, the same scale the widget bevels are drawn at.
-     The raw block is a mid-tone and spans only 3:1 end to end, so *no* type colour
-     can reach 4.5:1 on it; the scrim takes it down until white does, exactly as the
-     dirt's scrim does for bone. `--amber-light` is the page's amber lightened for a
-     dark surface, which is what the expiry needs here. */
-  --wood-face: #66502f;
-  --wood-scrim: rgba(28, 18, 8, 0.45);
-  --amber-light: #f8dca0;
-
-  /* The primary action wears the light grey of the game's own container chrome —
-     the brightest face in the palette, so the button you are meant to press is the
-     one that reads as brighter. It is also the only face light enough to carry dark
-     type, which is what stops it being just another grey button. */
-  --gui-face-primary: #c6c6c6;
-  --gui-face-primary-hover: #d8d8d8;
-  --gui-hi-primary: #ffffff;
-  --gui-lo-primary: #555555;
-
-  --font: 'Minecraft Rus', ui-monospace, monospace;
-
-  /* Multiples of 4. 8px is the size the game itself uses and is unreadable here. */
-  --step--2: 0.75rem; /* 12 */
-  --step--1: 1rem; /* 16 */
-  --step-0: 1rem; /* 16 */
-  --step-1: 1.25rem; /* 20 */
-  --step-2: 1.5rem; /* 24 */
-  --step-3: 2rem; /* 32 */
-  --step-4: 3rem; /* 48 */
-
-  --shell: 62rem;
-
-  /* Square. A pixel face inside a 12px radius is two worlds arguing. */
-  --radius: 0;
-  --radius-sm: 0;
-
-  /* Painted over the dirt, so the texture shows through at 30%. Tuned against the
-     texture's brightest speckle, not its average: bone on the raw block is 1.6:1,
-     and at 45% the dirt became the loudest surface on the page. */
-  --dirt-scrim: rgba(27, 29, 34, 0.7);
-
+:root[data-theme='dark'] {
   color-scheme: dark;
+  --text: #e4f4fb;
+  --muted: #a6c3d2;
+  --link: #86d7fb;
+  --surface: #172d3c;
+  --surface-soft: #1d3849;
+  --field: #102534;
+  --line: #3d5a6c;
+  --frame: #466477;
+  --chrome-top: rgb(107 149 174 / 48%);
+  --chrome-bottom: rgb(15 39 59 / 28%);
+  --glass: rgb(12 35 53 / 78%);
+  --workspace-glass: rgb(12 31 48 / 24%);
+  --content-glass: rgb(14 34 51 / 90%);
+  --panel-glass: rgb(38 65 84 / 54%);
+  --glass-edge: rgb(185 226 255 / 28%);
+  --reflection: rgb(205 238 255 / 12%);
+  --primary-top: #1875a4;
+  --primary-bottom: #13658e;
+  --primary-edge: #56b9df;
+  --primary-text: #fff;
+  --success: #9ee4ad;
+  --success-bg: #1a4235;
+  --danger: #ffb4a2;
+  --danger-bg: #492e30;
+  --focus: #7bdcff;
+  --backdrop: #071521;
+  --shadow: 0 18px 60px rgb(0 8 18 / 55%), 0 2px 8px rgb(0 8 18 / 35%);
+  --scene-shade: linear-gradient(90deg, rgb(3 15 37 / 65%), rgb(5 20 45 / 15%));
+  --scene-image: url('./assets/asadal-stock-18.webp');
+  --scene-filter: brightness(.5) saturate(.85);
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+*, *::before, *::after { box-sizing: border-box; }
+html { min-width: 320px; background: var(--backdrop); scrollbar-color: var(--frame) var(--surface-soft); }
+body { margin: 0; color: var(--text); font-size: 14px; line-height: 1.6; background: transparent; }
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: -1;
+  background: linear-gradient(rgb(179 226 243 / 10%), rgb(16 84 106 / 18%)), var(--scene-image) center calc(50% + 130px) / cover no-repeat;
+  filter: var(--scene-filter);
+}
+.live-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; contain: strict; pointer-events: none; background: transparent; }
+.live-wallpaper canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 700ms ease; }
+.live-wallpaper canvas[data-ready='true'] { opacity: 1; }
+.live-wallpaper-glow { position: absolute; inset: -8%; background: radial-gradient(circle at 84% 17%, rgb(226 249 255 / 24%), transparent 13%), linear-gradient(115deg, rgb(190 239 255 / 13%), transparent 34%, rgb(10 71 104 / 11%) 72%, transparent); mix-blend-mode: soft-light; will-change: transform, opacity; animation: wallpaper-glow-drift 24s ease-in-out infinite; }
+@keyframes wallpaper-glow-drift {
+  0%, 100% { transform: translate3d(-1.2%, -.5%, 0) scale(1.01); opacity: .78; }
+  50% { transform: translate3d(1.2%, .7%, 0) scale(1.035); opacity: 1; }
+}
+.live-wallpaper-beams { position: absolute; inset: -25%; mix-blend-mode: screen; transform-origin: 86% 14%; will-change: transform, opacity; animation: wallpaper-beam-sweep 24s ease-in-out infinite; }
+.live-wallpaper-beams i { position: absolute; top: -12%; right: 4%; width: clamp(90px, 13vw, 230px); height: 145%; opacity: .12; filter: blur(10px); transform: rotate(-17deg); background: linear-gradient(90deg, transparent, rgb(218 249 255 / 48%) 48%, transparent); clip-path: polygon(38% 0, 58% 0, 100% 100%, 0 100%); }
+.live-wallpaper-beams i:nth-child(2) { right: 21%; width: clamp(55px, 8vw, 150px); opacity: .08; transform: rotate(-12deg); animation: wallpaper-beam-pulse 12s ease-in-out infinite; }
+.live-wallpaper-beams i:nth-child(3) { right: 42%; width: clamp(36px, 5vw, 92px); opacity: .06; transform: rotate(-8deg); animation: wallpaper-beam-pulse 8s ease-in-out -4s infinite; }
+@keyframes wallpaper-beam-sweep {
+  0%, 100% { transform: rotate(-1.5deg) translate3d(-1%, 0, 0); opacity: .68; }
+  50% { transform: rotate(2deg) translate3d(2%, 1%, 0); opacity: 1; }
+}
+@keyframes wallpaper-beam-pulse {
+  0%, 100% { opacity: .045; }
+  50% { opacity: .14; }
+}
+.live-wallpaper-particles { position: absolute; inset: 0; overflow: hidden; }
+/* Optical reference: UNSW Physclips soap-film photographs and Pksois23's
+   Thin Film Interference Soap Bubble (Commons). These are CSS material layers,
+   not image assets: a clear center, grazing-angle rim, film bands, and glints. */
+.wallpaper-bubble {
+  position: absolute; left: var(--bubble-x); bottom: -12vh;
+  width: var(--bubble-size); height: var(--bubble-size);
+  overflow: hidden; isolation: isolate; border: 1px solid rgb(255 255 255 / 76%);
+  border-radius: 50%; opacity: 0;
+  background: radial-gradient(circle, transparent 0 56%, rgb(212 245 255 / 2%) 67%, rgb(202 241 255 / 10%) 79%, rgb(243 253 255 / 30%) 91%, rgb(255 255 255 / 80%) 98%, rgb(255 255 255 / 96%) 100%);
+  box-shadow: inset 1px 2px 2px rgb(255 255 255 / 88%), inset -2px -3px 4px rgb(95 177 220 / 36%), 0 3px 7px rgb(8 52 87 / 12%);
+  filter: blur(var(--bubble-blur)); will-change: transform, opacity;
+  animation: wallpaper-bubble-rise var(--bubble-duration) linear var(--bubble-delay) infinite;
+}
+.wallpaper-bubble::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background:
+    radial-gradient(ellipse at 24% 28%, transparent 36%, rgb(119 242 255 / 75%) 43%, rgb(166 137 255 / 65%) 48%, rgb(255 142 209 / 75%) 53%, transparent 60%),
+    radial-gradient(ellipse at 78% 73%, transparent 30%, rgb(255 204 124 / 75%) 41%, rgb(255 132 203 / 80%) 46%, rgb(119 218 255 / 80%) 51%, transparent 59%),
+    conic-gradient(from 15deg, #94f4ff, #bdacff 12%, #ffb5da 22%, #ffe3a2 32%, #acffe2 43%, #79dfff 53%, #d5afff 64%, #ffbdce 76%, #ffe7aa 84%, #a1ffe9 93%, #94f4ff);
+  -webkit-mask-image: radial-gradient(circle, transparent 0 43%, rgb(0 0 0 / 3%) 54%, rgb(0 0 0 / 16%) 66%, rgb(0 0 0 / 50%) 82%, #000 96%);
+  mask-image: radial-gradient(circle, transparent 0 43%, rgb(0 0 0 / 3%) 54%, rgb(0 0 0 / 16%) 66%, rgb(0 0 0 / 50%) 82%, #000 96%);
+  opacity: .85; animation: wallpaper-bubble-film 18s ease-in-out var(--bubble-delay) infinite;
+}
+.wallpaper-bubble::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background:
+    radial-gradient(ellipse 3% 4% at 26% 19%, #fff 0 45%, rgb(255 255 255 / 82%) 57%, transparent 100%),
+    radial-gradient(ellipse 10% 3% at 33% 15%, rgb(255 255 255 / 94%) 0 36%, rgb(255 255 255 / 30%) 65%, transparent 100%),
+    radial-gradient(ellipse 2% 3% at 78% 81%, #fff 0 30%, rgb(222 249 255 / 76%) 54%, transparent 100%),
+    radial-gradient(ellipse 7% 2% at 71% 87%, rgb(255 255 255 / 80%) 0 25%, transparent 100%);
+}
+@keyframes wallpaper-bubble-film {
+  0%, 100% { transform: rotate(-18deg); }
+  50% { transform: rotate(38deg); }
+}
+:root[data-theme='dark'] .wallpaper-bubble { border-color: rgb(226 249 255 / 82%); }
+@keyframes wallpaper-bubble-rise {
+  0% { transform: translate3d(0, 4vh, 0) scale(.68); opacity: 0; }
+  9% { opacity: var(--bubble-opacity); }
+  48% { transform: translate3d(var(--bubble-drift-mid), -54vh, 0) scale(.94); opacity: var(--bubble-opacity); }
+  88% { opacity: var(--bubble-opacity); }
+  100% { transform: translate3d(var(--bubble-drift), -122vh, 0) scale(1.16); opacity: 0; }
+}
+.live-wallpaper-glints { position: absolute; inset: 0; mix-blend-mode: screen; }
+.live-wallpaper-glints i { position: absolute; width: clamp(28px, 4vw, 64px); aspect-ratio: 1; opacity: 0; background: radial-gradient(circle, rgb(255 255 255 / 92%) 0 2%, rgb(197 242 255 / 45%) 4%, transparent 42%), linear-gradient(transparent 48%, rgb(218 249 255 / 68%) 49% 51%, transparent 52%), linear-gradient(90deg, transparent 48%, rgb(218 249 255 / 62%) 49% 51%, transparent 52%); filter: blur(.25px); will-change: transform, opacity; animation: wallpaper-glint-travel 12s ease-in-out infinite; }
+.live-wallpaper-glints i:nth-child(1) { top: 15%; left: 72%; }
+.live-wallpaper-glints i:nth-child(2) { top: 39%; left: 18%; width: clamp(18px, 2.6vw, 42px); animation-duration: 16s; animation-delay: -7s; }
+.live-wallpaper-glints i:nth-child(3) { top: 64%; left: 58%; width: clamp(14px, 2vw, 32px); animation-duration: 20s; animation-delay: -13s; }
+@keyframes wallpaper-glint-travel {
+  0%, 100% { transform: translate3d(-34px, 18px, 0) rotate(0deg) scale(.55); opacity: 0; }
+  18% { opacity: .16; }
+  50% { transform: translate3d(34px, -18px, 0) rotate(90deg) scale(1); opacity: .52; }
+  82% { opacity: .12; }
+}
+h1, h2, h3, p, dl, dd, dt, ul, ol, figure { margin: 0; padding: 0; }
+ul { list-style: none; }
+a { color: var(--link); text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+button, input, select { font: inherit; }
+button, select { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+button, a, input, select { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+::selection { color: #fff; background: #14779f; }
+input { caret-color: var(--focus); }
+code, kbd { font-family: 'Consolas', 'Liberation Mono', monospace; font-variant-numeric: tabular-nums; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .live-wallpaper { display: none; }
 }
 
-html {
-  /* The page is dark from the first paint, so loading never flashes white. */
-  background: var(--ground);
-}
-
-body {
-  margin: 0;
-  font-family: var(--font);
-  font-size: var(--step-0);
-  line-height: 1.5;
-  color: var(--bone);
-  background-color: var(--ground);
-  background-image:
-    linear-gradient(var(--dirt-scrim), var(--dirt-scrim)),
-    url('./assets/dirt.png');
-  background-size:
-    100% 100%,
-    64px 64px;
-  background-repeat: no-repeat, repeat;
-  image-rendering: pixelated;
-  /* One weight only. A synthesised bold smears the pixels, which is the single
-     thing a pixel face cannot survive. */
-  font-synthesis: none;
-  -webkit-font-smoothing: none;
-  /* The game's own answer to text over a texture: a hard drop shadow, so the
-     glyphs darken what is behind them instead of the dirt being scrimmed away
-     to nothing. */
-  text-shadow: 1px 1px 0 rgba(10, 11, 13, 0.72);
-}
-
-/* A surface with its own ground already separates its text from the dirt, and the
-   shadow only muddies it there. Every one of these is a game widget now, and the
-   game draws its own text plainly. */
-.entry,
-.claim,
-.panel,
-.code,
-.field input,
-.btn,
-.note,
-.lamp {
-  text-shadow: none;
-}
-
-/* The game's widget chrome, shared by everything that is a box: a 1px black
-   outline with a 2px bevel inside it — the sprite's 1px bevel at the game's
-   default GUI scale of 2. Raised is a button or a panel; sunken is a slot or a
-   field, and the direction is what says which one you are looking at. */
-.entry,
-.claim,
-.panel,
-.btn,
-.note {
-  border: 1px solid var(--gui-edge);
-  box-shadow:
-    inset 2px 2px 0 var(--gui-hi),
-    inset -2px -2px 0 var(--gui-lo);
-}
-
-.field input,
-.code,
-.lamp {
-  border: 1px solid var(--gui-edge);
-  box-shadow:
-    inset 2px 2px 0 var(--gui-lo),
-    inset -2px -2px 0 var(--gui-hi);
-}
-
-h1,
-h2,
-h3,
-p,
-dl,
-dd,
-dt,
-ul,
-ol,
-figure {
-  margin: 0;
-  padding: 0;
-}
-
-ul,
-ol {
-  list-style: none;
-}
-
-a {
-  color: inherit;
-  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
-  text-underline-offset: 0.22em;
-}
-
-a:hover {
-  text-decoration-color: currentColor;
-}
-
-button,
-input {
-  font: inherit;
-  color: inherit;
-}
-
-/* The parts nobody draws still belong to the design. */
-::selection {
-  color: var(--ink);
-  background: var(--amber);
-}
-
-:focus-visible {
-  outline: 2px solid var(--amber);
-  outline-offset: 2px;
-}
-
-html {
-  caret-color: var(--amber);
-  scrollbar-color: var(--rule-strong) var(--ground);
-}
-
-/* Inline code is a chip in the panel's own type, not a second typeface: the game
-   has one font, and inventing a mono for it would be the only borrowed voice on
-   the page. Whole-pixel tracking keeps the chip's letters on the grid. */
-code,
-kbd {
-  font-family: var(--font);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 1px;
-}
-
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
+/* Green (Aero) cursors by Abbas, linked by the Frutiger Aero Archive resources.
+   Native CUR files retain their embedded hotspots; fallback cursors remain semantic.
+   Touch devices and forced-color accessibility modes keep their native pointers. */
+@media (hover: hover) and (pointer: fine) and (forced-colors: none) {
+  html, body { cursor: url('./assets/cursors/aero-normal.cur'), default; }
+  a, button:not(:disabled), select:not(:disabled), label[for], [role='button'], input[type='checkbox']:not(:disabled), input[type='radio']:not(:disabled) {
+    cursor: url('./assets/cursors/aero-link.cur'), pointer;
+  }
+  input:not(:disabled):not([type='checkbox']):not([type='radio']), textarea:not(:disabled), [contenteditable='true'] {
+    cursor: url('./assets/cursors/aero-text.cur'), text;
+  }
+  button:disabled, input:disabled, select:disabled, textarea:disabled, [aria-disabled='true'] { cursor: url('./assets/cursors/aero-unavailable.cur'), not-allowed; }
 }

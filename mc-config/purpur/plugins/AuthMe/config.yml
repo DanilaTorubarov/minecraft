@@ -11,7 +11,7 @@
 #   settings.restrictions.allowChat: false          unauthenticated players cannot chat
 #   settings.restrictions.allowMovement: false      ...or move
 #   settings.restrictions.allowCommands             only /login, /register, /email,
-#                                                   /captcha, /2fa, /totp. /link is
+#                                                   /captcha, /2fa, /totp. /website is
 #                                                   deliberately absent: it must be
 #                                                   impossible before authenticating.
 #   settings.restrictions.ForceSingleSession: true  blocks the "logged in from

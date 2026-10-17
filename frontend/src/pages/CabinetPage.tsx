@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react'
+import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
+import firewallOffIcon from '../assets/icons/vista-firewall-off.png'
+import { useEffect, useRef, useState } from 'react'
 import {
   ApiError,
   formatCountdown,
@@ -11,6 +13,9 @@ import {
   type LinkedAccount,
 } from '../lib/api'
 import { useAuth } from '../lib/auth-context'
+import { invalidateServerData } from '../lib/serverData'
+import { playSound } from '../lib/sounds'
+import { linkCommand } from '../lib/linkCommand'
 
 function messageFor(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
@@ -27,6 +32,8 @@ function CabinetPage() {
 
   const [accounts, setAccounts] = useState<LinkedAccount[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [refreshVersion, setRefreshVersion] = useState(0)
   const [error, setError] = useState('')
 
   const [code, setCode] = useState<LinkCode | null>(null)
@@ -34,33 +41,54 @@ function CabinetPage() {
   const [now, setNow] = useState(0)
   const [issuing, setIssuing] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
   const [linking, setLinking] = useState(false)
   const [removing, setRemoving] = useState<string | null>(null)
+  const accountsBeforeCode = useRef(new Set<string>())
 
   useEffect(() => {
     let active = true
-    listLinks()
-      .then((found) => {
-        if (!active) {
-          return
-        }
+    let pending = false
+    async function refresh() {
+      if (pending) return
+      pending = true
+      try {
+        const found = await listLinks()
+        if (!active) return
         setAccounts(found)
-        setError('')
-      })
-      .catch((problem) => {
-        if (active) {
-          setError(messageFor(problem, 'Could not load your linked accounts.'))
+        setLoadError('')
+        setLoaded(true)
+        if (code !== null && found.some((account) => !accountsBeforeCode.current.has(account.uuid))) {
+          setCode(null)
+          setLinking(false)
+          playSound('done')
+          invalidateServerData('stats')
         }
-      })
-      .finally(() => {
+      } catch (problem) {
         if (active) {
-          setLoaded(true)
+          setLoadError(messageFor(problem, 'Could not load your linked accounts. Try again.'))
         }
-      })
+      } finally {
+        pending = false
+      }
+    }
+    void refresh()
+    const onFocus = () => { void refresh() }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
+    const timer = code === null ? undefined : window.setInterval(() => {
+      if (document.visibilityState === 'visible' && Date.now() <= expiresAt + 5000) void refresh()
+    }, 3000)
     return () => {
       active = false
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [])
+  }, [code, expiresAt, refreshVersion])
 
   // The code's life belongs to the server; this clock only shows it. The deadline is
   // stored rather than the remaining seconds, so the countdown can never drift away
@@ -76,8 +104,10 @@ function CabinetPage() {
   async function issueCode() {
     setIssuing(true)
     setCopied(false)
+    setCopyFailed(false)
     try {
       const issued = await startLink()
+      accountsBeforeCode.current = new Set(accounts.map((account) => account.uuid))
       setCode(issued)
       setExpiresAt(Date.now() + issued.expires_in * 1000)
       setNow(Date.now())
@@ -89,16 +119,19 @@ function CabinetPage() {
     }
   }
 
-  async function copyCode() {
-    if (code === null) {
+  async function copyCommand() {
+    if (code === null || Date.now() >= expiresAt) {
       return
     }
     try {
-      await navigator.clipboard.writeText(code.code)
+      await navigator.clipboard.writeText(linkCommand(code.code))
+      playSound('copy')
       setCopied(true)
+      setCopyFailed(false)
     } catch {
       // Clipboard access can be refused; the code stays selectable either way.
       setCopied(false)
+      setCopyFailed(true)
     }
   }
 
@@ -106,7 +139,11 @@ function CabinetPage() {
     setRemoving(uuid)
     try {
       await unlink(uuid)
-      setAccounts(await listLinks())
+      playSound('done')
+      setAccounts((current) => current.filter((account) => account.uuid !== uuid))
+      invalidateServerData('stats')
+      setRefreshVersion((version) => version + 1)
+      setError('')
     } catch (problem) {
       setError(messageFor(problem, 'Could not unlink that account. Try again.'))
     } finally {
@@ -141,10 +178,19 @@ function CabinetPage() {
         </p>
       )}
 
+      {loadError !== '' && (
+        <div className="note" data-tone="error" role="alert">
+          <p>{loadError}</p>
+          <button type="button" className="btn" onClick={() => setRefreshVersion((version) => version + 1)}>
+            Retry loading accounts
+          </button>
+        </div>
+      )}
+
       {loaded ? (
-        <>
+        <div className="cabinet-grid">
           <section className="entry" data-state={linked ? 'linked' : 'pending'}>
-            <span className="lamp" aria-hidden="true" />
+            <img className="status-icon" src={linked ? firewallOnIcon : firewallOffIcon} alt="" aria-hidden="true" />
             <div>
               <h2 className="entry-name">
                 {linked ? names.join(' · ') : 'No Minecraft account linked'}
@@ -154,7 +200,7 @@ function CabinetPage() {
                   ? names.length === 1
                     ? `Linked since ${since}. This in-game name is yours.`
                     : `Linked since ${since}. All ${names.length} in-game names are yours.`
-                  : 'Get a code below, then type it in the game with /link.'}
+                  : 'Get a code below, then link it in the game with /website link.'}
               </p>
             </div>
             <span className="entry-state">{linked ? 'Linked' : 'Not linked'}</span>
@@ -177,7 +223,7 @@ function CabinetPage() {
 
               <div className="claim">
                 <p className="lede">
-                  Create a code here, then type <code>/link &lt;code&gt;</code> in the game. A
+                  Create a code here, then paste <code>/website link &lt;code&gt;</code> in the game. A
                   code works once, and only for five minutes.
                 </p>
 
@@ -204,14 +250,17 @@ function CabinetPage() {
                       <button
                         type="button"
                         className="btn btn-quiet code-copy"
-                        onClick={copyCode}
+                        onClick={copyCommand}
+                        data-ui-sound="none"
                       >
-                        {copied ? 'Copied' : 'Copy'}
+                        {copied ? 'Command copied' : 'Copy command'}
                       </button>
                     </div>
                     <p className="code-hint">
-                      Type <code>/link {code.code}</code> in the game.
+                      Paste <code>{linkCommand(code.code)}</code> in the game after logging in.
                     </p>
+                    <p className="visually-hidden" role="status">{copied ? 'Link command copied to clipboard.' : ''}</p>
+                    {copyFailed && <p className="code-hint" role="status">Could not copy automatically. Select the command above and copy it manually.</p>}
                   </>
                 )}
               </div>
@@ -260,16 +309,16 @@ function CabinetPage() {
             </section>
           )}
 
-          <section className="section">
+          <section className="section account-details">
             <div className="section-head">
               <h2>Account details</h2>
             </div>
             <div className="panel">
               <dl className="fields">
                 <div>
-                  <dt>Name</dt>
+                  <dt>Displayed nickname</dt>
                   <dd>
-                    {user.name} {user.surname}
+                    {user.displayed_nickname}
                   </dd>
                 </div>
                 <div>
@@ -283,10 +332,10 @@ function CabinetPage() {
               </dl>
             </div>
           </section>
-        </>
-      ) : (
+        </div>
+      ) : loadError === '' ? (
         <p className="loading">Loading your linked accounts…</p>
-      )}
+      ) : null}
     </>
   )
 }

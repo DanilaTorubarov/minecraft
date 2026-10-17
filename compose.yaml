@@ -43,10 +43,24 @@ services:
     # Test-only value so the internal link endpoint is reachable in tests.
     environment:
       LINK_SERVICE_TOKEN: test-service-token
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_TLS: none
+      SMTP_FROM: accounts@example.test
+      PUBLIC_SITE_URL: https://localhost
     depends_on:
       db:
         condition: service_healthy
     command: cargo test
+
+
+  # Development-only email catcher. No SMTP port is published, and its inbox is
+  # reachable only from this machine. Use a real SMTP provider in production.
+  mailpit:
+    image: axllent/mailpit:v1.29
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
 
   # --- Minecraft: Velocity (public) + Purpur backend (internal) -------------
   # Only Velocity publishes a port. The backend has none, so it can only be

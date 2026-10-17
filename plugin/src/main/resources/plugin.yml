@@ -1,16 +1,16 @@
 name: LinkBridge
-version: '1.0.0'
+version: '1.1.0'
 main: dev.mcpanel.linkbridge.LinkBridgePlugin
-description: Links a Minecraft account to a web panel account with a one-time code.
+description: Links a Minecraft account to a web panel account and reports per-player statistics to the panel.
 api-version: '1.21'
 # Hard dependency: the plugin calls AuthMeApi, and AuthMe must be enabled first.
 depend: [AuthMe]
 commands:
-    link:
-        description: Link this Minecraft account to your panel account.
-        usage: /link <code>
+    website:
+        description: Link your Minecraft account or privately remind you of your website email.
+        usage: /website link <code> or /website email
         permission: linkbridge.link
 permissions:
     linkbridge.link:
-        description: Use /link.
+        description: Use /website link and /website email after authentication.
         default: true

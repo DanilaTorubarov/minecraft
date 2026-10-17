@@ -30,3 +30,6 @@
 # Export bundles
 /project-export-*.tar.gz
 
+# Local visual verification captures (the design brief remains tracked).
+/.impeccable/review/
+

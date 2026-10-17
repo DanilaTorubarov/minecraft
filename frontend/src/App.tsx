@@ -6,6 +6,8 @@ import { AuthProvider } from './lib/AuthProvider'
 import CabinetPage from './pages/CabinetPage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
+import SecurityPage from './pages/SecurityPage'
+import ConfirmEmailPage from './pages/ConfirmEmailPage'
 
 function App() {
   return (
@@ -15,6 +17,8 @@ function App() {
           <Route path="/" element={<Navigate to="/cabinet" replace />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/account/confirm-email" element={<ConfirmEmailPage />} />
+          <Route path="/cabinet/security" element={<RequireAuth><SecurityPage /></RequireAuth>} />
           <Route
             path="/cabinet"
             element={

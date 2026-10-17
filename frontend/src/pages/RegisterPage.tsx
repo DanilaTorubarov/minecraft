@@ -1,6 +1,7 @@
 import { useState, type SubmitEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { ApiError, register, sharedMessage } from '../lib/api'
+import { playSound } from '../lib/sounds'
 import { useAuth } from '../lib/auth-context'
 
 type FieldErrors = {
@@ -49,8 +50,7 @@ function RegisterPage() {
   const { signIn } = useAuth()
   const navigate = useNavigate()
 
-  const [name, setName] = useState('')
-  const [surname, setSurname] = useState('')
+  const [displayedNickname, setDisplayedNickname] = useState('')
   const [login, setLogin] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -71,10 +71,11 @@ function RegisterPage() {
 
     setBusy(true)
     try {
-      await register({ name, surname, login, email, password })
+      await register({ displayed_nickname: displayedNickname, login, email, password })
       // Registering does not mint a session, so sign straight in and continue to the
       // page the player actually came for.
       await signIn(email, password)
+      playSound('done')
       navigate('/cabinet', { replace: true })
     } catch (problem) {
       setError(messageFor(problem))
@@ -97,27 +98,15 @@ function RegisterPage() {
         </p>
       )}
 
-      <form className="form" onSubmit={onSubmit}>
+      <form className="form form-register" onSubmit={onSubmit}>
         <div className="field">
-          <label htmlFor="name">First name</label>
+          <label htmlFor="displayed-nickname">Displayed nickname</label>
           <input
-            id="name"
-            name="name"
-            autoComplete="given-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            required
-          />
-        </div>
-
-        <div className="field">
-          <label htmlFor="surname">Surname</label>
-          <input
-            id="surname"
-            name="surname"
-            autoComplete="family-name"
-            value={surname}
-            onChange={(event) => setSurname(event.target.value)}
+            id="displayed-nickname"
+            name="displayed_nickname"
+            autoComplete="nickname"
+            value={displayedNickname}
+            onChange={(event) => setDisplayedNickname(event.target.value)}
             required
           />
         </div>
