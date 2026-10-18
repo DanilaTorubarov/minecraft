@@ -2,14 +2,18 @@ import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, typ
 import { fitWindow, initialWindow, type WindowKind, type WindowRect } from '../lib/windowGeometry'
 
 type Props = {
-  id: string; title: string; icon: string; open: boolean; activation: number; active: boolean; kind?: WindowKind
-  onFocus: () => void; onClose: () => void; onMinimize: () => void; children: ReactNode
+  id: string; title: string; icon: string | ReactNode; open: boolean; activation: number; active: boolean; kind?: WindowKind
+  onFocus: () => void; onClose: () => void; onMinimize: () => void
+  /** Optional controls that sit in the title bar, just left of Reset. */
+  titlebarExtra?: ReactNode
+  children: ReactNode
 }
 const desktopSize = () => ({ width: window.innerWidth, height: Math.max(280, window.innerHeight - 148) })
 const FOOTER: Record<WindowKind, [string, string]> = {
   account: ['Minecraft account portal', 'No game passwords shared'],
   settings: ['Website preferences', 'Saved on this device'],
   stats: ['Server-measured activity', 'No invented numbers'],
+  player: ['Minecraft player', 'Statistics & skin'],
 }
 
 type Gesture = {
@@ -31,7 +35,7 @@ function wobbleTransform(x: number, y: number, scale = 1.001): string {
   return `perspective(1100px) rotateX(${-y * 0.32}deg) rotateY(${x * 0.26}deg) rotate(${rotate}deg) skew(${x}deg, ${y * 0.58}deg) scale(${scale})`
 }
 
-export default function DesktopWindow({ id, title, icon, open, activation, active, kind = 'account', onFocus, onClose, onMinimize, children }: Props) {
+export default function DesktopWindow({ id, title, icon, open, activation, active, kind = 'account', onFocus, onClose, onMinimize, titlebarExtra, children }: Props) {
   const [area, setArea] = useState(desktopSize)
   const [rect, setRect] = useState(() => initialWindow(desktopSize(), kind))
   const [maximized, setMaximized] = useState(false)
@@ -89,7 +93,8 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
 
   function begin(event: PointerEvent<HTMLElement>, resize: boolean) {
     if (event.button !== 0 || maximized || window.innerWidth <= 760) return
-    if (!resize && (event.target as HTMLElement).closest('button')) return
+    // The lights and any title-bar controls belong to the control, not the drag.
+    if (!resize && (event.target as HTMLElement).closest('button, select')) return
     onFocus()
     settleAnimation.current?.cancel()
     windowRef.current?.getAnimations().forEach((animation) => animation.cancel())
@@ -175,7 +180,8 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
           <button className="window-light light-minimize" data-ui-sound="close" aria-label={`Minimize ${title}`} onClick={onMinimize} />
           <button className="window-light light-maximize" aria-label={`${maximized ? 'Restore' : 'Maximize'} ${title}`} onClick={toggleMaximized} />
         </div>
-        <span className="window-title"><img src={icon} alt="" />{title}</span>
+        <span className="window-title">{typeof icon === 'string' ? <img src={icon} alt="" /> : icon}{title}</span>
+        {titlebarExtra !== undefined && <div className="window-titlebar-extra">{titlebarExtra}</div>}
         <button className="window-reset" onClick={resetWindow}>Reset</button>
       </div>
       <p id={`${id}-help`} className="visually-hidden">Drag this title bar or use arrow keys to move the window. Shift moves further. Double-click to maximize. Reset restores the original position and size.</p>

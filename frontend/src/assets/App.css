@@ -53,6 +53,8 @@
 .window-title { position: absolute; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; pointer-events: none; }
 .window-title img { width: 21px; height: 21px; }
 .window-reset { margin-left: auto; border: 1px solid var(--frame); border-radius: 4px; padding: 2px 8px; background: linear-gradient(var(--chrome-top), var(--chrome-bottom)), var(--surface-soft); color: var(--muted); font-size: 10px; min-height: 26px; }
+/* Optional controls that live in a title bar next to Reset. */
+.window-titlebar-extra { display: flex; align-items: center; gap: 8px; margin-left: auto; z-index: 1; }
 .window-body { overflow: auto; flex: 1; min-height: 0; overscroll-behavior: contain; }
 .window-footer { display: flex; flex: none; justify-content: space-between; gap: 12px; padding: 7px 26px 7px 16px; border-top: 1px solid var(--frame); background: var(--content-glass); color: var(--muted); font-size: 10px; backdrop-filter: blur(24px); }
 .window-resize { position: absolute; bottom: 0; right: 0; width: 24px; height: 24px; border: 0; border-radius: 0 0 10px; background: transparent; touch-action: none; cursor: nwse-resize; }
@@ -88,7 +90,8 @@
 .desktop-dock { position: fixed; z-index: 40; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 8px 18px 10px; border: 1px solid var(--glass-edge); border-radius: 15px; background: linear-gradient(rgb(255 255 255 / 65%), transparent 52%), var(--glass); backdrop-filter: blur(24px) saturate(145%); -webkit-backdrop-filter: blur(24px) saturate(145%); box-shadow: inset 0 1px 0 var(--glass-edge), 0 8px 20px rgb(0 25 50 / 32%); }
 .dock-app { position: relative; display: flex; flex-direction: column; align-items: center; min-width: 76px; padding: 1px 6px 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text); transition: transform 260ms var(--motion-glide), background 180ms; }
 .dock-app:hover { transform: translateY(-6px); background: var(--reflection); }
-.dock-app img { width: 49px; height: 49px; object-fit: contain; filter: drop-shadow(0 3px 2px rgb(0 30 60 / 25%)); }
+.dock-app img, .dock-app .player-head { width: 49px; height: 49px; object-fit: contain; filter: drop-shadow(0 3px 2px rgb(0 30 60 / 25%)); }
+.dock-app .player-head { width: 36px; height: 36px; margin: 6.5px 0; }
 .dock-app span { font-size: 11px; line-height: 1.5; font-weight: 600; }
 .dock-app[data-open='true']::after { content: ''; position: absolute; bottom: -3px; width: 4px; height: 4px; border-radius: 50%; background: var(--text); }
 .dock-divider { width: 1px; height: 48px; background: var(--frame); box-shadow: 1px 0 0 var(--glass-edge); }
@@ -158,13 +161,17 @@
 .stat-card { min-width: 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 6px; background: linear-gradient(110deg, var(--reflection), transparent 60%), var(--panel-glass); box-shadow: inset 0 1px 0 var(--glass-edge); }
 .stat-value { display: block; font-size: 21px; font-weight: 600; letter-spacing: -.4px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .stat-label { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
-.stat-row { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 86px); gap: 8px 16px; align-items: start; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.stat-row { display: grid; grid-template-columns: minmax(0, 1fr) repeat(4, minmax(0, 76px)); gap: 8px 16px; align-items: start; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .stat-row:last-child { border-bottom: 0; }
 .stat-cell { min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .stat-cell-value { display: block; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .stat-cell-label { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .stat-none { grid-column: 2 / -1; color: var(--muted); font-size: 12px; }
-.stat-meta { grid-column: 1; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.stat-meta { grid-column: 1 / -1; margin-top: 4px; color: var(--muted); font-size: 11px; }
+/* An account's name opens that account's own statistics view. */
+.stat-open { display: block; border: 0; padding: 0; background: transparent; color: var(--link); font: inherit; font-size: 15px; font-weight: 600; text-align: left; cursor: pointer; }
+.stat-open:hover { text-decoration: underline; }
+.stat-open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* The player and dock share their height and bottom alignment. */
 .desktop-shell { --desktop-dock-height: 94px; }
@@ -247,7 +254,7 @@
   .entry { grid-template-columns: auto minmax(0, 1fr); gap: 12px; padding: 17px; }
   .entry-state { grid-column: 2; justify-self: start; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .stat-row { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 1fr)); }
+  .stat-row { grid-template-columns: minmax(0, 1fr) repeat(4, minmax(0, 1fr)); }
   .stat-cell { text-align: left; }
 }
 @media (max-width: 760px) {
@@ -276,7 +283,8 @@
   .settings-content { padding: 24px 20px; }
   .field input { font-size: 16px; }
   .desktop-dock { bottom: 12px; padding: 6px 14px 9px; }
-  .dock-app img { width: 43px; height: 43px; }
+  .dock-app img, .dock-app .player-head { width: 43px; height: 43px; }
+  .dock-app .player-head { width: 32px; height: 32px; margin: 5.5px 0; }
   /* Stacked windows sit in normal flow: no floating motion of their own. */
   .desktop-window { transition: none; }
   .desktop-window:not([hidden]) { animation: none; }
@@ -304,3 +312,60 @@
 .note[data-tone='ok']::before { background-image: url('./icons/vista-firewall-on.png'); }
 
 .desktop-window .window-resize:not(:disabled) { cursor: nwse-resize; }
+
+/* Keep per-account balances readable in the narrow Statistics window. */
+@container (max-width: 600px) {
+  .stat-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .stat-row > div:first-child { grid-column: 1 / -1; }
+}
+
+/* Account apps share the desktop chrome and use sourced Minecraft skin heads. */
+.player-head { object-fit: contain; image-rendering: pixelated; }
+.player-heading { display: flex; align-items: center; gap: 14px; overflow-wrap: anywhere; }
+.player-heading .player-head { width: 48px; height: 48px; flex: none; }
+.stat-open { display: inline-flex; align-items: center; gap: 8px; }
+.stat-open .player-head { width: 24px; height: 24px; }
+.player-menu-app { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.player-menu-app .player-head { width: 20px; height: 20px; }
+.desktop-menu { min-width: 0; overflow-x: auto; }
+.desktop-menu > button { flex: none; }
+.desktop-dock { max-width: calc(100vw - 24px); overflow-x: auto; overflow-y: hidden; }
+.dock-app { flex: none; }
+.dock-app span { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-divider { flex: none; }
+.window-title { max-width: calc(100% - 260px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 760px) {
+  .window-title { max-width: calc(100% - 190px); }
+  .desktop-menu { flex: 1; }
+  .desktop-menubar .desktop-brand { flex: none; }
+}
+
+@media (min-width: 1101px) {
+  .desktop-dock { max-width: calc(100vw - 780px); }
+}
+
+.player-toolbar [aria-current='page'] { border-color: var(--focus); background: var(--reflection); }
+.skin-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 32px; }
+.skin-layout h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+.skin-current { text-align: center; }
+.skin-preview-well { min-height: 300px; display: grid; place-items: center; padding: 22px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 7px; margin-bottom: 12px; }
+.skin-figure { width: 128px; height: 256px; image-rendering: pixelated; }
+.skin-upload .field { margin-top: 18px; }
+.skin-upload input[type='file'] { width: 100%; min-width: 0; padding: 8px; }
+.skin-upload .field-help { color: var(--muted); font-size: 12px; margin: 6px 0 14px; }
+.skin-selected { display: flex; align-items: center; gap: 18px; margin-top: 18px; overflow-wrap: anywhere; }
+.skin-selected .skin-figure { width: 48px; height: 96px; flex: none; }
+.skin-upload .note { margin-top: 16px; }
+@container (max-width: 640px) {
+  .skin-layout { grid-template-columns: 1fr; gap: 24px; }
+  .skin-preview-well { min-height: 240px; }
+  .skin-preview-well .skin-figure { width: 96px; height: 192px; }
+}
+.skin-upload select { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--frame); border-radius: 5px; color: var(--text); background: var(--field); }
+.skin-upload select:hover { border-color: var(--muted); }
+@container (max-width: 640px) {
+  .skin-current { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px 16px; align-items: center; text-align: left; }
+  .skin-current h2 { grid-column: 1 / -1; margin-bottom: 0; }
+  .skin-preview-well { min-height: 220px; padding: 12px; margin-bottom: 0; }
+  .skin-upload select { font-size: 16px; }
+}

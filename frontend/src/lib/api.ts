@@ -15,11 +15,29 @@ export type AccountStats = {
   play_seconds: number
   blocks_placed: number
   blocks_broken: number
+  mobs_killed: number
+  deaths: number
+  /** hundredths of a block; 100 = 1 block */
+  distance_cm: number
+  items_crafted: number
+  fish_caught: number
+  /** hundredths of a heart; 100 = 1 heart */
+  damage_dealt: number
+  damage_taken: number
+  logins: number
+  items_picked_up: number
+  items_enchanted: number
+  tools_broken: number
+  animals_bred: number
+  times_slept: number
+  advancements: number
   first_seen_at: string
   last_seen_at: string
 }
 
 export type StatsAccount = {
+  skin_hash: string | null
+  coins: number
   uuid: string
   username: string
   linked_at: string
@@ -28,11 +46,28 @@ export type StatsAccount = {
 }
 
 export type StatsSummary = {
+  coins: number
   accounts: number
   accounts_with_stats: number
   play_seconds: number
   blocks_placed: number
   blocks_broken: number
+  mobs_killed: number
+  deaths: number
+  /** hundredths of a block; 100 = 1 block */
+  distance_cm: number
+  items_crafted: number
+  fish_caught: number
+  /** hundredths of a heart; 100 = 1 heart */
+  damage_dealt: number
+  damage_taken: number
+  logins: number
+  items_picked_up: number
+  items_enchanted: number
+  tools_broken: number
+  animals_bred: number
+  times_slept: number
+  advancements: number
 }
 
 export type StatsView = {
@@ -223,4 +258,25 @@ export function formatCountdown(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds))
   const minutes = Math.floor(safe / 60)
   return `${minutes}:${String(safe % 60).padStart(2, '0')}`
+}
+
+export type SkinView = {
+  texture_hash: string | null
+  model: 'classic' | 'slim'
+  observed_at: string | null
+  upload: { status: 'queued' | 'signing' | 'ready' | 'saved' | 'failed'; error: string | null } | null
+}
+export async function getPlayerSkin(uuid: string): Promise<SkinView> {
+  const response = await send('GET', `/api/players/${encodeURIComponent(uuid)}/skin`)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as SkinView
+}
+export async function uploadPlayerSkin(uuid: string, file: File, model: 'classic' | 'slim'): Promise<void> {
+  const data = new FormData()
+  data.append('file', file)
+  data.append('model', model)
+  let response: Response
+  try { response = await fetch(`/api/players/${encodeURIComponent(uuid)}/skin`, { method: 'POST', credentials: 'same-origin', headers: { 'X-Player-Skin': 'upload' }, body: data }) }
+  catch { throw new ApiError(0) }
+  if (!response.ok) throw new ApiError(response.status)
 }

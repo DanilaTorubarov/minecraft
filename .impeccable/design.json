@@ -848,8 +848,8 @@
     "imageFilters": [
       {
         "name": "wallpaper-dark",
-        "value": "brightness(.5) saturate(.85)",
-        "purpose": "Dark theme uses the same user-selected Asadal wallpaper."
+        "value": "brightness(.94) saturate(.95)",
+        "purpose": "Dark theme uses the user-supplied night park scene; the daylight Asadal scene is dimmed with brightness(.5) saturate(.85) only if it stays in use."
       }
     ],
     "assets": {
@@ -971,9 +971,9 @@
   ],
   "narrative": {
     "northStar": "Old Mac desktop / Frutiger Aero",
-    "overview": "Account linking lives in a small desktop: a pearl menu bar, a bottom dock, and three independent glass windows \u2014 Account, Statistics, and Settings. Aqua traffic lights and glossy blue controls bring the old Mac silhouette into the user-approved Frutiger Aero world. Light is the fresh-browser default; optional Dark uses smoked blue with the same wallpaper.\n\nThe supplied Asadal landscape is decorative, never a depiction of the real server. The portal still has one practical job: register, sign in, and link an in-game identity. Window controls support that work without changing authentication state.",
+    "overview": "Account linking lives in a small desktop: a pearl menu bar, a bottom dock, and independent glass windows for Account, Global Statistics, Settings, and every linked Minecraft nickname. Aqua traffic lights and glossy blue controls bring the old Mac silhouette into the user-approved Frutiger Aero world. Light is the fresh-browser default and carries the supplied Asadal landscape; optional Dark uses smoked blue over a user-supplied night park scene.\n\nThe supplied landscapes are decorative, never a depiction of the real server. The portal still has one practical job: register, sign in, and link an in-game identity. Window controls support that work without changing authentication state.",
     "keyCharacteristics": [
-      "A menu bar and dock launch Account and Settings.",
+      "A menu bar and dock launch Account, Global Statistics, Settings, and linked player apps with Statistics and Skin pages.",
       "Aqua window controls, readable glass and sourced Vista artwork.",
       "Truthful account states, keyboard access and responsive windows."
     ],

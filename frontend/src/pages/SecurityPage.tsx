@@ -42,7 +42,7 @@ export default function SecurityPage() {
   async function savePassword(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault()
     setPasswordError('')
-    if ([...nextPassword].length < 15) { setPasswordError('Use at least 15 characters.'); return }
+    if ([...nextPassword].length < 6) { setPasswordError('Use at least 6 characters.'); return }
     if (nextPassword !== repeat) { setPasswordError('The new passwords do not match.'); return }
     if (nextPassword === password) { setPasswordError('Choose a password different from your current one.'); return }
     setBusy('password')
@@ -77,7 +77,7 @@ export default function SecurityPage() {
         {passwordError && <p className="note" data-tone="error" role="alert">{passwordError}</p>}
         <form className="form" onSubmit={savePassword}>
           <div className="field"><label htmlFor="security-current-password">Current password</label><input id="security-current-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></div>
-          <div className="field"><label htmlFor="security-new-password">New password</label><input id="security-new-password" type="password" autoComplete="new-password" value={nextPassword} onChange={(e) => setNextPassword(e.target.value)} required /><span className="field-hint">At least 15 characters.</span></div>
+          <div className="field"><label htmlFor="security-new-password">New password</label><input id="security-new-password" type="password" autoComplete="new-password" value={nextPassword} onChange={(e) => setNextPassword(e.target.value)} required /><span className="field-hint">At least 6 characters.</span></div>
           <div className="field"><label htmlFor="security-repeat-password">Repeat new password</label><input id="security-repeat-password" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} required /></div>
           <div className="btn-row"><button className="btn btn-primary" disabled={busy !== null}>{busy === 'password' ? 'Changing…' : 'Change password'}</button></div>
         </form>

@@ -1,16 +1,24 @@
 name: LinkBridge
-version: '1.1.0'
+version: '1.4.0'
 main: dev.mcpanel.linkbridge.LinkBridgePlugin
 description: Links a Minecraft account to a web panel account and reports per-player statistics to the panel.
 api-version: '1.21'
 # Hard dependency: the plugin calls AuthMeApi, and AuthMe must be enabled first.
-depend: [AuthMe]
+depend: [AuthMe, SkinsRestorer]
 commands:
+    balance:
+        description: Show your Minecraft account's coin balance after login.
+        usage: /balance
+        aliases: [bal]
+        permission: linkbridge.balance
     website:
         description: Link your Minecraft account or privately remind you of your website email.
         usage: /website link <code> or /website email
         permission: linkbridge.link
 permissions:
+    linkbridge.balance:
+        description: Check your own coin balance after authentication.
+        default: true
     linkbridge.link:
         description: Use /website link and /website email after authentication.
         default: true

@@ -1,5 +1,6 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
-import wallpaperUrl from '../assets/asadal-stock-18.webp'
+import lightWallpaperUrl from '../assets/asadal-stock-18.webp'
+import nightWallpaperUrl from '../assets/night-park.webp'
 
 const VERTEX_SHADER = `
   attribute vec2 a_position;
@@ -22,6 +23,7 @@ const FRAGMENT_SHADER = `
   uniform vec2 u_pointer;
   uniform float u_time;
   uniform float u_dark;
+  uniform float u_night;
   uniform float u_scene_offset;
 
   vec2 cover_uv(vec2 uv) {
@@ -101,9 +103,12 @@ const FRAGMENT_SHADER = `
     float shimmer = 0.72 + sin(loop_phase * 2.0) * 0.28;
     color += (sun_bloom * 0.09 + lens_flare * 0.045) * shimmer * mix(vec3(0.58, 0.84, 1.0), vec3(0.35, 0.62, 0.92), u_dark);
 
+    // The night artwork is already dark; only the daylight scene needs the
+    // Dark theme's dimming and desaturation.
+    float dark_treatment = u_dark * (1.0 - u_night);
     float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(vec3(luminance), color, mix(1.0, 0.85, u_dark));
-    color *= mix(1.0, 0.50, u_dark);
+    color = mix(vec3(luminance), color, mix(1.0, 0.85, dark_treatment));
+    color *= mix(1.0, 0.50, dark_treatment);
     color = mix(color, mix(vec3(0.71, 0.91, 0.98), vec3(0.05, 0.13, 0.22), u_dark), 0.055);
 
     gl_FragColor = vec4(color, 1.0);
@@ -204,23 +209,46 @@ export default function LiveWallpaper() {
     const pointerUniform = gl.getUniformLocation(program, 'u_pointer')
     const timeUniform = gl.getUniformLocation(program, 'u_time')
     const darkUniform = gl.getUniformLocation(program, 'u_dark')
+    const nightUniform = gl.getUniformLocation(program, 'u_night')
     const sceneOffset = gl.getUniformLocation(program, 'u_scene_offset')
     if (
       resolution === null || imageResolution === null || ripplesUniform === null || pointerUniform === null ||
-      timeUniform === null || darkUniform === null || sceneOffset === null
+      timeUniform === null || darkUniform === null || nightUniform === null || sceneOffset === null
     ) return
 
     const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const image = new Image()
+    const lightImage = new Image()
+    const nightImage = new Image()
     const ripples: Ripple[] = []
     const rippleData = new Float32Array(18)
     const pointerTarget = { x: 0.5, y: 0.5 }
     const pointerSmooth = { x: 0.5, y: 0.5 }
-    let imageReady = false
+    let activeImage: HTMLImageElement | null = null
     let frame = 0
     let running = false
     let lastRippleAt = 0
     const startedAt = performance.now()
+
+    const isNight = () => document.documentElement.dataset.theme === 'dark'
+    const wantedImage = () => (isNight() ? nightImage : lightImage)
+    const isLoaded = (image: HTMLImageElement) => image.naturalWidth > 0
+
+    function bindTexture(image: HTMLImageElement) {
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, texture)
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image)
+      activeImage = image
+    }
+
+    function syncTexture() {
+      const wanted = wantedImage()
+      if (isLoaded(wanted) && wanted !== activeImage) bindTexture(wanted)
+    }
 
     function resize() {
       const cssWidth = Math.max(1, window.innerWidth)
@@ -255,11 +283,17 @@ export default function LiveWallpaper() {
     function render(now: number) {
       running = true
       resize()
+      syncTexture()
+      if (activeImage === null) {
+        running = false
+        return
+      }
       gl.viewport(0, 0, canvas.width, canvas.height)
       gl.uniform2f(resolution, canvas.width, canvas.height)
-      gl.uniform2f(imageResolution, image.naturalWidth, image.naturalHeight)
+      gl.uniform2f(imageResolution, activeImage.naturalWidth, activeImage.naturalHeight)
       gl.uniform1f(timeUniform, (now - startedAt) / 1000)
-      gl.uniform1f(darkUniform, document.documentElement.dataset.theme === 'dark' ? 1 : 0)
+      gl.uniform1f(darkUniform, isNight() ? 1 : 0)
+      gl.uniform1f(nightUniform, activeImage === nightImage ? 1 : 0)
       gl.uniform1f(sceneOffset, 130 / Math.max(1, window.innerHeight))
       pointerSmooth.x += (pointerTarget.x - pointerSmooth.x) * 0.055
       pointerSmooth.y += (pointerTarget.y - pointerSmooth.y) * 0.055
@@ -278,7 +312,8 @@ export default function LiveWallpaper() {
     }
 
     function start() {
-      if (!imageReady || running || motionPreference.matches || document.visibilityState !== 'visible') return
+      if (running || motionPreference.matches || document.visibilityState !== 'visible') return
+      if (!isLoaded(wantedImage())) return
       running = true
       frame = window.requestAnimationFrame(render)
     }
@@ -293,24 +328,18 @@ export default function LiveWallpaper() {
       start()
     }
 
-    image.decoding = 'async'
-    image.onload = () => {
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, texture)
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image)
-      imageReady = true
-      start()
+    function handleLoad() {
+      syncPlayback()
     }
-    image.src = wallpaperUrl
 
-    const themeObserver = new MutationObserver(() => {
-      if (imageReady && !running) start()
-    })
+    lightImage.decoding = 'async'
+    nightImage.decoding = 'async'
+    lightImage.onload = handleLoad
+    nightImage.onload = handleLoad
+    lightImage.src = lightWallpaperUrl
+    nightImage.src = nightWallpaperUrl
+
+    const themeObserver = new MutationObserver(syncPlayback)
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     window.addEventListener('pointermove', addRipple, { passive: true })
     window.addEventListener('pointerdown', addRipple, { passive: true })

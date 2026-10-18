@@ -96,6 +96,12 @@ services:
       EULA: "TRUE"
       TYPE: PURPUR
       VERSION: ${MC_VERSION:-LATEST}
+      # Paper-supported European mirror; avoid stalled NA mirror library downloads.
+      PAPER_DEFAULT_CENTRAL_REPOSITORY: https://maven-central-eu.storage-download.googleapis.com/maven2
+      # Avoid stalled HTTP/2 artifact transfers in mc-image-helper.
+      FETCH_USE_HTTP2: "false"
+      # AuthMe libraries share /data/libraries; retain them across restarts.
+      CLEAN_SERVER_LIBRARIES: "false"
       # Offline (cracked) mode: Velocity does no Mojang auth and the backend
       # trusts the proxy instead. In-game passwords live in an auth plugin.
       ONLINE_MODE: "FALSE"
@@ -112,6 +118,7 @@ services:
       # redeploy gets the same build; use the Paper jar on Purpur.
       PLUGINS: |
         https://github.com/AuthMe/AuthMeReloaded/releases/download/6.0.1/AuthMe-6.0.1-Paper.jar
+        https://github.com/SkinsRestorer/SkinsRestorer/releases/download/15.12.6/SkinsRestorer.jar
       # Consumed by paper-global.yml's ${CFG_VELOCITY_SECRET} placeholder.
       CFG_VELOCITY_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
       # Consumed by the link plugin's config.yml placeholder.

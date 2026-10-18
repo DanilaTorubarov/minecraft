@@ -21,8 +21,8 @@ function validate(login: string, password: string, confirm: string): FieldErrors
     errors.login = 'Letters, digits, and _ ! @ only.'
   }
   const length = codePointLength(password)
-  if (password !== '' && length < 15) {
-    errors.password = `At least 15 characters — ${length} so far.`
+  if (password !== '' && length < 6) {
+    errors.password = `At least 6 characters — ${length} so far.`
   }
   if (confirm !== '' && password !== confirm) {
     errors.confirm = 'The two passwords do not match.'
@@ -159,7 +159,7 @@ function RegisterPage() {
             required
           />
           {errors.password === undefined ? (
-            <span className="field-hint">At least 15 characters.</span>
+            <span className="field-hint">At least 6 characters.</span>
           ) : (
             <span className="field-error" id="password-error">
               {errors.password}

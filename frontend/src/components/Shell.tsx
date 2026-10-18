@@ -7,6 +7,9 @@ import MusicPlayer from './MusicPlayer'
 import DesktopWindow from './DesktopWindow'
 import LiveWallpaper from './LiveWallpaper'
 import ClickWaves from './ClickWaves'
+import PlayerApp from './PlayerApp'
+import PlayerHead from './PlayerHead'
+import { useStatistics } from '../lib/useStatistics'
 import StatisticsPage from '../pages/StatisticsPage'
 import globeIcon from '../assets/icons/vista-search-globe.png'
 import personalizationIcon from '../assets/icons/vista-personalization.png'
@@ -27,9 +30,24 @@ function Shell() {
   const [accountActivation, setAccountActivation] = useState(0)
   const [settingsActivation, setSettingsActivation] = useState(0)
   const [statsActivation, setStatsActivation] = useState(0)
+  const { stats, loadError, retry } = useStatistics(user?.id)
+  const statsAccounts = stats?.accounts ?? []
+  const [playerApps, setPlayerApps] = useState<Record<string, { open: boolean; activation: number }>>({})
   const accountDock = useRef<HTMLButtonElement>(null)
   const settingsDock = useRef<HTMLButtonElement>(null)
   const statsDock = useRef<HTMLButtonElement>(null)
+  const playerDocks = useRef(new Map<string, HTMLButtonElement>())
+  const playerAppKey = (uuid: string) => `${user?.id}:${uuid}`
+  function openPlayer(uuid: string) {
+    if (uuid === 'all') { openStats(); return }
+    setPlayerApps((apps) => ({ ...apps, [playerAppKey(uuid)]: { open: true, activation: (apps[playerAppKey(uuid)]?.activation ?? 0) + 1 } }))
+    setActive(uuid)
+  }
+  function hidePlayer(uuid: string) {
+    setPlayerApps((apps) => ({ ...apps, [playerAppKey(uuid)]: { ...apps[playerAppKey(uuid)], open: false } }))
+    setActive('account')
+    playerDocks.current.get(uuid)?.focus()
+  }
 
   function openAccount() { setAccountOpen(true); setActive('account'); setAccountActivation((value) => value + 1) }
   function openSettings() { setSettingsOpen(true); setActive('settings'); setSettingsActivation((value) => value + 1) }
@@ -65,7 +83,8 @@ function Shell() {
         <button className="desktop-brand" data-ui-sound={accountOpen ? 'click' : 'open'} onClick={openAccount}><img src={globeIcon} alt="" />Minecraft<span>Account desktop</span></button>
         <nav className="desktop-menu" aria-label="Applications">
           <button onClick={openAccount} data-ui-sound={accountOpen ? 'click' : 'open'} aria-controls="account-window">Account</button>
-          <button onClick={openStats} data-ui-sound={statsOpen ? 'click' : 'open'} aria-controls="stats-window">Statistics</button>
+          <button onClick={openStats} data-ui-sound={statsOpen ? 'click' : 'open'} aria-controls="stats-window">Global Statistics</button>
+          {statsAccounts.map((account) => <button key={account.uuid} className="player-menu-app" onClick={() => openPlayer(account.uuid)} aria-controls={`player-${account.uuid}`} data-ui-sound={playerApps[playerAppKey(account.uuid)]?.open ? 'click' : 'open'}><PlayerHead username={account.username} textureHash={account.skin_hash} />{account.username}</button>)}
           <button onClick={openSettings} data-ui-sound={settingsOpen ? 'click' : 'open'} aria-controls="settings-window">Settings</button>
         </nav>
         <span className="desktop-menu-caption">Your world, connected.</span>
@@ -92,7 +111,7 @@ function Shell() {
             </main>
           </div>
         </DesktopWindow>
-        <DesktopWindow id="stats-window" title="Statistics" icon={perfCenterIcon} kind="stats" open={statsOpen} activation={statsActivation} active={active === 'stats'} onFocus={() => setActive('stats')} onClose={hideStats} onMinimize={hideStats}>
+        <DesktopWindow id="stats-window" title="Global Statistics" icon={perfCenterIcon} kind="stats" open={statsOpen} activation={statsActivation} active={active === 'stats'} onFocus={() => setActive('stats')} onClose={hideStats} onMinimize={hideStats}>
           <div className="workspace stats-workspace">
             <main className="main" id="stats-content">
               {user === null ? (
@@ -107,11 +126,26 @@ function Shell() {
                   </button>
                 </div>
               ) : (
-                <StatisticsPage onGoToAccount={() => { navigate('/cabinet', { replace: true }); openAccount() }} />
+                <StatisticsPage
+                  onGoToAccount={() => { navigate('/cabinet', { replace: true }); openAccount() }}
+                  scope="all"
+                  onSelectAccount={openPlayer}
+                  stats={stats}
+                  loadError={loadError}
+                  onRetry={retry}
+                />
               )}
             </main>
           </div>
         </DesktopWindow>
+        {statsAccounts.map((account) => (
+          <DesktopWindow key={`${user?.id}-${account.uuid}`} id={`player-${account.uuid}`} title={account.username} icon={<PlayerHead username={account.username} textureHash={account.skin_hash} />} kind="player"
+            open={playerApps[playerAppKey(account.uuid)]?.open ?? false} activation={playerApps[playerAppKey(account.uuid)]?.activation ?? 0} active={active === account.uuid}
+            onFocus={() => setActive(account.uuid)} onClose={() => hidePlayer(account.uuid)} onMinimize={() => hidePlayer(account.uuid)}>
+            <PlayerApp account={account} stats={stats} loadError={loadError} onRetry={retry} onSelectAccount={openPlayer} open={playerApps[playerAppKey(account.uuid)]?.open ?? false}
+              onGoToAccount={() => { navigate('/cabinet', { replace: true }); openAccount() }} />
+          </DesktopWindow>
+        ))}
         <DesktopWindow id="settings-window" title="Settings" icon={personalizationIcon} kind="settings" open={settingsOpen} activation={settingsActivation} active={active === 'settings'} onFocus={() => setActive('settings')} onClose={hideSettings} onMinimize={hideSettings}>
           <div className="settings-content">
             <div className="settings-heading"><img src={personalizationIcon} alt="" /><div><h1>Settings</h1><p>Make this desktop yours.</p></div></div>
@@ -123,7 +157,8 @@ function Shell() {
       </div>
       <nav className="desktop-dock" aria-label="Dock">
         <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? 'click' : 'open'} onClick={openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
-        <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? 'click' : 'open'} onClick={openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Statistics</span></button>
+        <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? 'click' : 'open'} onClick={openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Global Statistics</span></button>
+        {statsAccounts.map((account) => <button key={account.uuid} ref={(node) => { if (node) playerDocks.current.set(account.uuid, node); else playerDocks.current.delete(account.uuid) }} className="dock-app" title={`${account.username} player app`} onClick={() => openPlayer(account.uuid)} aria-controls={`player-${account.uuid}`} aria-expanded={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-open={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-ui-sound={playerApps[playerAppKey(account.uuid)]?.open ? 'click' : 'open'}><PlayerHead username={account.username} textureHash={account.skin_hash} /><span>{account.username}</span></button>)}
         <span className="dock-divider" />
         <button ref={settingsDock} className="dock-app" data-ui-sound={settingsOpen ? 'click' : 'open'} onClick={openSettings} aria-controls="settings-window" aria-expanded={settingsOpen} data-open={settingsOpen}><img src={personalizationIcon} alt="" /><span>Settings</span></button>
       </nav>

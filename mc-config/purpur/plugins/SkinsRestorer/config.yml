@@ -1,0 +1,18 @@
+# Intentional backend-owned skins for this one-backend Velocity network.
+# Do not also install SkinsRestorer on Velocity: its player commands would run
+# before AuthMe's Bukkit command gate. AuthMe's allowCommands stays unchanged.
+# File storage under mc/purpur/plugins/SkinsRestorer travels with the stack.
+# ConfigMe fills omitted settings from the pinned release defaults.
+server:
+  proxyMode:
+    detection: DISABLED
+    api: false
+
+api:
+  # 15.12.6 tries Ely.by first and falls back to Mojang. Matching nicknames on
+  # both providers prefer Ely.by; a saved /skin selection overrides join lookup.
+  elyByEnabled: true
+
+commands:
+  skinChangeCooldown: 30
+  skinErrorCooldown: 5

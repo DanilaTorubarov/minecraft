@@ -22,7 +22,7 @@ dependencies {
     // are supplied by AuthMe at runtime. AuthMe publishes no stable Maven artifact
     // for the plugin jar, so scripts/build-plugin.sh downloads the pinned release
     // into .plugin-build/lib and we compile against it here.
-    compileOnly fileTree('../.plugin-build/lib') { include 'AuthMe-*.jar' }
+    compileOnly fileTree('../.plugin-build/lib') { include 'AuthMe-*.jar', 'SkinsRestorer-*.jar' }
 }
 
 java {

@@ -8,7 +8,7 @@ The `proxy` container runs Caddy and terminates HTTPS — it is the only web ser
 
 | Path | What it is |
 | --- | --- |
-| `src/main.rs` | The entire Rust API — register/login/logout, sessions, rate limiting, account linking |
+| `src/main.rs` | The entire Rust API — authentication, security, linking, statistics, coins, and skin uploads |
 | `migrations/` | The SQL schema, applied by sqlx automatically on startup |
 | `frontend/` | The React 19 + Vite app — `/register`, `/login`, and the `/cabinet` account page |
 | `Dockerfile` | Multi-stage build: npm build → cargo build → slim runtime image |
@@ -19,6 +19,10 @@ The `proxy` container runs Caddy and terminates HTTPS — it is the only web ser
 | `scripts/` | `mc-init.sh` (first-run setup), `build-plugin.sh`, `export.sh` (move to another host) |
 
 `mc/` (the Minecraft world, plugins, secrets and player accounts), `target/`, `frontend/dist/`, `.plugin-build/` and `plugin/build/` are all generated locally and never committed.
+
+## Saved project state
+
+See [STATE.md](STATE.md) for the dated implementation checkpoint, verification evidence, local deployment status, and outstanding recovery work. [AGENTS.md](AGENTS.md) records engineering rules; [PRODUCT.md](PRODUCT.md) and [DESIGN.md](DESIGN.md) describe product and interface decisions.
 
 ## Before starting
 
@@ -62,6 +66,14 @@ docker compose --env-file .env.docker logs -f proxy app db
 ```
 
 Press `Ctrl+C` to stop following logs; the containers keep running.
+
+### Rebuild only the website
+
+```sh
+docker compose --env-file .env.docker up --build -d app proxy
+```
+
+This rebuilds the Rust API and React bundle without starting the Minecraft services. Database migrations run automatically when the app starts. The normal build uses the committed `Dockerfile`; temporary offline-cache overrides used on this workstation are described in `STATE.md` and are not prerequisites for a fresh clone.
 
 ## HTTPS and domains
 
@@ -143,7 +155,7 @@ Details:
 - Codes are **single-use**, expire after `LINK_CODE_TTL_SECONDS` (default 300), and only the newest code per user stays valid. Only the code's SHA-256 is stored, never the code.
 - The alphabet omits characters that are easy to misread in-game (`I`, `L`, `O`, `U`, `0`, `1`).
 - `/internal/*` is **blocked at the proxy** (it answers `404` to the internet) and additionally requires the service token. `scripts/mc-init.sh` generates `LINK_SERVICE_TOKEN` in `.env.docker` (the plugin sends it as a bearer token); with it unset the endpoint answers `503`.
-- Both `/internal` endpoints answer with **bare status codes and no body**, so the plugin never parses JSON.
+- Link claim and status answer with **bare status codes and no body**. Email reminders and balances return plain text; skin synchronization uses JSON.
 - An unknown, used, or expired code all return the same `404`, so codes cannot be probed.
 - Linking a UUID that is already linked returns `409` and does **not** consume the code, so the player can retry.
 
@@ -159,19 +171,23 @@ Every in-game claim arrives from the game server's single container address, so 
 
 ## Statistics
 
-The game server measures what it can see in game — how long an authenticated player is online, and how many blocks they place or break — and reports the growth to the panel. The panel stores it per in-game UUID and shows it, per linked account and in total, in the **Statistics** window (launched from the menu bar or the dock). The panel never measures the game itself; it only shows what the server reported.
+The game server measures what it can see in game — play time, blocks placed and broken, mobs killed, deaths, distance traveled, items crafted and picked up, fish caught, damage dealt and taken, logins, items enchanted, tools broken, animals bred, times slept and advancements — and reports the growth to the panel. The panel stores it per in-game UUID. **Global Statistics** shows combined totals for the current user’s linked accounts; each linked Minecraft account also has its own independent app, named after its nickname and marked with a skin head. Launch either from the menu bar or dock, or open an account from the global account list. “Global” means your linked accounts combined, never server-wide statistics. The panel never measures the game itself; it only shows what the server reported.
+
+All statistics apps share one server snapshot, refreshed every five seconds while the page is visible and when it regains focus or links change. Each window closes, minimizes, and reopens independently, retaining its mounted contents and geometry while the account remains linked in the current session. Menu and dock launchers scroll horizontally when many accounts are linked. Skin heads use the server-reported texture hash through [MCHeads](https://mc-heads.net/). Unknown textures and loading failures use sourced Performance Center artwork. Requests send no referrer.
 
 ```
 authenticated player in game      LinkBridge plugin             panel
 ──────────────────────────        ───────────────               ─────
-time online, blocks placed/broken
-                                  every few minutes, on quit,
+time online, blocks placed/broken,
+mobs killed, deaths, distance,
+crafting, fishing, damage, ...
+                                  every five seconds, on quit,
                                   and on shutdown:
                                   POST /internal/stats/report
                                   Authorization: Bearer <LINK_SERVICE_TOKEN>
-                                  { players: [{ uuid, username,
+                                  { report_id, players: [{ uuid, username,
                                     play_seconds, blocks_placed,
-                                    blocks_broken }, ...] }
+                                    blocks_broken, mobs_killed, ... }, ...] }
                                                     adds the deltas to
                                                     player_stats
 GET /api/stats  → the user's linked accounts, each with its stats
@@ -186,20 +202,35 @@ GET /api/stats  → the user's linked accounts, each with its stats
 
 Details:
 
-- Reports carry **deltas since the last accepted report** — the plugin's counters restart with the server, so the panel just adds. A crash loses at most one flush; a delta is counted twice only if its response is lost after the panel committed (rare on the Compose network).
+- Reports carry **deltas since the last accepted report** with an immutable UUID `report_id`. Statistics, coins, and the receipt commit in one transaction. Identical retries return `200` without adding anything; reusing an ID with different content returns `409`. The plugin saves each outgoing report to `mc/purpur/plugins/LinkBridge/pending-report.json` before sending and replays it after restart. A sudden crash can still lose activity that has not yet been saved into a report.
+- Fractional metrics keep their fractions across flushes: distance is reported in **hundredths of a block** (`distance_cm`) and damage in **hundredths of a heart** (`damage_dealt` / `damage_taken`). The panel stores exactly what is reported; the website converts for display (blocks/kilometres, hearts).
+- Distance counts walking, sprinting, swimming and flying; a single move event over 8 blocks is a teleport, portal or server correction and is skipped rather than counted as travel.
+- Damage is the final damage the game applied (after blocks, armour and effects), so a cancelled or fully absorbed hit adds nothing.
 - Activity only counts after a player has authenticated with AuthMe — standing at the login gate is not playing.
 - `first_seen_at` / `last_seen_at` are when the panel first heard, and last heard, from the game server about a UUID; they are not in-game timestamps.
-- The report endpoint is **not** rate limited, for the same reason as `link_status`: at most one batched request per flush, from the game server's single container address.
+- The report endpoint is **not** rate limited, for the same reason as `link_status`: at most one batched request per flush, from the game server's single container address. New report fields are additive: a plugin that predates them keeps working, because a missing counter is accepted as zero rather than a rejected batch.
 - Statistics survive unlinking: the rows are keyed by UUID with no foreign key, so unlinking hides them and re-linking the same in-game name restores them.
-- `stats-report-seconds` (default `300`) in `mc-config/purpur/plugins/LinkBridge/config.yml` sets the flush interval.
+- `stats-report-seconds` (default `5`) in `mc-config/purpur/plugins/LinkBridge/config.yml` sets the flush interval.
+
+## Coins
+
+Each Minecraft account (offline UUID) has its own persistent balance in the panel database. After AuthMe login, every successful, uncancelled player block break earns **1 coin**, automatically, in every game mode. Placing blocks does not earn coins; placing and breaking the same block again does. There is no spending, transfer, purchase, interest, or retroactive reward for historical statistics in this first version. Existing accounts start at zero when migration `0007` is installed.
+
+- `/bal` and `/balance` show the authenticated player's own balance. No target-player argument is accepted. The command flushes pending earnings before reading the database and reports unavailability if syncing fails, rather than showing a stale number. It shares the `/website` cooldown.
+- Statistics shows coins for each linked Minecraft account and the total across those accounts. Earnings also accumulate before linking, survive unlinking, and appear when the UUID is linked again.
+- The plugin syncs every **5 seconds** by default, on quit, on shutdown, and when checking `/bal`; the open website refreshes every **5 seconds**. These intervals mean the website can trail a block break by about 10 seconds under normal conditions. `stats-report-seconds` remains configurable.
+- `POST /internal/balance` accepts `{uuid}`, requires the service token, and returns the integer balance as plain text with `Cache-Control: no-store`. A UUID with no earnings returns `0`; malformed UUIDs return `400`, bad credentials `401`, and missing server configuration `503`. Caddy blocks the endpoint publicly, like all `/internal/*` paths.
+- Retry receipts are permanent, preventing duplicate payment after timeouts or restart. Do not remove them or the plugin's pending report during normal operation. If the panel is unavailable, activity stays in memory and a prepared report stays on disk; unsaved activity can be lost on a hard crash. Normal shutdown attempts a final flush.
+
+Build the plugin with `./scripts/build-plugin.sh`, rebuild the API with `docker compose --env-file .env.docker up --build -d app`, then restart Purpur with `docker compose --env-file .env.docker restart purpur`. The builder renames older LinkBridge jars to `.jar.disabled` so only one version loads. Upgrade both halves together: the new report format requires `report_id`.
 
 ## The web panel
 
 Three client-rendered pages: `/register`, `/login`, and `/cabinet` — the account page, where the link state, the link code, and the linked accounts live. Deep links work because the server hands back the built `index.html` for any path that is not a real file. A path that *does* name a file keeps its `404`, so a stale page pointing at a chunk that no longer exists fails loudly instead of returning HTML where JavaScript was expected.
 
-The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Statistics, and Settings windows. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
+The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Global Statistics, Settings, and an independent player app for each linked Minecraft nickname, containing Statistics and Skin pages. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
 
-Account contains the existing registration, login and cabinet routes. The cabinet puts link status first, with linking beside account details when its window has enough room. Authentication pairs a sourced-icon welcome sidebar with the form; narrower windows hide the sidebar. The user-selected Asadal wallpaper sits lower behind the desktop and appears once. It is decorative artwork, never an image of the real server. Both themes share it, with CSS dimming in Dark.
+Account contains the existing registration, login and cabinet routes. The cabinet puts link status first, with linking beside account details when its window has enough room. Authentication pairs a sourced-icon welcome sidebar with the form; narrower windows hide the sidebar. The user-selected Asadal wallpaper sits lower behind the desktop and appears once. It is decorative artwork, never an image of the real server. Light uses that Asadal scene; Dark switches to the user-supplied night park. Both have provenance sidecars.
 
 Open **Settings → Appearance** for **Light, Dark, and System**. Fresh browsers, invalid preferences and unavailable storage default to Light. Explicit choices persist locally as `minecraft-theme`; System follows the operating system and changes synchronize across tabs. Storage failure still allows selection for the current page. Open Sans is self-hosted with its license. Confirmed links use the supplied green Vista shield; unlinked accounts use its red Off shield and explicit text. Notices use the supplied Warning shield. Search Globe marks Account and the favicon; Personalization marks Settings. CSS draws the traffic-light window controls. Windows flex with a damped wobbly-glass effect, and the sourced Asadal image becomes a WebGL live wallpaper with ambient water movement, pointer/touch ripples, rising bubbles, sweeping sunbeams, and traveling glints. Its ambient animation stems loop without a visible cut; all motion falls back to still presentation under Reduced Motion, and the wallpaper also falls back when WebGL is unavailable. No new raster artwork was generated. The panel displays only account and link data the server knows. Green Aero arrow, hand, text and disabled cursors retain native fallbacks and unchanged touch/forced-color behavior. Asset sources remain in `frontend/src/assets/icons/SOURCES.md` and `cursors/SOURCES.md`.
 
@@ -241,6 +272,7 @@ The secret lives in exactly one place, `VELOCITY_SECRET` in `.env.docker`. `scri
 | `mc-config/velocity/velocity.toml` | yes | Proxy config (bind, MOTD, offline mode, forwarding, server list) |
 | `mc-config/purpur/config/paper-global.yml` | yes | Backend config; holds the `${CFG_VELOCITY_SECRET}` placeholder |
 | `mc-config/purpur/plugins/AuthMe/config.yml` | yes | Hardened AuthMe settings |
+| `mc-config/purpur/plugins/SkinsRestorer/config.yml` | yes | Backend-owned skins, Ely.by-first lookup with Mojang fallback |
 | `mc-config/purpur/plugins/LinkBridge/config.yml` | yes | `/website` endpoint, token placeholder, cooldown |
 | `plugin/` | yes | LinkBridge plugin source — `./scripts/build-plugin.sh` builds it |
 | `mc/velocity/` | no | Proxy runtime data, jar, `forwarding.secret`, logs |
@@ -249,6 +281,43 @@ The secret lives in exactly one place, `VELOCITY_SECRET` in `.env.docker`. `scri
 `mc-config/purpur/` mirrors the server directory 1:1 (`config/…`, `plugins/…`) — the container sets `COPY_CONFIG_DEST=/data` so the attach point lands there.
 
 Everything the server *is* (world, plugins, configs, secrets, player accounts) lives under `mc/`, so that directory is what you move to relocate the server.
+
+### Skins (official accounts, Legacy Launcher, TLauncher)
+
+Compose installs [SkinsRestorer 15.12.6](https://github.com/SkinsRestorer/SkinsRestorer/releases/tag/15.12.6) on **Purpur only**. This is an intentional independent backend installation (`server.proxyMode.detection: DISABLED`), suited to this single-backend stack: all player skin commands pass through AuthMe's existing command gate. Do not add `/skin`, `/skins`, `/skull`, or namespaced variants to AuthMe's pre-login allowlist. Do not also install a second copy on Velocity without designing equivalent authentication checks there; proxy commands bypass Bukkit's AuthMe gate.
+
+The configuration template is `mc-config/purpur/plugins/SkinsRestorer/config.yml`; ConfigMe supplies omitted defaults. Local skin selections/cache live under `mc/purpur/plugins/SkinsRestorer/` and travel with `mc/`. Backend proxy API mode is off; no shared SQL database is needed for this backend-owned installation. Offline UUIDs, AuthMe passwords, forwarding, and linked accounts stay unchanged.
+
+`api.elyByEnabled: true` makes the pinned release try Ely.by first, then fall back to Mojang. Legacy Launcher players using Ely.by and official Minecraft accounts can therefore resolve skins by name; where the same name exists on both providers, Ely.by has priority. This is a skin lookup, never proof of account ownership or a reason to skip AuthMe. See the pinned [provider implementation](https://github.com/SkinsRestorer/SkinsRestorer/blob/15.12.6/shared/src/main/java/net/skinsrestorer/shared/connections/MojangAPIImpl.java).
+
+After authenticating in game:
+
+- `/skin set <Minecraft-or-Ely.by-name>` selects a skin; `/skin update` refreshes it; `/skin clear` resets the selection.
+- TLauncher has a separate client skin system, which SkinsRestorer cannot auto-detect/import. Run `/skin upload` and follow the upload link, or use [SkinsRestorer's upload page](https://skinsrestorer.net/upload). Upload a standard skin PNG, copy the generated `/skin url "..."` command, and run it in game. The selection persists on the server and is visible to ordinary clients.
+- If TLauncher or Legacy Launcher still shows another skin locally, disable its client skin replacement so it renders the server-provided skin. [Launcher overrides](https://skinsrestorer.net/docs/troubleshooting/launcher-issues) can change what that client sees even when the server is correct. HD skins and animated capes are not standard Java skin features.
+
+Apply configuration changes with `docker compose --env-file .env.docker up -d --no-deps purpur` after a Compose change, or `docker compose --env-file .env.docker restart purpur` after editing only the template (brief Minecraft interruption). Run `/sr status` from an operator player or `sr status` in an attached server console; it reports asynchronously, so a short-lived RCON client can disconnect before the results arrive. The check chooses a random official account for all providers: an Ely.by-only failure can mean that sample has no signed Ely.by skin. Test a known Ely.by account before diagnosing an outage. A complete visual check needs a logged-in player and a second unmodified client; service diagnostics alone do not prove every client renders the skin.
+
+The installed release's official asset SHA-256 is `a85b4a370f988741c9a38f4d0498262edacbf3220314790ac1c127461996359c`. Upgrade the pinned Compose URL and verify the new release digest together.
+
+Each linked nickname opens an independent **player app**, identified by its nickname and Minecraft skin head. It contains all features for that player, currently **Statistics** and **Skin**. Its selected page, mounted contents and geometry survive hiding and reopening during the linked session.
+
+The Skin page shows the latest server-reported texture/model and accepts a 64 × 64 or legacy 64 × 32 PNG up to 256 KiB. Choose Classic or Slim arms, preview the local file, then choose **Save skin**. The current front-facing preview draws the actual `textures.minecraft.net` PNG and outer layer locally. Website heads use the server-reported texture hash through MCHeads, rather than guessing by username. Unknown textures and image failures use the sourced Performance Center artwork. A website upload changes this server's skin selection, not a Microsoft or launcher account.
+
+The panel fully decodes and re-encodes uploads to strip PNG metadata, then sends them to MineSkin as **unlisted** images for signing. Anonymous signing needs no configuration; optionally set `MINESKIN_API_KEY` in `.env.docker`. This is an external service dependency. The durable SQL queue survives restarts, retries network/server errors and rate limits, and fails signing after ten minutes. PNG bytes are discarded after signing succeeds or fails. Each player has a 30-second accepted-upload cooldown; another upload cannot begin while one is pending.
+
+Progress distinguishes queued/signing, prepared and waiting for the game server (`ready`), saved, and failed. LinkBridge 1.4.0 synchronizes every five seconds without overlapping passes, processing up to 25 linked players, oldest checked first. It stores signed selections through the SkinsRestorer API even while a player is offline, and refreshes live players only after AuthMe authentication. **Saved** acknowledges server storage; it does not prove every client rendered the skin. Acknowledgements must match both the upload request and signed texture. Observed skin snapshots survive unlinking; pending uploads are deleted with the link.
+
+| Method | Path | Auth | Result |
+| --- | --- | --- | --- |
+| `GET` | `/api/players/{uuid}/skin` | owning session | `200` latest texture/model and upload state, `Cache-Control: no-store`; `404` if not owned |
+| `POST` | `/api/players/{uuid}/skin` | owning session | Multipart `file` + `model` (`classic`/`slim`), with `X-Player-Skin: upload`; `202` queued, `400` invalid input/header, `413` oversized body, `404` not owned, `409` already processing, `429` cooldown |
+| `POST` | `/internal/skins/sync` | service token | `200` JSON work batch; blocked by the public proxy |
+| `POST` | `/internal/skins/report` | service token | `204` observed texture/saved acknowledgement; `400` malformed texture/UUID, `409` stale acknowledgement; blocked by the public proxy |
+
+### Minecraft dependency downloads
+
+Compose uses Paper's European Maven Central mirror, disables HTTP/2 in the image downloader, and retains server libraries across restarts (`PAPER_DEFAULT_CENTRAL_REPOSITORY`, `FETCH_USE_HTTP2`, `CLEAN_SERVER_LIBRARIES`). AuthMe shares the library directory, so cleaning it causes repeat downloads. These settings still require working access to artifact providers. If a download is interrupted, verify the complete server jar against the provider's checksum before replacing it and restarting; an existing filename alone does not establish a valid jar. See `STATE.md` for the current workstation recovery item.
 
 ### Authentication
 
@@ -274,19 +343,19 @@ The panel and the game server never share a password. To connect them:
 1. On the website, log in and ask for a code (`POST /api/link/start`). It is eight characters and lives for five minutes.
 2. On the website, **Copy command** copies `/website link <code>` with the issued code already filled in. Paste it in game after logging in with your Minecraft password. Clipboard failure leaves a selectable command and manual-copy instructions.
 
-The **LinkBridge** plugin (source in `plugin/`) implements step 2. It is deliberately tiny and holds no state:
+The **LinkBridge** plugin (source in `plugin/`) implements step 2. It handles linking, durable activity reports and skin synchronization:
 
-- It declares `depend: [AuthMe]` and refuses the command unless `AuthMeApi.getInstance().isAuthenticated(player)` is true, so the in-game password is always proved first. AuthMe already blocks every command outside `allowCommands` before login and `/website` is deliberately absent from that list; the plugin's own check is the second lock, so neither one alone is load-bearing.
+- It declares `depend: [AuthMe, SkinsRestorer]` and refuses the command unless `AuthMeApi.getInstance().isAuthenticated(player)` is true, so the in-game password is always proved first. AuthMe already blocks every command outside `allowCommands` before login and `/website` is deliberately absent from that list; the plugin's own check is the second lock, so neither one alone is load-bearing.
 - It POSTs `{code, uuid, username}` to `http://app:8080/internal/link/claim` with `Authorization: Bearer <LINK_SERVICE_TOKEN>`. That endpoint is answered 404 at the proxy, so it is reachable only from inside the Compose network.
 - After a player logs in or registers, it asks `POST /internal/link/status` and — **only** on a `404` — tells them in chat that the account is not linked and where to link it. A `200` stays silent, so a linked player is never nagged; `401`/`503` log an operator warning instead, because a token problem is not the player's business. Any other answer, including an unreachable panel, says nothing: a wrong "you are not linked" is worse than no message.
 - `/website email` privately shows a masked reminder of the linked website email (for example `d***@gmail.com`). It accepts no other player or email argument. AuthMe must authenticate the player before the request and again before delivering the asynchronous response. It shares the per-player command cooldown with linking, but uses a separate internal lookup so it does not consume the link-claim IP budget. The response contains only the masked address, is not cached, and is never logged or broadcast by LinkBridge. This is an email reminder, not password recovery or email verification. The old standalone `/link` command is no longer registered.
-- It also measures in-game activity — time online, blocks placed and broken — for authenticated players and reports the growth to the panel, which powers the statistics page. See [Statistics](#statistics).
-- It never sees, stores or forwards a password, and it does not remember the outcome — the panel's `minecraft_accounts` table is the only record.
+- It also measures in-game activity — play time, blocks placed and broken, mobs killed, deaths, distance, crafting, fishing, damage, logins, enchanting, broken tools, breeding, sleeping and advancements — for authenticated players and reports the growth to the panel, which powers the statistics page. See [Statistics](#statistics).
+- It never sees, stores or forwards a password. The panel's `minecraft_accounts` table is the only record of ownership; activity retry reports and SkinsRestorer selections persist separately under `mc/`.
 
 Build it once. Everything runs in containers, so no JDK is needed on the host:
 
 ```sh
-./scripts/build-plugin.sh          # -> mc/purpur/plugins/LinkBridge-1.1.0.jar
+./scripts/build-plugin.sh          # -> mc/purpur/plugins/LinkBridge-1.4.0.jar
 ```
 
 The jar is installed into `mc/purpur/plugins/`, so it travels with the server data; only the source is committed. Re-run it after changing anything under `plugin/`.

@@ -20,6 +20,7 @@ lib="$root/.plugin-build/lib"
 # (itzg/minecraft-server runs Java 25, and paper-api 26.3 is built for it).
 AUTHME="6.0.1"
 GRADLE_IMAGE="gradle:jdk25"
+SKINSRESTORER="15.12.6"
 
 version="$(sed -n "s/^version:[[:space:]]*'\{0,1\}\([^']*\)'\{0,1\}[[:space:]]*$/\1/p" \
   "$resources/plugin.yml" | head -n1)"
@@ -37,6 +38,18 @@ if [ ! -s "$authme_jar" ]; then
   mv "$authme_jar.part" "$authme_jar"
 fi
 
+skin_jar="$lib/SkinsRestorer-$SKINSRESTORER.jar"
+if [ ! -s "$skin_jar" ]; then
+  curl -fsSL --retry 3 -o "$skin_jar.part" \
+    "https://github.com/SkinsRestorer/SkinsRestorer/releases/download/$SKINSRESTORER/SkinsRestorer.jar"
+  mv "$skin_jar.part" "$skin_jar"
+fi
+skin_hash="$(shasum -a 256 "$skin_jar" | cut -d ' ' -f 1)"
+if [ "$skin_hash" != "a85b4a370f988741c9a38f4d0498262edacbf3220314790ac1c127461996359c" ]; then
+  echo "build-plugin: SkinsRestorer checksum mismatch" >&2
+  exit 1
+fi
+
 echo "build-plugin: building LinkBridge $version"
 docker run --rm \
   -v "$root:/w" -w /w/plugin \
@@ -52,5 +65,9 @@ fi
 
 dest="$root/mc/purpur/plugins/LinkBridge-$version.jar"
 mkdir -p "$(dirname "$dest")"
+for previous in "$root"/mc/purpur/plugins/LinkBridge-*.jar; do
+  [ -f "$previous" ] || continue
+  [ "$previous" = "$dest" ] || mv "$previous" "$previous.disabled"
+done
 cp "$built" "$dest"
 echo "build-plugin: installed $dest"

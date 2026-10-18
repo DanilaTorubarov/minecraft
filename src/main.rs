@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
     let pool = connect().await?;
+    tokio::spawn(skin_signing_worker(pool.clone()));
     println!("Server running: http://127.0.0.1:8080");
     axum::serve(listener, app(pool)).await?;
     Ok(())
@@ -61,10 +62,15 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/link/start", post(start_link))
         .route("/api/link/{uuid}", delete(unlink_account))
         .route("/api/stats", get(stats_for_user))
+        .route("/api/players/{uuid}/skin", get(player_skin).post(upload_player_skin)
+            .layer(axum::extract::DefaultBodyLimit::max(300 * 1024)))
+        .route("/internal/skins/sync", post(sync_player_skins))
+        .route("/internal/skins/report", post(report_player_skin))
         .route("/internal/link/claim", claim)
         .route("/internal/link/status", post(link_status))
         .route("/internal/link/email", post(link_email))
         .route("/internal/stats/report", post(report_stats))
+        .route("/internal/balance", post(balance_for_player))
         // An unmatched API path answers 404 instead of falling through to the SPA
         // shell, so a wrong endpoint never returns an HTML page with a 200.
         .route("/api/{*rest}", any(not_found))
@@ -361,7 +367,7 @@ async fn register_user(
         !login.chars().all(|ch| { ch.is_ascii_alphanumeric() || matches!(ch, '_' | '!' | '@') }) ||
         !email_address::EmailAddress::is_valid(&email) ||
         missing_text ||
-        input.password.chars().count() < 15
+        input.password.chars().count() < 6
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -650,7 +656,7 @@ async fn change_password(
     Json(input): Json<PasswordChange>
 ) -> Result<impl IntoResponse, StatusCode> {
     security_budget(&pool, user_id).await?;
-    if input.new_password.chars().count() < 15 || input.new_password == input.current_password {
+    if input.new_password.chars().count() < 6 || input.new_password == input.current_password {
         return Err(StatusCode::BAD_REQUEST);
     }
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1157,13 +1163,8 @@ async fn rate_limit_claim_ip(
 // never measures the game itself: a row means "the game server told us this much
 // activity happened", and the cabinet shows only what was actually reported.
 //
-// Deltas rather than totals: the plugin's counters restart when the server
-// restarts, so no absolute number here can be wrong after a restart. The costs
-// of that choice are both small and documented: a crash loses at most one flush
-// (a few minutes of activity), and a delta is double-counted only if its
-// response is lost after this endpoint committed — rare on the Compose network,
-// and then an over-count of at most one flush.
-
+// Immutable report IDs make retries safe: statistics and coin awards commit
+// together with a receipt, including when the response is lost.
 // A single report covers the players active since the last flush, so one server
 // fit into a request; anything larger is a bug in the plugin, not a player base.
 const STATS_REPORT_MAX_PLAYERS: usize = 1000;
@@ -1171,18 +1172,37 @@ const STATS_REPORT_MAX_PLAYERS: usize = 1000;
 // are broken counters, and one broken field must not poison a whole flush.
 const STATS_REPORT_MAX_COUNTER: i64 = 4_294_967_295;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct StatsReport {
+    report_id: String,
     players: Vec<StatsPlayer>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct StatsPlayer {
     uuid: String,
     username: String,
     play_seconds: i64,
     blocks_placed: i64,
     blocks_broken: i64,
+    // Added with the wider activity set (migration 0008). `serde(default)` keeps
+    // a plugin built before them working: a missing counter means "nothing was
+    // measured", not a rejected batch. A plugin still sitting on an old jar must
+    // never stop the panel from banking play time and coins.
+    #[serde(default)] mobs_killed: i64,
+    #[serde(default)] deaths: i64,
+    #[serde(default)] distance_cm: i64,
+    #[serde(default)] items_crafted: i64,
+    #[serde(default)] fish_caught: i64,
+    #[serde(default)] damage_dealt: i64,
+    #[serde(default)] damage_taken: i64,
+    #[serde(default)] logins: i64,
+    #[serde(default)] items_picked_up: i64,
+    #[serde(default)] items_enchanted: i64,
+    #[serde(default)] tools_broken: i64,
+    #[serde(default)] animals_bred: i64,
+    #[serde(default)] times_slept: i64,
+    #[serde(default)] advancements: i64,
 }
 
 fn valid_counter(value: i64) -> bool {
@@ -1190,13 +1210,28 @@ fn valid_counter(value: i64) -> bool {
 }
 
 fn valid_stats_report(report: &StatsReport) -> bool {
-    (1..=STATS_REPORT_MAX_PLAYERS).contains(&report.players.len())
+    is_uuid(&report.report_id)
+        && (1..=STATS_REPORT_MAX_PLAYERS).contains(&report.players.len())
         && report.players.iter().all(|player| {
             is_uuid(&player.uuid)
                 && is_minecraft_username(&player.username)
                 && valid_counter(player.play_seconds)
                 && valid_counter(player.blocks_placed)
                 && valid_counter(player.blocks_broken)
+                && valid_counter(player.mobs_killed)
+                && valid_counter(player.deaths)
+                && valid_counter(player.distance_cm)
+                && valid_counter(player.items_crafted)
+                && valid_counter(player.fish_caught)
+                && valid_counter(player.damage_dealt)
+                && valid_counter(player.damage_taken)
+                && valid_counter(player.logins)
+                && valid_counter(player.items_picked_up)
+                && valid_counter(player.items_enchanted)
+                && valid_counter(player.tools_broken)
+                && valid_counter(player.animals_bred)
+                && valid_counter(player.times_slept)
+                && valid_counter(player.advancements)
         })
 }
 
@@ -1212,6 +1247,7 @@ async fn report_stats(
     Json(mut report): Json<StatsReport>
 ) -> Result<StatusCode, StatusCode> {
     require_service_token(&headers)?;
+    report.report_id = report.report_id.trim().to_lowercase();
     for player in report.players.iter_mut() {
         player.uuid = player.uuid.trim().to_lowercase();
         player.username = player.username.trim().to_owned();
@@ -1220,16 +1256,46 @@ async fn report_stats(
         return Err(StatusCode::BAD_REQUEST);
     }
     let mut transaction = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let payload_hash = hash_token(&serde_json::to_string(&report).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+    let inserted = sqlx::query("INSERT INTO stats_reports (report_id, payload_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(&report.report_id).bind(&payload_hash)
+        .execute(&mut *transaction).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if inserted.rows_affected() == 0 {
+        let existing: String = sqlx::query_scalar("SELECT payload_hash FROM stats_reports WHERE report_id = $1")
+            .bind(&report.report_id).fetch_one(&mut *transaction).await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return if existing == payload_hash { Ok(StatusCode::OK) } else { Err(StatusCode::CONFLICT) };
+    }
     for player in &report.players {
         sqlx
             ::query(
-                "INSERT INTO player_stats (uuid, username, play_seconds, blocks_placed, blocks_broken)
-                 VALUES ($1, $2, $3, $4, $5)
+                "INSERT INTO player_stats (
+                   uuid, username, play_seconds, blocks_placed, blocks_broken,
+                   mobs_killed, deaths, distance_cm, items_crafted, fish_caught,
+                   damage_dealt, damage_taken, logins, items_picked_up, items_enchanted,
+                   tools_broken, animals_bred, times_slept, advancements, coins)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                         $16, $17, $18, $19, $5)
                  ON CONFLICT (uuid) DO UPDATE SET
                    username = EXCLUDED.username,
                    play_seconds = player_stats.play_seconds + EXCLUDED.play_seconds,
                    blocks_placed = player_stats.blocks_placed + EXCLUDED.blocks_placed,
                    blocks_broken = player_stats.blocks_broken + EXCLUDED.blocks_broken,
+                   mobs_killed = player_stats.mobs_killed + EXCLUDED.mobs_killed,
+                   deaths = player_stats.deaths + EXCLUDED.deaths,
+                   distance_cm = player_stats.distance_cm + EXCLUDED.distance_cm,
+                   items_crafted = player_stats.items_crafted + EXCLUDED.items_crafted,
+                   fish_caught = player_stats.fish_caught + EXCLUDED.fish_caught,
+                   damage_dealt = player_stats.damage_dealt + EXCLUDED.damage_dealt,
+                   damage_taken = player_stats.damage_taken + EXCLUDED.damage_taken,
+                   logins = player_stats.logins + EXCLUDED.logins,
+                   items_picked_up = player_stats.items_picked_up + EXCLUDED.items_picked_up,
+                   items_enchanted = player_stats.items_enchanted + EXCLUDED.items_enchanted,
+                   tools_broken = player_stats.tools_broken + EXCLUDED.tools_broken,
+                   animals_bred = player_stats.animals_bred + EXCLUDED.animals_bred,
+                   times_slept = player_stats.times_slept + EXCLUDED.times_slept,
+                   advancements = player_stats.advancements + EXCLUDED.advancements,
+                   coins = player_stats.coins + EXCLUDED.coins,
                    last_seen_at = now()"
             )
             .bind(&player.uuid)
@@ -1237,6 +1303,20 @@ async fn report_stats(
             .bind(player.play_seconds)
             .bind(player.blocks_placed)
             .bind(player.blocks_broken)
+            .bind(player.mobs_killed)
+            .bind(player.deaths)
+            .bind(player.distance_cm)
+            .bind(player.items_crafted)
+            .bind(player.fish_caught)
+            .bind(player.damage_dealt)
+            .bind(player.damage_taken)
+            .bind(player.logins)
+            .bind(player.items_picked_up)
+            .bind(player.items_enchanted)
+            .bind(player.tools_broken)
+            .bind(player.animals_bred)
+            .bind(player.times_slept)
+            .bind(player.advancements)
             .execute(&mut *transaction).await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
@@ -1244,36 +1324,139 @@ async fn report_stats(
     Ok(StatusCode::OK)
 }
 
+// Same source of truth as the website; even unlinked Minecraft accounts earn.
+async fn balance_for_player(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(input): Json<LinkStatusRequest>
+) -> Result<impl IntoResponse, StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = input.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) { return Err(StatusCode::BAD_REQUEST); }
+    let coins: Option<i64> = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1")
+        .bind(uuid).fetch_optional(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], coins.unwrap_or(0).to_string()))
+}
+
 #[derive(serde::Serialize)]
 struct AccountStats {
     play_seconds: i64,
     blocks_placed: i64,
     blocks_broken: i64,
+    mobs_killed: i64,
+    deaths: i64,
+    /// Hundredths of a block (1 block = 100), so `/api/stats` never rounds twice.
+    distance_cm: i64,
+    items_crafted: i64,
+    fish_caught: i64,
+    /// Hundredths of a heart (100 = 1 heart), the game's own damage points scaled.
+    damage_dealt: i64,
+    damage_taken: i64,
+    logins: i64,
+    items_picked_up: i64,
+    items_enchanted: i64,
+    tools_broken: i64,
+    animals_bred: i64,
+    times_slept: i64,
+    advancements: i64,
     first_seen_at: String,
     last_seen_at: String,
 }
 
 #[derive(serde::Serialize)]
 struct StatsAccount {
+    coins: i64,
     uuid: String,
     username: String,
     linked_at: String,
     stats: Option<AccountStats>,
+    skin_hash: Option<String>,
 }
 
 #[derive(serde::Serialize)]
 struct StatsSummary {
+    coins: i64,
     accounts: i64,
     accounts_with_stats: i64,
     play_seconds: i64,
     blocks_placed: i64,
     blocks_broken: i64,
+    mobs_killed: i64,
+    deaths: i64,
+    distance_cm: i64,
+    items_crafted: i64,
+    fish_caught: i64,
+    damage_dealt: i64,
+    damage_taken: i64,
+    logins: i64,
+    items_picked_up: i64,
+    items_enchanted: i64,
+    tools_broken: i64,
+    animals_bred: i64,
+    times_slept: i64,
+    advancements: i64,
+}
+
+impl StatsSummary {
+    fn empty() -> Self {
+        Self {
+            coins: 0,
+            accounts: 0,
+            accounts_with_stats: 0,
+            play_seconds: 0,
+            blocks_placed: 0,
+            blocks_broken: 0,
+            mobs_killed: 0,
+            deaths: 0,
+            distance_cm: 0,
+            items_crafted: 0,
+            fish_caught: 0,
+            damage_dealt: 0,
+            damage_taken: 0,
+            logins: 0,
+            items_picked_up: 0,
+            items_enchanted: 0,
+            tools_broken: 0,
+            animals_bred: 0,
+            times_slept: 0,
+            advancements: 0,
+        }
+    }
+
+    /// One account's counters, added to the user's combined total. Only accounts
+    /// that actually have a `player_stats` row contribute.
+    fn add(&mut self, stats: &AccountStats) {
+        self.accounts_with_stats += 1;
+        self.play_seconds += stats.play_seconds;
+        self.blocks_placed += stats.blocks_placed;
+        self.blocks_broken += stats.blocks_broken;
+        self.mobs_killed += stats.mobs_killed;
+        self.deaths += stats.deaths;
+        self.distance_cm += stats.distance_cm;
+        self.items_crafted += stats.items_crafted;
+        self.fish_caught += stats.fish_caught;
+        self.damage_dealt += stats.damage_dealt;
+        self.damage_taken += stats.damage_taken;
+        self.logins += stats.logins;
+        self.items_picked_up += stats.items_picked_up;
+        self.items_enchanted += stats.items_enchanted;
+        self.tools_broken += stats.tools_broken;
+        self.animals_bred += stats.animals_bred;
+        self.times_slept += stats.times_slept;
+        self.advancements += stats.advancements;
+    }
 }
 
 #[derive(serde::Serialize)]
 struct StatsView {
     accounts: Vec<StatsAccount>,
     summary: StatsSummary,
+}
+
+/// Reads one non-null counter. Every column is `NOT NULL DEFAULT 0` from
+/// migration 0005/0007/0008 on, so a missing value is a real server error.
+fn stat_counter(row: &sqlx::postgres::PgRow, name: &str) -> Result<i64, StatusCode> {
+    row.try_get(name).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 // The session cookie decides what is visible: only the statistics of accounts
@@ -1285,12 +1468,18 @@ async fn stats_for_user(
 ) -> Result<Json<StatsView>, StatusCode> {
     let rows = sqlx
         ::query(
-            "SELECT ma.uuid, ma.username, ma.linked_at::text AS linked_at,
+            "SELECT ma.uuid, ma.username, ma.linked_at::text AS linked_at, sk.texture_hash AS skin_hash,
+                    COALESCE(ps.coins, 0) AS coins,
                     ps.play_seconds, ps.blocks_placed, ps.blocks_broken,
+                    ps.mobs_killed, ps.deaths, ps.distance_cm, ps.items_crafted, ps.fish_caught,
+                    ps.damage_dealt, ps.damage_taken, ps.logins, ps.items_picked_up,
+                    ps.items_enchanted, ps.tools_broken, ps.animals_bred, ps.times_slept,
+                    ps.advancements,
                     ps.first_seen_at::text AS first_seen_at,
                     ps.last_seen_at::text AS last_seen_at
              FROM minecraft_accounts ma
              LEFT JOIN player_stats ps ON ps.uuid = ma.uuid
+             LEFT JOIN player_skins sk ON sk.uuid = ma.uuid
              WHERE ma.user_id = $1
              ORDER BY ma.linked_at"
         )
@@ -1298,52 +1487,321 @@ async fn stats_for_user(
         .fetch_all(&pool).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut accounts = Vec::with_capacity(rows.len());
-    let mut summary = StatsSummary {
-        accounts: 0,
-        accounts_with_stats: 0,
-        play_seconds: 0,
-        blocks_placed: 0,
-        blocks_broken: 0,
-    };
+    let mut summary = StatsSummary::empty();
     for row in &rows {
         let uuid: String = row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let username: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let linked_at: String = row.try_get("linked_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        // The presence of the joined row is what "the server reported something"
+        // means; `play_seconds` is only the cheapest way to ask.
         let stats = match row.try_get::<Option<i64>, &str>("play_seconds") {
             Ok(Some(play_seconds)) => {
-                let blocks_placed: i64 = row
-                    .try_get("blocks_placed")
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let blocks_broken: i64 = row
-                    .try_get("blocks_broken")
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let first_seen_at: String = row
-                    .try_get("first_seen_at")
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let last_seen_at: String = row
-                    .try_get("last_seen_at")
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                summary.accounts_with_stats += 1;
-                summary.play_seconds += play_seconds;
-                summary.blocks_placed += blocks_placed;
-                summary.blocks_broken += blocks_broken;
-                Some(AccountStats {
+                let found = AccountStats {
                     play_seconds,
-                    blocks_placed,
-                    blocks_broken,
-                    first_seen_at,
-                    last_seen_at,
-                })
+                    blocks_placed: stat_counter(row, "blocks_placed")?,
+                    blocks_broken: stat_counter(row, "blocks_broken")?,
+                    mobs_killed: stat_counter(row, "mobs_killed")?,
+                    deaths: stat_counter(row, "deaths")?,
+                    distance_cm: stat_counter(row, "distance_cm")?,
+                    items_crafted: stat_counter(row, "items_crafted")?,
+                    fish_caught: stat_counter(row, "fish_caught")?,
+                    damage_dealt: stat_counter(row, "damage_dealt")?,
+                    damage_taken: stat_counter(row, "damage_taken")?,
+                    logins: stat_counter(row, "logins")?,
+                    items_picked_up: stat_counter(row, "items_picked_up")?,
+                    items_enchanted: stat_counter(row, "items_enchanted")?,
+                    tools_broken: stat_counter(row, "tools_broken")?,
+                    animals_bred: stat_counter(row, "animals_bred")?,
+                    times_slept: stat_counter(row, "times_slept")?,
+                    advancements: stat_counter(row, "advancements")?,
+                    first_seen_at: row.try_get("first_seen_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                    last_seen_at: row.try_get("last_seen_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                };
+                summary.add(&found);
+                Some(found)
             }
             // Linked, but the server has not reported anything about this UUID yet.
             Ok(None) => None,
             Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
         };
+        let coins: i64 = row.try_get("coins").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        summary.coins += coins;
         summary.accounts += 1;
-        accounts.push(StatsAccount { uuid, username, linked_at, stats });
+        accounts.push(StatsAccount { coins, uuid, username, linked_at, stats, skin_hash: row.try_get("skin_hash").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? });
     }
     Ok(Json(StatsView { accounts, summary }))
 }
+
+// --- Player skins ----------------------------------------------------------
+
+const MAX_SKIN_BYTES: usize = 256 * 1024;
+
+async fn owns_player(pool: &sqlx::PgPool, user_id: i64, uuid: &str) -> Result<(), StatusCode> {
+    if !is_uuid(uuid) { return Err(StatusCode::BAD_REQUEST); }
+    let found: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM minecraft_accounts WHERE user_id=$1 AND uuid=$2)")
+        .bind(user_id).bind(uuid).fetch_one(pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if found { Ok(()) } else { Err(StatusCode::NOT_FOUND) }
+}
+
+#[derive(serde::Serialize)]
+struct SkinView {
+    texture_hash: Option<String>,
+    model: String,
+    observed_at: Option<String>,
+    upload: Option<SkinUploadView>,
+}
+#[derive(serde::Serialize)]
+struct SkinUploadView { status: String, error: Option<String> }
+
+async fn player_skin(
+    State(pool): State<sqlx::PgPool>, SessionUser { user_id }: SessionUser, Path(uuid): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let uuid = uuid.to_lowercase();
+    owns_player(&pool, user_id, &uuid).await?;
+    let row = sqlx::query("SELECT s.texture_hash, COALESCE(s.model,'classic') AS model, s.observed_at::text AS observed_at, u.status, u.error
+        FROM minecraft_accounts ma LEFT JOIN player_skins s ON s.uuid=ma.uuid LEFT JOIN skin_uploads u ON u.uuid=ma.uuid
+        WHERE ma.user_id=$1 AND ma.uuid=$2")
+        .bind(user_id).bind(&uuid).fetch_optional(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let status: Option<String> = row.get("status");
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(SkinView {
+        texture_hash: row.get("texture_hash"), model: row.get("model"), observed_at: row.get("observed_at"),
+        upload: status.map(|status| SkinUploadView { status, error: row.get("error") }),
+    })))
+}
+
+/// Decode the complete PNG under a strict pixel budget; strip metadata before
+/// sending it to the signing service. A forged header alone is never sufficient.
+fn clean_skin_png(bytes: &[u8]) -> Result<Vec<u8>, StatusCode> {
+    if bytes.is_empty() || bytes.len() > MAX_SKIN_BYTES { return Err(StatusCode::BAD_REQUEST); }
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_limits(png::Limits { bytes: 128 * 1024 });
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|_| StatusCode::BAD_REQUEST)?;
+    if reader.info().width != 64 || ![32,64].contains(&reader.info().height) || reader.info().animation_control.is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut buffer = vec![0; reader.output_buffer_size().ok_or(StatusCode::BAD_REQUEST)?];
+    let frame = reader.next_frame(&mut buffer).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let mut output = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut output, frame.width, frame.height);
+        encoder.set_color(frame.color_type);
+        encoder.set_depth(frame.bit_depth);
+        let mut writer = encoder.write_header().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        writer.write_image_data(&buffer[..frame.buffer_size()]).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    Ok(output)
+}
+
+async fn upload_player_skin(
+    State(pool): State<sqlx::PgPool>, SessionUser { user_id }: SessionUser, Path(uuid): Path<String>,
+    headers: HeaderMap, mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse, StatusCode> {
+    // A same-origin browser request must carry this non-simple header. Cross-site
+    // forms cannot set it, and the API deliberately provides no CORS permission.
+    if headers.get("x-player-skin").and_then(|v| v.to_str().ok()) != Some("upload") { return Err(StatusCode::BAD_REQUEST); }
+    let uuid = uuid.to_lowercase();
+    owns_player(&pool, user_id, &uuid).await?;
+    let mut image = None;
+    let mut model = None;
+    while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
+        match field.name() {
+            Some("file") if image.is_none() => {
+                let bytes = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                image = Some(clean_skin_png(&bytes)?);
+            }
+            Some("model") if model.is_none() => { model = Some(field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?); }
+            _ => return Err(StatusCode::BAD_REQUEST),
+        }
+    }
+    let image = image.ok_or(StatusCode::BAD_REQUEST)?;
+    let model = model.filter(|v| matches!(v.as_str(), "classic" | "slim")).ok_or(StatusCode::BAD_REQUEST)?;
+    let mut random = [0u8; 24];
+    getrandom::fill(&mut random).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Serialize uploads/unlinking on the ownership row, then recheck ownership.
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let owner = sqlx::query("SELECT uuid FROM minecraft_accounts WHERE user_id=$1 AND uuid=$2 FOR UPDATE")
+        .bind(user_id).bind(&uuid).fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if owner.is_none() { return Err(StatusCode::NOT_FOUND); }
+    let previous = sqlx::query("SELECT status, created_at > NOW()-INTERVAL '30 seconds' AS recent FROM skin_uploads WHERE uuid=$1")
+        .bind(&uuid).fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(row) = previous {
+        let status: String = row.get("status");
+        if matches!(status.as_str(), "queued" | "signing" | "ready") { return Err(StatusCode::CONFLICT); }
+        if row.get::<bool, _>("recent") { return Err(StatusCode::TOO_MANY_REQUESTS); }
+    }
+    sqlx::query("INSERT INTO skin_uploads(uuid,request_id,png,model,status) VALUES($1,$2,$3,$4,'queued')
+        ON CONFLICT(uuid) DO UPDATE SET request_id=EXCLUDED.request_id,png=EXCLUDED.png,model=EXCLUDED.model,
+        job_id=NULL,status='queued',value=NULL,signature=NULL,error=NULL,created_at=NOW(),updated_at=NOW()")
+        .bind(uuid).bind(hex::encode(random)).bind(image).bind(model).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((StatusCode::ACCEPTED, [(header::CACHE_CONTROL, "no-store")]))
+}
+
+fn valid_texture_hash(hash: &str) -> bool {
+    (32..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+fn texture_from_property(value: &str) -> Option<(String, String)> {
+    use base64::Engine;
+    if value.len() > 16384 { return None; }
+    let decoded = base64::engine::general_purpose::STANDARD.decode(value).ok()?;
+    let profile: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let skin = &profile["textures"]["SKIN"];
+    let url = skin["url"].as_str()?;
+    let hash = url.strip_prefix("https://textures.minecraft.net/texture/")
+        .or_else(|| url.strip_prefix("http://textures.minecraft.net/texture/"))?;
+    if !valid_texture_hash(hash) { return None; }
+    let model = if skin["metadata"]["model"].as_str() == Some("slim") { "slim" } else { "classic" };
+    Some((hash.to_owned(), model.to_owned()))
+}
+
+async fn skin_signing_worker(pool: sqlx::PgPool) {
+    let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none()).user_agent("MinecraftPanel/1.0 (player skin upload)").build() else { return; };
+    loop {
+        if let Err(error) = process_skin_upload(&pool, &client).await { eprintln!("Skin upload worker: {error}"); }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
+async fn process_skin_upload(pool: &sqlx::PgPool, client: &reqwest::Client) -> Result<(), sqlx::Error> {
+    // Requests survive an app restart. Only one worker owns the signing queue
+    // across app replicas; a lost HTTP response can safely re-submit the PNG.
+    let mut connection = pool.acquire().await?;
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(783491)").fetch_one(&mut *connection).await?;
+    if !locked { return Ok(()); }
+    let result = process_skin_upload_locked(pool, client).await;
+    sqlx::query("SELECT pg_advisory_unlock(783491)").execute(&mut *connection).await?;
+    result
+}
+
+/// A service error page must not turn into an unbounded in-memory JSON body.
+async fn skin_provider_json(mut response: reqwest::Response) -> Option<serde_json::Value> {
+    let mut bytes = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if bytes.len() + chunk.len() <= 128 * 1024 => bytes.extend_from_slice(&chunk),
+            Ok(None) => break,
+            _ => return None,
+        }
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
+async fn process_skin_upload_locked(pool: &sqlx::PgPool, client: &reqwest::Client) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE skin_uploads SET status='failed',png=NULL,error='Skin signing timed out. Please upload again.',updated_at=NOW()
+        WHERE status IN ('queued','signing') AND created_at < NOW()-INTERVAL '10 minutes'").execute(pool).await?;
+    let Some(row) = sqlx::query("SELECT * FROM skin_uploads WHERE status IN ('queued','signing') AND updated_at <= NOW() ORDER BY updated_at LIMIT 1").fetch_optional(pool).await? else { return Ok(()); };
+    let request_id: String = row.get("request_id");
+    sqlx::query("UPDATE skin_uploads SET updated_at=NOW()+INTERVAL '15 seconds' WHERE request_id=$1")
+        .bind(&request_id).execute(pool).await?;
+    let job_id: Option<String> = row.get("job_id");
+    let key = std::env::var("MINESKIN_API_KEY").unwrap_or_default();
+    let request = if let Some(job_id) = job_id {
+        if job_id.is_empty() || !job_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') { return Ok(()); }
+        client.get(format!("https://api.mineskin.org/v2/queue/{job_id}"))
+    } else {
+        let png: Vec<u8> = row.get("png");
+        let model: String = row.get("model");
+        let part = reqwest::multipart::Part::bytes(png).file_name("skin.png").mime_str("image/png").expect("constant PNG type");
+        client.post("https://api.mineskin.org/v2/queue").multipart(reqwest::multipart::Form::new()
+            .part("file", part).text("variant", model).text("visibility", "unlisted"))
+    };
+    let request = if key.trim().is_empty() { request } else { request.bearer_auth(key.trim()) };
+    let Ok(response) = request.send().await else { return Ok(()); };
+    let status = response.status();
+    if status.as_u16() == 429 {
+        let delay = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i32>().ok()).unwrap_or(60).clamp(15, 600);
+        sqlx::query("UPDATE skin_uploads SET updated_at=NOW()+make_interval(secs => $2::double precision) WHERE request_id=$1")
+            .bind(&request_id).bind(delay as f64).execute(pool).await?;
+        return Ok(());
+    }
+    if status.is_server_error() { return Ok(()); }
+    let Some(data) = skin_provider_json(response).await else { return Ok(()); };
+    if !status.is_success() || data["success"] == false || data["job"]["status"] == "failed" {
+        sqlx::query("UPDATE skin_uploads SET status='failed',png=NULL,error='The skin service could not process this image. Please try again.',updated_at=NOW() WHERE request_id=$1")
+            .bind(&request_id).execute(pool).await?;
+        return Ok(());
+    }
+    // Completed queue responses normally include the signed property. A result
+    // ID without it is fetched from the skin endpoint on the next iteration.
+    let mut data = data;
+    if !data["skin"].is_object() && data["job"]["status"] == "completed" {
+        if let Some(id) = data["job"]["result"].as_str().filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+            let mut request = client.get(format!("https://api.mineskin.org/v2/skins/{id}"));
+            if !key.trim().is_empty() { request = request.bearer_auth(key.trim()); }
+            if let Ok(response) = request.send().await {
+                if response.status().is_success() {
+                    if let Some(result) = skin_provider_json(response).await { data = result; }
+                }
+            }
+        }
+    }
+    let value = data["skin"]["texture"]["data"]["value"].as_str();
+    let signature = data["skin"]["texture"]["data"]["signature"].as_str();
+    if let (Some(value), Some(signature)) = (value, signature) {
+        if texture_from_property(value).is_some() && !signature.is_empty() && signature.len() <= 8192 {
+            sqlx::query("UPDATE skin_uploads SET status='ready',value=$2,signature=$3,png=NULL,error=NULL,updated_at=NOW() WHERE request_id=$1")
+                .bind(&request_id).bind(value).bind(signature).execute(pool).await?;
+            return Ok(());
+        }
+    }
+    if let Some(id) = data["job"]["id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+        sqlx::query("UPDATE skin_uploads SET status='signing',job_id=$2,updated_at=NOW() WHERE request_id=$1")
+            .bind(&request_id).bind(id).execute(pool).await?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SkinSyncTask { uuid: String, username: String, request_id: Option<String>, value: Option<String>, signature: Option<String> }
+
+async fn sync_player_skins(State(pool): State<sqlx::PgPool>, headers: HeaderMap) -> Result<Json<Vec<SkinSyncTask>>, StatusCode> {
+    require_service_token(&headers)?;
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rows = sqlx::query("SELECT ma.uuid,ma.username,u.request_id,u.value,u.signature FROM minecraft_accounts ma
+        LEFT JOIN player_skins s ON s.uuid=ma.uuid LEFT JOIN skin_uploads u ON u.uuid=ma.uuid AND u.status='ready'
+        ORDER BY s.checked_at NULLS FIRST, ma.uuid LIMIT 25 FOR UPDATE OF ma SKIP LOCKED")
+        .fetch_all(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        let uuid: String = row.get("uuid");
+        sqlx::query("INSERT INTO player_skins(uuid,checked_at) VALUES($1,NOW()) ON CONFLICT(uuid) DO UPDATE SET checked_at=NOW()")
+            .bind(&uuid).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        tasks.push(SkinSyncTask { uuid, username: row.get("username"), request_id: row.get("request_id"), value: row.get("value"), signature: row.get("signature") });
+    }
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(tasks))
+}
+
+#[derive(serde::Deserialize)]
+struct SkinReport { uuid: String, value: Option<String>, request_id: Option<String> }
+
+async fn report_player_skin(State(pool): State<sqlx::PgPool>, headers: HeaderMap, Json(report): Json<SkinReport>) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = report.uuid.to_lowercase();
+    if !is_uuid(&uuid) { return Err(StatusCode::BAD_REQUEST); }
+    let texture = match report.value.as_deref() {
+        Some(value) => Some(texture_from_property(value).ok_or(StatusCode::BAD_REQUEST)?),
+        None => None,
+    };
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Do not let an old acknowledgement turn a newer upload into "saved".
+    if let Some(request_id) = report.request_id {
+        let updated = sqlx::query("UPDATE skin_uploads SET status='saved',updated_at=NOW() WHERE uuid=$1 AND request_id=$2 AND status IN ('ready','saved') AND value=$3")
+            .bind(&uuid).bind(request_id).bind(&report.value).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if updated.rows_affected() == 0 { return Err(StatusCode::CONFLICT); }
+    }
+    sqlx::query("INSERT INTO player_skins(uuid,texture_hash,model,observed_at,checked_at) VALUES($1,$2,$3,NOW(),NOW())
+        ON CONFLICT(uuid) DO UPDATE SET texture_hash=EXCLUDED.texture_hash,model=EXCLUDED.model,observed_at=NOW(),checked_at=NOW()")
+        .bind(uuid).bind(texture.as_ref().map(|(hash,_)| hash)).bind(texture.map(|(_,model)| model).unwrap_or_else(|| "classic".to_owned()))
+        .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 
 #[cfg(test)]
 mod test {
@@ -1742,19 +2200,19 @@ mod test {
         let random = random_id();
         let email = format!("test_{random}@example.com").to_lowercase();
         let login = random.to_lowercase();
-        let fifteen = register_request(&pool, "Test",
+        let six = register_request(&pool, "Test",
             &login,
             &email,
-            "15fifteencharac"
+            "6chars"
         ).await?;
-        let fourteen = register_request(&pool, "Test",
+        let five = register_request(&pool, "Test",
             &login,
             &email,
-            "14fourteenchar"
+            "5char"
         ).await?;
         sqlx::query("DELETE FROM users WHERE email= $1").bind(&email).execute(&pool).await?;
-        assert_eq!(fifteen, StatusCode::CREATED);
-        assert_eq!(fourteen, StatusCode::BAD_REQUEST);
+        assert_eq!(six, StatusCode::CREATED);
+        assert_eq!(five, StatusCode::BAD_REQUEST);
         Ok(())
     }
 
@@ -3070,6 +3528,33 @@ mod test {
 
     // --- Player statistics -----------------------------------------------------
 
+    /// One player in a report. The three counters migration 0005 knows about are
+    /// always present; `extra` carries any of the wider 0008 activity fields a
+    /// test wants to set, so one test can spotlight a single number without
+    /// listing the other thirteen.
+    fn stats_player_with(
+        uuid: &str,
+        username: &str,
+        play_seconds: i64,
+        blocks_placed: i64,
+        blocks_broken: i64,
+        extra: serde_json::Value
+    ) -> serde_json::Value {
+        let mut player = serde_json::json!({
+            "uuid": uuid,
+            "username": username,
+            "play_seconds": play_seconds,
+            "blocks_placed": blocks_placed,
+            "blocks_broken": blocks_broken,
+        });
+        if let Some(fields) = extra.as_object() {
+            for (key, value) in fields {
+                player[key.as_str()] = value.clone();
+            }
+        }
+        player
+    }
+
     fn stats_player(
         uuid: &str,
         username: &str,
@@ -3077,13 +3562,14 @@ mod test {
         blocks_placed: i64,
         blocks_broken: i64
     ) -> serde_json::Value {
-        serde_json::json!({
-            "uuid": uuid,
-            "username": username,
-            "play_seconds": play_seconds,
-            "blocks_placed": blocks_placed,
-            "blocks_broken": blocks_broken,
-        })
+        stats_player_with(
+            uuid,
+            username,
+            play_seconds,
+            blocks_placed,
+            blocks_broken,
+            serde_json::json!({})
+        )
     }
 
     async fn report_stats(
@@ -3091,13 +3577,16 @@ mod test {
         token: Option<&str>,
         players: Vec<serde_json::Value>
     ) -> Result<StatusCode, Box<dyn std::error::Error>> {
-        Ok(post_internal(
+        let report_id = test_uuid(&random_ip());
+        let result = post_internal(
             pool,
             "/internal/stats/report",
             token,
-            serde_json::json!({ "players": players }),
+            serde_json::json!({ "report_id": report_id, "players": players }),
             &random_ip()
-        ).await?.status())
+        ).await?.status();
+        sqlx::query("DELETE FROM stats_reports WHERE report_id = $1").bind(report_id).execute(pool).await?;
+        Ok(result)
     }
 
     async fn stats_view(
@@ -3120,6 +3609,50 @@ mod test {
         sqlx::query("DELETE FROM player_stats WHERE uuid = $1")
             .bind(uuid)
             .execute(pool).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn coins_reports_are_idempotent_and_balances_are_private() -> TestResult {
+        let pool = connect().await?;
+        let uuid = test_uuid(&random_ip());
+        let report_id = test_uuid(&random_ip());
+        let token = test_service_token();
+        let body = serde_json::json!({ "report_id": report_id,
+            "players": [stats_player(&uuid, "Miner", 10, 0, 7)] });
+        let ip = random_ip();
+        let (first, retry) = tokio::join!(
+            post_internal(&pool, "/internal/stats/report", Some(&token), body.clone(), &ip),
+            post_internal(&pool, "/internal/stats/report", Some(&token), body.clone(), &ip)
+        );
+        let mut changed = body.clone();
+        changed["players"][0]["blocks_broken"] = serde_json::json!(99);
+        let conflict = post_internal(&pool, "/internal/stats/report", Some(&token), changed, &ip).await?;
+        let input = serde_json::json!({ "uuid": uuid.to_uppercase() });
+        let missing = post_internal(&pool, "/internal/balance", None, input.clone(), &ip).await?;
+        let wrong = post_internal(&pool, "/internal/balance", Some("wrong"), input.clone(), &ip).await?;
+        let balance = post_internal(&pool, "/internal/balance", Some(&token), input, &ip).await?;
+        let cache = balance.headers().get(header::CACHE_CONTROL).cloned();
+        let balance_status = balance.status();
+        let bytes = axum::body::to_bytes(balance.into_body(), 1024).await?;
+        let invalid = post_internal(&pool, "/internal/balance", Some(&token), serde_json::json!({"uuid":"bad"}), &ip).await?;
+        let unknown = post_internal(&pool, "/internal/balance", Some(&token), serde_json::json!({"uuid":test_uuid(&random_ip())}), &ip).await?;
+        let zero = axum::body::to_bytes(unknown.into_body(), 1024).await?;
+        let stored: (i64, i64) = sqlx::query_as("SELECT coins, blocks_broken FROM player_stats WHERE uuid = $1")
+            .bind(&uuid).fetch_one(&pool).await?;
+        delete_player_stats(&pool, &uuid).await?;
+        sqlx::query("DELETE FROM stats_reports WHERE report_id = $1").bind(&report_id).execute(&pool).await?;
+        assert_eq!(first?.status(), StatusCode::OK);
+        assert_eq!(retry?.status(), StatusCode::OK);
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(balance_status, StatusCode::OK);
+        assert_eq!(cache.unwrap(), "no-store");
+        assert_eq!(&bytes[..], b"7");
+        assert_eq!(&zero[..], b"0");
+        assert_eq!(stored, (7, 7));
         Ok(())
     }
 
@@ -3148,12 +3681,24 @@ mod test {
         let first = report_stats(
             &pool,
             Some(&test_service_token()),
-            vec![stats_player(&uuid, "Notch", 3600, 10, 5)]
+            vec![stats_player_with(&uuid, "Notch", 3600, 10, 5, serde_json::json!({
+                "mobs_killed": 3,
+                "distance_cm": 12_345,
+                "logins": 1,
+                "damage_dealt": 250,
+                "fish_caught": 2,
+                "advancements": 1,
+            }))]
         ).await?;
         let second = report_stats(
             &pool,
             Some(&test_service_token()),
-            vec![stats_player(&uuid, "Notch", 1800, 2, 1)]
+            vec![stats_player_with(&uuid, "Notch", 1800, 2, 1, serde_json::json!({
+                "mobs_killed": 2,
+                "distance_cm": 7_655,
+                "logins": 1,
+                "damage_dealt": 150,
+            }))]
         ).await?;
         let body = stats_view(&pool, &cookie).await?;
         delete_user(&pool, &email).await?;
@@ -3167,6 +3712,16 @@ mod test {
         assert_eq!(accounts[0]["stats"]["play_seconds"], 5400);
         assert_eq!(accounts[0]["stats"]["blocks_placed"], 12);
         assert_eq!(accounts[0]["stats"]["blocks_broken"], 6);
+        // The wider activity set adds up the same way: delta after delta.
+        assert_eq!(accounts[0]["stats"]["mobs_killed"], 5);
+        assert_eq!(accounts[0]["stats"]["distance_cm"], 20_000);
+        assert_eq!(accounts[0]["stats"]["logins"], 2);
+        assert_eq!(accounts[0]["stats"]["damage_dealt"], 400);
+        assert_eq!(accounts[0]["stats"]["fish_caught"], 2);
+        assert_eq!(accounts[0]["stats"]["advancements"], 1);
+        // A counter nobody reported is a real zero, not an absent field.
+        assert_eq!(accounts[0]["stats"]["deaths"], 0);
+        assert_eq!(accounts[0]["stats"]["damage_taken"], 0);
         assert!(accounts[0]["stats"]["first_seen_at"].as_str().is_some());
         assert!(accounts[0]["stats"]["last_seen_at"].as_str().is_some());
         assert_eq!(body["summary"]["accounts"], 1);
@@ -3174,6 +3729,56 @@ mod test {
         assert_eq!(body["summary"]["play_seconds"], 5400);
         assert_eq!(body["summary"]["blocks_placed"], 12);
         assert_eq!(body["summary"]["blocks_broken"], 6);
+        assert_eq!(body["summary"]["mobs_killed"], 5);
+        assert_eq!(body["summary"]["distance_cm"], 20_000);
+        assert_eq!(body["summary"]["logins"], 2);
+        assert_eq!(body["summary"]["damage_dealt"], 400);
+        assert_eq!(body["summary"]["coins"], 6);
+        assert_eq!(accounts[0]["coins"], 6);
+        Ok(())
+    }
+
+    // The panel is deployed independently of the game server: a plugin jar that
+    // predates migration 0008 sends only the original three counters and must
+    // keep working, because a rejected report is activity the player never sees.
+    #[tokio::test]
+    async fn stats_report_accepts_a_plugin_that_predates_the_wider_set() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let uuid = test_uuid(&email);
+        let code = start_code(&pool, &cookie).await?;
+        claim(&pool, &code, &uuid, "Notch").await?;
+        let report_id = test_uuid(&random_ip());
+        // Exactly the JSON an old jar writes, with no 0008 field at all.
+        let body = serde_json::json!({
+            "report_id": report_id,
+            "players": [{
+                "uuid": uuid,
+                "username": "Notch",
+                "play_seconds": 120,
+                "blocks_placed": 4,
+                "blocks_broken": 4,
+            }],
+        });
+        let accepted = post_internal(
+            &pool,
+            "/internal/stats/report",
+            Some(&test_service_token()),
+            body,
+            &random_ip()
+        ).await?.status();
+        let view = stats_view(&pool, &cookie).await?;
+        let stored: (i64, i64) = sqlx::query_as(
+            "SELECT coins, mobs_killed + distance_cm + logins + advancements FROM player_stats WHERE uuid = $1"
+        ).bind(&uuid).fetch_one(&pool).await?;
+        delete_user(&pool, &email).await?;
+        delete_player_stats(&pool, &uuid).await?;
+        sqlx::query("DELETE FROM stats_reports WHERE report_id = $1").bind(&report_id).execute(&pool).await?;
+        assert_eq!(accepted, StatusCode::OK);
+        assert_eq!(view["accounts"][0]["stats"]["play_seconds"], 120);
+        assert_eq!(view["accounts"][0]["stats"]["mobs_killed"], 0);
+        // Coins still accrue from the block breaks the old jar did report.
+        assert_eq!(stored, (4, 0));
         Ok(())
     }
 
@@ -3231,8 +3836,14 @@ mod test {
             &pool,
             Some(&test_service_token()),
             vec![
-                stats_player(&uuid_a, "PlayerA", 100, 1, 2),
-                stats_player(&uuid_b, "PlayerB", 300, 5, 7),
+                stats_player_with(&uuid_a, "PlayerA", 100, 1, 2, serde_json::json!({
+                    "mobs_killed": 4,
+                    "distance_cm": 1_000,
+                })),
+                stats_player_with(&uuid_b, "PlayerB", 300, 5, 7, serde_json::json!({
+                    "mobs_killed": 6,
+                    "distance_cm": 2_500,
+                })),
             ]
         ).await?;
         let body = stats_view(&pool, &cookie).await?;
@@ -3248,6 +3859,8 @@ mod test {
         assert_eq!(stats["play_seconds"], 400);
         assert_eq!(stats["blocks_placed"], 6);
         assert_eq!(stats["blocks_broken"], 9);
+        assert_eq!(stats["mobs_killed"], 10);
+        assert_eq!(stats["distance_cm"], 3_500);
         Ok(())
     }
 
@@ -3284,6 +3897,8 @@ mod test {
         assert_eq!(body["summary"]["play_seconds"], 0);
         assert_eq!(body_b["summary"]["accounts"], 1);
         assert_eq!(body_b["summary"]["play_seconds"], 5);
+        assert_eq!(body_b["summary"]["coins"], 0);
+        assert_eq!(body["summary"]["coins"], 0);
         assert_eq!(body_b["accounts"][0]["uuid"], uuid_b);
         Ok(())
     }
@@ -3330,6 +3945,106 @@ mod test {
         assert!(after["accounts"].as_array().cloned().unwrap_or_default().is_empty());
         assert_eq!(restored["accounts"].as_array().map(Vec::len), Some(1));
         assert_eq!(restored["accounts"][0]["stats"]["play_seconds"], 600);
+        assert_eq!(before["accounts"][0]["coins"], 3);
+        assert_eq!(after["summary"]["coins"], 0);
+        assert_eq!(restored["accounts"][0]["coins"], 3);
         Ok(())
     }
+    fn skin_test_png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 64, 64);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().unwrap().write_image_data(&vec![255; 64 * 64 * 4]).unwrap();
+        }
+        bytes
+    }
+
+    fn skin_test_value(hash: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(serde_json::json!({"textures":{"SKIN":{"url":format!("https://textures.minecraft.net/texture/{hash}")}}}).to_string())
+    }
+
+    #[test]
+    fn skin_validation_decodes_pixels_and_restricts_texture_sources() {
+        let png = skin_test_png();
+        assert!(clean_skin_png(&png).is_ok());
+        assert!(clean_skin_png(&png[..40]).is_err());
+        assert!(clean_skin_png(b"not a skin").is_err());
+        assert!(clean_skin_png(&vec![0; MAX_SKIN_BYTES + 1]).is_err());
+        let hash = "a".repeat(64);
+        assert_eq!(texture_from_property(&skin_test_value(&hash)), Some((hash, "classic".into())));
+        assert!(texture_from_property(&skin_test_value("../private")).is_none());
+        use base64::Engine;
+        let other = base64::engine::general_purpose::STANDARD.encode(r#"{"textures":{"SKIN":{"url":"https://attacker.example/skin"}}}"#);
+        assert!(texture_from_property(&other).is_none());
+    }
+
+    async fn skin_multipart(pool: &sqlx::PgPool, cookie: &str, uuid: &str, custom_header: bool, png: &[u8]) -> Result<StatusCode, Box<dyn std::error::Error>> {
+        let boundary = "skin-test-boundary";
+        let mut body = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nclassic\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"skin.png\"\r\nContent-Type: image/png\r\n\r\n").into_bytes();
+        body.extend_from_slice(png);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let mut request = Request::builder().method("POST").uri(format!("/api/players/{uuid}/skin"))
+            .header("cookie", cookie).header("content-type", format!("multipart/form-data; boundary={boundary}"));
+        if custom_header { request = request.header("x-player-skin", "upload"); }
+        Ok(app(pool.clone()).oneshot(request.body(Body::from(body))?).await?.status())
+    }
+
+    #[tokio::test]
+    async fn player_skin_is_owned_and_saved_only_after_matching_game_ack() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let (other_email, other_cookie) = fresh_user(&pool).await?;
+        let uuid = test_uuid(&random_ip());
+        let outcome = async {
+            let code = start_code(&pool, &cookie).await?;
+            let linked = claim(&pool, &code, &uuid, "SkinTest").await?;
+            let endpoint = format!("/api/players/{uuid}/skin");
+            let anonymous = send(&pool, "GET", &endpoint, None, None).await?.status();
+            let stranger = send(&pool, "GET", &endpoint, Some(&other_cookie), None).await?.status();
+            let png = skin_test_png();
+            let wrong_owner = skin_multipart(&pool, &other_cookie, &uuid, true, &png).await?;
+            let no_csrf = skin_multipart(&pool, &cookie, &uuid, false, &png).await?;
+            let invalid = skin_multipart(&pool, &cookie, &uuid, true, b"invalid").await?;
+            let accepted = skin_multipart(&pool, &cookie, &uuid, true, &png).await?;
+            let duplicate = skin_multipart(&pool, &cookie, &uuid, true, &png).await?;
+            let request_id: String = sqlx::query_scalar("SELECT request_id FROM skin_uploads WHERE uuid=$1").bind(&uuid).fetch_one(&pool).await?;
+            let hash = "a".repeat(64);
+            let value = skin_test_value(&hash);
+            sqlx::query("UPDATE skin_uploads SET status='ready',value=$2,signature='test-signature',png=NULL WHERE uuid=$1").bind(&uuid).bind(&value).execute(&pool).await?;
+            let token = test_service_token();
+            let unauth_sync = post_internal(&pool,"/internal/skins/sync",None,serde_json::json!({}),&random_ip()).await?.status();
+            let stale_ack = post_internal(&pool,"/internal/skins/report",Some(&token),serde_json::json!({"uuid":uuid,"value":value,"request_id":"stale"}),&random_ip()).await?.status();
+            let ack = post_internal(&pool,"/internal/skins/report",Some(&token),serde_json::json!({"uuid":uuid,"value":value,"request_id":request_id}),&random_ip()).await?.status();
+            let found = body_json(send(&pool,"GET",&endpoint,Some(&cookie),None).await?).await?;
+            let cooldown = skin_multipart(&pool, &cookie, &uuid, true, &png).await?;
+            let unlinked = send(&pool,"DELETE",&format!("/api/link/{uuid}"),Some(&cookie),None).await?.status();
+            let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM skin_uploads WHERE uuid=$1").bind(&uuid).fetch_one(&pool).await?;
+            Ok::<_, Box<dyn std::error::Error>>((linked,anonymous,stranger,wrong_owner,no_csrf,invalid,accepted,duplicate,unauth_sync,stale_ack,ack,found,cooldown,unlinked,remaining))
+        }.await;
+        delete_user(&pool,&email).await?;
+        delete_user(&pool,&other_email).await?;
+        sqlx::query("DELETE FROM player_skins WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
+        let (linked,anonymous,stranger,wrong_owner,no_csrf,invalid,accepted,duplicate,unauth_sync,stale_ack,ack,found,cooldown,unlinked,remaining) = outcome?;
+        assert_eq!(linked, StatusCode::OK);
+        assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+        assert_eq!(stranger, StatusCode::NOT_FOUND);
+        assert_eq!(wrong_owner, StatusCode::NOT_FOUND);
+        assert_eq!(no_csrf, StatusCode::BAD_REQUEST);
+        assert_eq!(invalid, StatusCode::BAD_REQUEST);
+        assert_eq!(accepted, StatusCode::ACCEPTED);
+        assert_eq!(duplicate, StatusCode::CONFLICT);
+        assert_eq!(unauth_sync, StatusCode::UNAUTHORIZED);
+        assert_eq!(stale_ack, StatusCode::CONFLICT);
+        assert_eq!(ack, StatusCode::NO_CONTENT);
+        assert_eq!(found["upload"]["status"], "saved");
+        assert_eq!(found["texture_hash"], "a".repeat(64));
+        assert_eq!(cooldown, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(unlinked, StatusCode::NO_CONTENT);
+        assert_eq!(remaining,0);
+        Ok(())
+    }
+
 }

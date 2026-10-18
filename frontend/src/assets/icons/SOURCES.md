@@ -23,5 +23,28 @@ Original artwork rights remain with their owners; archival hosting is not a lice
 Usage: globe = site identity; firewall on = linked / privacy assurance; firewall
 off = not linked; firewall warning = error/retry notices. Text communicates each
 state explicitly; these icons do not claim to report an actual firewall status.
-The Performance Center artwork marks the Statistics window; like the
+The Performance Center artwork marks Global Statistics and is the fallback for nickname skin heads; like the
 Personalization icon it was selected from the same supplied Vista catalog.
+
+
+## Minecraft nickname skin heads
+
+Linked nickname apps, their menu/dock launchers, and statistics account headings
+use remote avatars from [MCHeads](https://mc-heads.net/), following its documented
+texture-hash and size API: `https://mc-heads.net/avatar/<texture hash>/64`.
+The image is requested directly with `referrerPolicy="no-referrer"`; no generated
+head or local skin asset is introduced. MCHeads encourages attribution but does
+not require it. Skin artwork rights remain with their respective owners.
+
+LinkBridge reports SkinsRestorer's selected texture. The panel does not guess a
+Mojang identity from an offline UUID or nickname. These images do not establish
+identity; client skin mods may render another skin. When no texture is known or
+image loading fails, `PlayerHead.tsx`
+uses the original sourced `vista-perf-center.png` above. Nicknames remain visible.
+
+The player app's Skin page loads the actual PNG from
+`https://textures.minecraft.net/texture/<texture hash>` without a referrer.
+`SkinFigure.tsx` draws its front and outer layer locally, respecting Classic/Slim
+arms. Selected-upload previews use a local object URL. Uploaded skins are
+user-provided artwork, not generated project assets. The server strips PNG
+metadata before sending an unlisted image to MineSkin for signing.

@@ -73,8 +73,8 @@
   --backdrop: #071521;
   --shadow: 0 18px 60px rgb(0 8 18 / 55%), 0 2px 8px rgb(0 8 18 / 35%);
   --scene-shade: linear-gradient(90deg, rgb(3 15 37 / 65%), rgb(5 20 45 / 15%));
-  --scene-image: url('./assets/asadal-stock-18.webp');
-  --scene-filter: brightness(.5) saturate(.85);
+  --scene-image: url('./assets/night-park.webp');
+  --scene-filter: brightness(.94) saturate(.95);
 }
 
 *, *::before, *::after { box-sizing: border-box; }

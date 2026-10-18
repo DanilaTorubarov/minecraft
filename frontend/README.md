@@ -1,75 +1,31 @@
-# React + TypeScript + Vite
+# Minecraft panel frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19, TypeScript 6, Vite 8, and React Router. This directory is the website UI served by the Rust API. Read the root [README](../README.md), [AGENTS.md](../AGENTS.md), [PRODUCT.md](../PRODUCT.md), and [DESIGN.md](../DESIGN.md) before changing it. The dated checkpoint is [STATE.md](../STATE.md).
 
-Currently, two official plugins are available:
+## Applications
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+`Shell.tsx` provides the desktop menu, dock, and independent windows. Account contains registration, login, cabinet, and security flows. Global Statistics combines only the signed-in user's linked Minecraft accounts. Each linked nickname opens its own **player app**, with a server-reported skin head and two pages: Statistics and Skin. Settings contains appearance and interface-sound preferences. The music player is a separate widget beside the dock.
 
-## React Compiler
+`PlayerApp.tsx` owns each player's page selection. `lib/useStatistics.ts` supplies the shared five-second account/statistics snapshot. `pages/SkinPage.tsx` manages current-skin loading, PNG preview/upload, and progress; `SkinFigure.tsx` draws the real skin texture. All account data comes from the API. Preserve loading, empty, failure, ownership, keyboard, reduced-motion, and responsive states.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Build and checks
 
-## Expanding the ESLint configuration
+Build the deployed frontend through Docker from the repository root:
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```sh
+docker compose --env-file .env.docker up --build -d app proxy
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+The image runs `npm ci` and `npm run build` (`tsc -b && vite build`). `frontend/dist` is generated and ignored. API requests use relative `/api/...`; Vite has no backend proxy, so `npm run dev` alone cannot provide a working account application.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Run checks using Node 24 in Docker:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```sh
+docker run --rm -v "$PWD/frontend:/app" -w /app dhi.io/node:24-alpine-dev sh -c 'npm ci && npm run lint && npm test'
 ```
+
+Run from the repository root. Node's built-in test runner loads TypeScript tests from `tests/`. Test imports must stay asset-free; keep pure helpers separate from browser modules importing artwork/audio. Rebuild the app image to verify TypeScript and production bundling after UI changes.
+
+## Visual system and assets
+
+Use the semantic tokens in `src/index.css` and the authoritative root design guide. Light uses the supplied Asadal landscape; Dark uses the user-supplied night park. Preserve all artwork, icon, cursor, font, and audio provenance/license files. Native buttons expose the player page selection with `aria-current="page"`. Window state remains independent per linked user/UUID while that account remains in the current session.

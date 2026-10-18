@@ -72,7 +72,7 @@ docker compose --env-file .env.docker up -d --force-recreate app proxy
 - Registration uses one displayed nickname instead of legal names.
 - Overview contains linking and account details; Security contains password and
   email changes.
-- Password changes require the current password and at least 15 characters for
+- Password changes require the current password and at least 6 characters for
   the new one. They revoke every website session, unused link codes, and pending
   email confirmations. Minecraft passwords and links are unchanged.
 - Email verification/changes require the current password plus confirmation from
