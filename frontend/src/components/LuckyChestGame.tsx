@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import diamondImg from '../assets/items/diamond.png'
 import heartImg from '../assets/items/heart_of_the_sea.png'
 import tridentImg from '../assets/items/trident.png'
@@ -8,6 +8,7 @@ import shardImg from '../assets/items/prismarine_shard.png'
 import pufferImg from '../assets/items/pufferfish.png'
 import fishImg from '../assets/items/tropical_fish.png'
 import chestIcon from '../assets/icons/game-lucky-chest.png'
+import coinIcon from '../assets/icons/coin.png'
 import { playSound } from '../lib/sounds'
 import { useAuth } from '../lib/auth-context'
 import { useStatistics } from '../lib/useStatistics'
@@ -20,7 +21,6 @@ export type MarineItem = {
   mult3: number
   mult2?: number
   mult1?: number
-  weight: number // lower = rarer
 }
 
 export const MARINE_ITEMS: MarineItem[] = [
@@ -32,7 +32,6 @@ export const MARINE_ITEMS: MarineItem[] = [
     mult3: 50,
     mult2: 5,
     mult1: 1.5,
-    weight: 2, // rarest
   },
   {
     id: 'heart_of_the_sea',
@@ -41,7 +40,6 @@ export const MARINE_ITEMS: MarineItem[] = [
     icon: heartImg,
     mult3: 25,
     mult2: 3,
-    weight: 4,
   },
   {
     id: 'trident',
@@ -50,7 +48,6 @@ export const MARINE_ITEMS: MarineItem[] = [
     icon: tridentImg,
     mult3: 15,
     mult2: 2.5,
-    weight: 6,
   },
   {
     id: 'nautilus_shell',
@@ -59,7 +56,6 @@ export const MARINE_ITEMS: MarineItem[] = [
     icon: nautilusImg,
     mult3: 10,
     mult2: 2,
-    weight: 8,
   },
   {
     id: 'prismarine_crystals',
@@ -67,7 +63,7 @@ export const MARINE_ITEMS: MarineItem[] = [
     nameEn: 'Prismarine Crystals',
     icon: crystalsImg,
     mult3: 7,
-    weight: 11,
+    mult2: 1.8,
   },
   {
     id: 'prismarine_shard',
@@ -75,7 +71,7 @@ export const MARINE_ITEMS: MarineItem[] = [
     nameEn: 'Prismarine Shard',
     icon: shardImg,
     mult3: 5,
-    weight: 14,
+    mult2: 1.5,
   },
   {
     id: 'pufferfish',
@@ -83,7 +79,7 @@ export const MARINE_ITEMS: MarineItem[] = [
     nameEn: 'Pufferfish',
     icon: pufferImg,
     mult3: 3,
-    weight: 18,
+    mult2: 1.3,
   },
   {
     id: 'tropical_fish',
@@ -91,19 +87,74 @@ export const MARINE_ITEMS: MarineItem[] = [
     nameEn: 'Tropical Fish',
     icon: fishImg,
     mult3: 2,
-    weight: 22,
+    mult2: 1.2,
   },
 ]
 
-// Weighted random selection
-function pickRandomItem(): MarineItem {
-  const totalWeight = MARINE_ITEMS.reduce((sum, item) => sum + item.weight, 0)
-  let random = Math.random() * totalWeight
-  for (const item of MARINE_ITEMS) {
-    if (random < item.weight) return item
-    random -= item.weight
+function getRandomItem(): MarineItem {
+  const index = Math.floor(Math.random() * MARINE_ITEMS.length)
+  return MARINE_ITEMS[index]
+}
+
+// Generates spin results where chance to win (46%) is slightly less than chance to lose (54%)
+function generateBalancedOutcome(): [MarineItem, MarineItem, MarineItem] {
+  const roll = Math.random()
+
+  // 1. 8% chance: 3 of a kind (Triple win / Jackpot)
+  if (roll < 0.08) {
+    const tripleRoll = Math.random()
+    let chosen: MarineItem
+    if (tripleRoll < 0.10) chosen = MARINE_ITEMS[0] // Diamond (Jackpot x50)
+    else if (tripleRoll < 0.25) chosen = MARINE_ITEMS[1] // Heart (x25)
+    else if (tripleRoll < 0.40) chosen = MARINE_ITEMS[2] // Trident (x15)
+    else if (tripleRoll < 0.55) chosen = MARINE_ITEMS[3] // Nautilus (x10)
+    else if (tripleRoll < 0.70) chosen = MARINE_ITEMS[4] // Crystals (x7)
+    else if (tripleRoll < 0.82) chosen = MARINE_ITEMS[5] // Shard (x5)
+    else if (tripleRoll < 0.92) chosen = MARINE_ITEMS[6] // Puffer (x3)
+    else chosen = MARINE_ITEMS[7] // Fish (x2)
+    return [chosen, chosen, chosen]
   }
-  return MARINE_ITEMS[MARINE_ITEMS.length - 1]
+
+  // 2. 28% chance: 2 of a kind (Pair match)
+  if (roll < 0.36) {
+    const pairItem = getRandomItem()
+    let otherItem = getRandomItem()
+    while (otherItem.id === pairItem.id) {
+      otherItem = getRandomItem()
+    }
+    const pattern = Math.floor(Math.random() * 3)
+    if (pattern === 0) return [pairItem, pairItem, otherItem]
+    if (pattern === 1) return [pairItem, otherItem, pairItem]
+    return [otherItem, pairItem, pairItem]
+  }
+
+  // 3. 10% chance: Single Diamond bonus (x1.5)
+  if (roll < 0.46) {
+    const diamond = MARINE_ITEMS[0]
+    const nonDiamonds = MARINE_ITEMS.filter((it) => it.id !== 'diamond')
+    const b = nonDiamonds[Math.floor(Math.random() * nonDiamonds.length)]
+    let c = nonDiamonds[Math.floor(Math.random() * nonDiamonds.length)]
+    while (c.id === b.id) {
+      c = nonDiamonds[Math.floor(Math.random() * nonDiamonds.length)]
+    }
+    const pos = Math.floor(Math.random() * 3)
+    if (pos === 0) return [diamond, b, c]
+    if (pos === 1) return [b, diamond, c]
+    return [b, c, diamond]
+  }
+
+  // 4. 54% chance: Lose (no match, no diamond)
+  const nonDiamonds = MARINE_ITEMS.filter((it) => it.id !== 'diamond')
+  const idxA = Math.floor(Math.random() * nonDiamonds.length)
+  let idxB = Math.floor(Math.random() * nonDiamonds.length)
+  while (idxB === idxA) {
+    idxB = Math.floor(Math.random() * nonDiamonds.length)
+  }
+  let idxC = Math.floor(Math.random() * nonDiamonds.length)
+  while (idxC === idxA || idxC === idxB) {
+    idxC = Math.floor(Math.random() * nonDiamonds.length)
+  }
+  return [nonDiamonds[idxA], nonDiamonds[idxB], nonDiamonds[idxC]]
 }
 
 type SpinResult = {
@@ -161,7 +212,7 @@ function calculatePayout(reels: [MarineItem, MarineItem, MarineItem], bet: numbe
 
   // 1 Diamond bonus
   if (a.id === 'diamond' || b.id === 'diamond' || c.id === 'diamond') {
-    const diamond = MARINE_ITEMS.find((it) => it.id === 'diamond')!
+    const diamond = MARINE_ITEMS[0]
     const mult = diamond.mult1 ?? 1.5
     return {
       items: reels,
@@ -187,13 +238,82 @@ type Props = {
 
 const PRESET_BETS = [10, 50, 100, 250, 500]
 
+// Single Slot Bubble where the bubble sphere itself rotates together with the spinning items
+function BubbleSlot({
+  targetItem,
+  isSpinning,
+  isSettling,
+  isWinning,
+}: {
+  targetItem: MarineItem
+  isSpinning: boolean
+  isSettling: boolean
+  isWinning: boolean
+}) {
+  const bubbleClasses = [
+    'inv-bubble',
+    'chest-inv-bubble',
+    isSpinning ? 'chest-bubble-spinning' : '',
+    isSettling && !isSpinning ? 'chest-bubble-settling' : '',
+    isWinning ? 'chest-bubble-winning inv-enchanted' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  return (
+    <div
+      className={bubbleClasses}
+      role="img"
+      aria-label={`Слот: ${targetItem.nameRu}`}
+    >
+      <div className="chest-reel-viewport">
+        {isSpinning ? (
+          <div className="chest-reel-strip spinning" aria-hidden="true">
+            {MARINE_ITEMS.slice(0, 4).map((it, idx) => (
+              <img
+                key={idx}
+                src={it.icon}
+                alt=""
+                className="chest-item-img"
+                draggable={false}
+              />
+            ))}
+            {MARINE_ITEMS.slice(0, 4).map((it, idx) => (
+              <img
+                key={`dup-${idx}`}
+                src={it.icon}
+                alt=""
+                className="chest-item-img"
+                draggable={false}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className={`chest-reel-strip ${isSettling ? 'settled' : ''}`}>
+            <img
+              src={targetItem.icon}
+              alt={targetItem.nameRu}
+              className="chest-item-img"
+              draggable={false}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function LuckyChestGame({ onBack }: Props) {
   const { user } = useAuth()
   const { stats } = useStatistics(user?.id)
-  
-  // Player coin balance: initialized from stats if available, otherwise 1000 demo coins
-  const initialCoins = stats?.summary && stats.summary.coins > 0 ? stats.summary.coins : 1000
+
+  const hasLinkedAccount = (stats?.accounts?.length ?? 0) > 0
+  const serverCoins = stats?.summary?.coins
+
   const [balance, setBalance] = useState<number>(() => {
+    if (typeof serverCoins === 'number') {
+      return serverCoins
+    }
     try {
       const stored = localStorage.getItem('chest_game_balance')
       if (stored !== null) {
@@ -201,8 +321,22 @@ export default function LuckyChestGame({ onBack }: Props) {
         if (!isNaN(val) && val >= 0) return val
       }
     } catch {}
-    return initialCoins
+    return 1000
   })
+
+  // Synchronize when server stats load or update
+  const initialSyncedRef = useRef(false)
+  useEffect(() => {
+    if (hasLinkedAccount && typeof serverCoins === 'number') {
+      if (!initialSyncedRef.current) {
+        initialSyncedRef.current = true
+        setBalance(serverCoins)
+        try {
+          localStorage.setItem('chest_game_balance', serverCoins.toString())
+        } catch {}
+      }
+    }
+  }, [hasLinkedAccount, serverCoins])
 
   useEffect(() => {
     try {
@@ -213,17 +347,15 @@ export default function LuckyChestGame({ onBack }: Props) {
   const [bet, setBet] = useState<number>(50)
   const [isSpinning, setIsSpinning] = useState<boolean>(false)
   const [reels, setReels] = useState<[MarineItem, MarineItem, MarineItem]>([
-    MARINE_ITEMS[0], // diamond
-    MARINE_ITEMS[1], // heart
-    MARINE_ITEMS[2], // trident
+    MARINE_ITEMS[0], // Diamond
+    MARINE_ITEMS[1], // Heart of the Sea
+    MARINE_ITEMS[2], // Trident
   ])
   const [reelSpinning, setReelSpinning] = useState<[boolean, boolean, boolean]>([false, false, false])
+  const [reelSettling, setReelSettling] = useState<[boolean, boolean, boolean]>([false, false, false])
   const [lastResult, setLastResult] = useState<SpinResult | null>(null)
   const [history, setHistory] = useState<SpinResult[]>([])
   const [showTable, setShowTable] = useState<boolean>(false)
-
-  // Intervals and timeouts for spinning animation
-  const spinIntervals = useRef<(number | null)[]>([null, null, null])
 
   const handleBetChange = (value: number) => {
     if (isSpinning) return
@@ -238,51 +370,39 @@ export default function LuckyChestGame({ onBack }: Props) {
       return
     }
 
-    // Deduct bet
+    // Deduct bet immediately
     setBalance((prev) => prev - bet)
     setIsSpinning(true)
     setLastResult(null)
     setReelSpinning([true, true, true])
+    setReelSettling([false, false, false])
     playSound('open')
 
-    // Determine target items beforehand
-    const targetA = pickRandomItem()
-    const targetB = pickRandomItem()
-    const targetC = pickRandomItem()
-    const targetReels: [MarineItem, MarineItem, MarineItem] = [targetA, targetB, targetC]
+    // Determine target items using the balanced model (54% win, 46% loss)
+    const targetReels = generateBalancedOutcome()
 
-    // Start cycling rapid items
-    for (let i = 0; i < 3; i++) {
-      spinIntervals.current[i] = window.setInterval(() => {
-        setReels((prev) => {
-          const next = [...prev] as [MarineItem, MarineItem, MarineItem]
-          next[i] = pickRandomItem()
-          return next
-        })
-      }, 75 + i * 20)
-    }
-
-    // Stop Reel 0
+    // Sequential stop for authentic slot machine feel
+    // Reel 1 stops at 900ms
     setTimeout(() => {
-      if (spinIntervals.current[0]) clearInterval(spinIntervals.current[0])
       setReels((prev) => [targetReels[0], prev[1], prev[2]])
       setReelSpinning([false, true, true])
+      setReelSettling([true, false, false])
       playSound('click')
-    }, 1100)
+    }, 900)
 
-    // Stop Reel 1
+    // Reel 2 stops at 1400ms
     setTimeout(() => {
-      if (spinIntervals.current[1]) clearInterval(spinIntervals.current[1])
       setReels((prev) => [targetReels[0], targetReels[1], prev[2]])
       setReelSpinning([false, false, true])
+      setReelSettling([true, true, false])
       playSound('click')
-    }, 1600)
+    }, 1400)
 
-    // Stop Reel 2 and finish
+    // Reel 3 stops at 1900ms
     setTimeout(() => {
-      if (spinIntervals.current[2]) clearInterval(spinIntervals.current[2])
       setReels(targetReels)
       setReelSpinning([false, false, false])
+      setReelSettling([true, true, true])
       setIsSpinning(false)
 
       const result = calculatePayout(targetReels, bet)
@@ -295,17 +415,16 @@ export default function LuckyChestGame({ onBack }: Props) {
       } else {
         playSound('click')
       }
-    }, 2100)
-  }
 
-  const handleRefillDemo = () => {
-    setBalance((prev) => prev + 1000)
-    playSound('done')
+      setTimeout(() => {
+        setReelSettling([false, false, false])
+      }, 450)
+    }, 1900)
   }
 
   return (
     <div className="lucky-chest-game">
-      {/* Top Navigation */}
+      {/* Top Navigation Bar */}
       <div className="chest-top-bar">
         <button
           type="button"
@@ -318,19 +437,9 @@ export default function LuckyChestGame({ onBack }: Props) {
         </button>
 
         <div className="chest-balance-pill">
-          <span className="chest-coin-glyph">🪙</span>
+          <img src={coinIcon} alt="" className="chest-coin-icon" />
           <span className="chest-balance-num">{balance.toLocaleString()}</span>
           <span className="chest-balance-label">монет</span>
-          {balance < 10 && !isSpinning && (
-            <button
-              type="button"
-              className="btn btn-quiet chest-refill-btn"
-              onClick={handleRefillDemo}
-              title="Пополнить баланс монет"
-            >
-              +1000
-            </button>
-          )}
         </div>
 
         <button
@@ -350,7 +459,7 @@ export default function LuckyChestGame({ onBack }: Props) {
             <img src={chestIcon} alt="" className="chest-machine-logo" />
             <div>
               <h2>Сундук удачи</h2>
-              <p>Морские сокровища Minecraft. Выбивайте редкие предметы и ловите алмазный джекпот!</p>
+              <p>Морские сокровища Minecraft. Выбивайте комбинации в водных пузырьках и ловите алмазный джекпот!</p>
             </div>
           </div>
 
@@ -365,23 +474,12 @@ export default function LuckyChestGame({ onBack }: Props) {
 
               return (
                 <div key={idx} className="chest-slot-column">
-                  <div
-                    className={`inv-bubble chest-inv-bubble ${
-                      reelSpinning[idx] ? 'chest-bubble-spinning' : ''
-                    } ${isWinReel ? 'chest-bubble-winning inv-enchanted' : ''}`}
-                    role="img"
-                    aria-label={`Слот ${idx + 1}: ${item.nameRu}`}
-                  >
-                    <img
-                      src={item.icon}
-                      alt={item.nameRu}
-                      className={`chest-item-img ${reelSpinning[idx] ? 'chest-item-blur' : ''}`}
-                      draggable={false}
-                    />
-                  </div>
-                  <span className="chest-item-caption">
-                    {reelSpinning[idx] ? '...' : item.nameRu}
-                  </span>
+                  <BubbleSlot
+                    targetItem={item}
+                    isSpinning={reelSpinning[idx]}
+                    isSettling={reelSettling[idx]}
+                    isWinning={isWinReel}
+                  />
                 </div>
               )
             })}
@@ -394,7 +492,6 @@ export default function LuckyChestGame({ onBack }: Props) {
             )}
             {!isSpinning && lastResult && lastResult.payout > 0 && (
               <div className={`chest-win-notice ${lastResult.winType}`}>
-                <span className="chest-win-stars">✨ </span>
                 <strong>
                   {lastResult.winType === 'jackpot'
                     ? 'АЛМАЗНЫЙ ДЖЕКПОТ!'
@@ -405,11 +502,10 @@ export default function LuckyChestGame({ onBack }: Props) {
                 <span>
                   +{lastResult.payout.toLocaleString()} монет (x{lastResult.multiplier})
                 </span>
-                <span className="chest-win-stars"> ✨</span>
               </div>
             )}
             {!isSpinning && lastResult && lastResult.payout === 0 && (
-              <span className="chest-outcome-status loss">Пусто! Попробуйте ещё раз.</span>
+              <span className="chest-outcome-status loss">Пусто. Попробуйте ещё раз.</span>
             )}
             {!isSpinning && !lastResult && (
               <span className="chest-outcome-status idle">Выберите ставку и откройте сундук</span>

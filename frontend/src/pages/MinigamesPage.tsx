@@ -3,6 +3,7 @@ import minigamesIcon from '../assets/icons/minigames-gamepad.png'
 import luckyChestIcon from '../assets/icons/game-lucky-chest.png'
 import minesIcon from '../assets/icons/game-minesweeper.png'
 import LuckyChestGame from '../components/LuckyChestGame'
+import MinesweeperGame from '../components/MinesweeperGame'
 
 type Props = {
   onGoToAccount?: () => void
@@ -32,18 +33,21 @@ const MINIGAMES: Minigame[] = [
     id: 'minesweeper',
     name: 'Minesweeper',
     nameRu: 'Сапёр',
-    description: 'Классическое минное поле в стиле Windows. Открывайте безопасные клетки, умножайте ставки и остерегайтесь скрытых мин.',
+    description: 'Шахтёрское минное поле Minecraft. Открывайте безопасные блоки, находите железо, золото и алмазы, повышайте множитель ставки и остерегайтесь скрытого динамита!',
     icon: minesIcon,
-    tag: 'Multiplier',
-    ready: false,
+    tag: 'Mines & Ore',
+    ready: true,
   },
 ]
 
 export default function MinigamesPage({}: Props) {
-  const [activeGame, setActiveGame] = useState<'chest' | null>(null)
+  const [activeGame, setActiveGame] = useState<'chest' | 'minesweeper' | null>(null)
 
   if (activeGame === 'chest') {
     return <LuckyChestGame onBack={() => setActiveGame(null)} />
+  }
+  if (activeGame === 'minesweeper') {
+    return <MinesweeperGame onBack={() => setActiveGame(null)} />
   }
   return (
     <div className="casino-page">
@@ -92,15 +96,14 @@ export default function MinigamesPage({}: Props) {
               </div>
 
               <div className="casino-card-actions">
-                <div className="casino-dev-note">
-                  <span className="casino-dev-icon">{game.ready ? '✨' : '⚙️'}</span>
-                  <span>{game.ready ? 'Морская тематика • Слоты' : 'Разработка механики и логики'}</span>
-                </div>
+                {!game.ready && (
+                  <span className="casino-dev-note">Разработка логики</span>
+                )}
                 {game.ready ? (
                   <button
                     type="button"
                     className="btn btn-primary casino-play-btn"
-                    onClick={() => setActiveGame(game.id as 'chest')}
+                    onClick={() => setActiveGame(game.id as 'chest' | 'minesweeper')}
                     aria-label={`Играть в ${game.nameRu}`}
                     data-ui-sound="open"
                   >

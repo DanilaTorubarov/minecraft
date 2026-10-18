@@ -17,6 +17,7 @@ Catalog: https://frutigeraeroarchive.org/icons
 | minigames-gamepad.png | https://frutigeraeroarchive.org/images/icons/windows_vista/vista_console.ico |
 | game-lucky-chest.png | https://icons.iconarchive.com/icons/iconarchive/seaside/256/Treasure-Chest-icon.png |
 | game-minesweeper.png | https://icons.iconarchive.com/icons/everaldo/crystal-clear/128/App-core-bomb-icon.png |
+| coin.png | https://icons.iconarchive.com/icons/hopstarter/soft-scraps/256/Coin-icon.png |
 
 Each PNG is the original 256×256, 32-bit RGBA PNG frame extracted byte-for-byte
 from its ICO container, with no redraw, generation, resizing, or pixel changes.
@@ -71,4 +72,6 @@ or failing icons never invent a picture. The item's name, amount, wear and
 enchantments are always stated in text.
 
 The Lucky Chest mini-game uses the official Minecraft item textures from the client assets for its marine theme (`diamond.png`, `heart_of_the_sea.png`, `trident.png`, `nautilus_shell.png`, `prismarine_crystals.png`, `prismarine_shard.png`, `pufferfish.png`, `tropical_fish.png`). Mojang's texture artwork rights remain with their owners.
+
+The Minesweeper mini-game uses the official Minecraft textures from client assets for its mining theme (`tnt.png` block texture for mines, `iron_ingot.png`, `gold_ingot.png`, and `diamond.png` for safe treasure ores). Mojang's texture artwork rights remain with their owners.
 
