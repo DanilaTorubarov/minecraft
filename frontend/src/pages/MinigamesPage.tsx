@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import minigamesIcon from '../assets/icons/minigames-gamepad.png'
 import luckyChestIcon from '../assets/icons/game-lucky-chest.png'
 import minesIcon from '../assets/icons/game-minesweeper.png'
+import LuckyChestGame from '../components/LuckyChestGame'
 
 type Props = {
   onGoToAccount?: () => void
@@ -13,6 +15,7 @@ type Minigame = {
   description: string
   icon: string
   tag: string
+  ready?: boolean
 }
 
 const MINIGAMES: Minigame[] = [
@@ -20,9 +23,10 @@ const MINIGAMES: Minigame[] = [
     id: 'chest',
     name: 'Lucky Chest',
     nameRu: 'Сундук удачи',
-    description: 'Таинственный сундук сокровищ. Открывайте замок, испытывайте удачу и получайте редкие призы и множители.',
+    description: 'Таинственный сундук сокровищ. Крутите морские сокровища в водных пузырьках и ловите алмазный джекпот!',
     icon: luckyChestIcon,
     tag: 'Treasure Box',
+    ready: true,
   },
   {
     id: 'minesweeper',
@@ -31,10 +35,16 @@ const MINIGAMES: Minigame[] = [
     description: 'Классическое минное поле в стиле Windows. Открывайте безопасные клетки, умножайте ставки и остерегайтесь скрытых мин.',
     icon: minesIcon,
     tag: 'Multiplier',
+    ready: false,
   },
 ]
 
 export default function MinigamesPage({}: Props) {
+  const [activeGame, setActiveGame] = useState<'chest' | null>(null)
+
+  if (activeGame === 'chest') {
+    return <LuckyChestGame onBack={() => setActiveGame(null)} />
+  }
   return (
     <div className="casino-page">
       {/* --- Page Header with Description --- */}
@@ -71,7 +81,9 @@ export default function MinigamesPage({}: Props) {
                 <div className="casino-game-details">
                   <div className="casino-card-meta">
                     <span className="casino-tag">{game.tag}</span>
-                    <span className="casino-dev-badge">В разработке</span>
+                    <span className={`casino-dev-badge ${game.ready ? 'casino-badge-ready' : ''}`}>
+                      {game.ready ? 'Доступно' : 'В разработке'}
+                    </span>
                   </div>
                   <h3>{game.nameRu}</h3>
                   <span className="casino-subtitle-en">{game.name}</span>
@@ -81,17 +93,29 @@ export default function MinigamesPage({}: Props) {
 
               <div className="casino-card-actions">
                 <div className="casino-dev-note">
-                  <span className="casino-dev-icon">⚙️</span>
-                  <span>Разработка механики и логики</span>
+                  <span className="casino-dev-icon">{game.ready ? '✨' : '⚙️'}</span>
+                  <span>{game.ready ? 'Морская тематика • Слоты' : 'Разработка механики и логики'}</span>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-quiet casino-dev-btn"
-                  disabled
-                  aria-label={`${game.nameRu} пока в разработке`}
-                >
-                  Скоро
-                </button>
+                {game.ready ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary casino-play-btn"
+                    onClick={() => setActiveGame(game.id as 'chest')}
+                    aria-label={`Играть в ${game.nameRu}`}
+                    data-ui-sound="open"
+                  >
+                    Играть
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-quiet casino-dev-btn"
+                    disabled
+                    aria-label={`${game.nameRu} пока в разработке`}
+                  >
+                    Скоро
+                  </button>
+                )}
               </div>
             </div>
           ))}

@@ -69,3 +69,6 @@ some blocks). When no texture file is readable for an item key, the bubble shows
 the sourced `vista-perf-center.png` above with the item's name; offline, unknown,
 or failing icons never invent a picture. The item's name, amount, wear and
 enchantments are always stated in text.
+
+The Lucky Chest mini-game uses the official Minecraft item textures from the client assets for its marine theme (`diamond.png`, `heart_of_the_sea.png`, `trident.png`, `nautilus_shell.png`, `prismarine_crystals.png`, `prismarine_shard.png`, `pufferfish.png`, `tropical_fish.png`). Mojang's texture artwork rights remain with their owners.
+
