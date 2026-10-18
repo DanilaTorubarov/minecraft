@@ -52,6 +52,9 @@ SITE_ADDRESS=localhost
 
 ## Build and start
 
+For GitHub tests followed by automatic SSH deployment to Ubuntu, see
+[DEPLOYMENT.md](DEPLOYMENT.md).
+
 Run these commands from this project directory:
 
 ```sh

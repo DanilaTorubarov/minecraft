@@ -1,0 +1,102 @@
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Do not interrupt a deployment while it is changing running services.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Check frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm test
+          npm run build
+      - name: Check operator scripts
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+      - name: Log in to hardened images
+        env:
+          DHI_USERNAME: ${{ secrets.DHI_USERNAME }}
+          DHI_TOKEN: ${{ secrets.DHI_TOKEN }}
+        run: printf '%s' "$DHI_TOKEN" | docker login dhi.io -u "$DHI_USERNAME" --password-stdin
+      - name: Configure disposable test database
+        run: |
+          cat > .env.docker <<'EOF'
+          POSTGRES_PASSWORD=ci_only_password
+          DATABASE_URL=postgresql://postgres:ci_only_password@db:5432/project_db
+          VELOCITY_SECRET=ci_only_forwarding_secret
+          SITE_ADDRESS=localhost
+          EOF
+      - name: Compile and test backend
+        run: |
+          docker compose -p oasis-ci --env-file .env.docker run --rm tests \
+            sh -c 'cargo check --tests && cargo test'
+      - name: Check production image
+        run: docker build -t oasis-ci-app .
+      - name: Check Minecraft plugin build
+        run: ./scripts/build-plugin.sh
+      - name: Remove disposable test containers and data
+        if: always()
+        run: |
+          if [ -f .env.docker ]; then
+            docker compose -p oasis-ci --env-file .env.docker --profile tests down
+          fi
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Deploy tested commit
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        shell: bash
+        run: |
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo 'Set DEPLOY_PATH to an absolute path without spaces'; exit 1; }
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]] || exit 1
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_PATH' '$GITHUB_SHA'" < scripts/deploy.sh
+      - name: Check public website
+        run: |
+          curl --fail --silent --show-error --location \
+            --retry 12 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 10 --max-time 20 https://oasisaero.ru/ > /dev/null
+      - name: Remove SSH credentials
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts
