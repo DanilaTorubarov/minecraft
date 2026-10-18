@@ -294,7 +294,8 @@ export default function LiveWallpaper() {
       gl.uniform1f(timeUniform, (now - startedAt) / 1000)
       gl.uniform1f(darkUniform, isNight() ? 1 : 0)
       gl.uniform1f(nightUniform, activeImage === nightImage ? 1 : 0)
-      gl.uniform1f(sceneOffset, 130 / Math.max(1, window.innerHeight))
+      // Shifting the night scene exposes its top edge as stretched columns.
+      gl.uniform1f(sceneOffset, activeImage === nightImage ? 0 : 130 / Math.max(1, window.innerHeight))
       pointerSmooth.x += (pointerTarget.x - pointerSmooth.x) * 0.055
       pointerSmooth.y += (pointerTarget.y - pointerSmooth.y) * 0.055
       gl.uniform2f(pointerUniform, pointerSmooth.x, pointerSmooth.y)

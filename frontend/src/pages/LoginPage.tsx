@@ -11,9 +11,9 @@ function messageFor(error: unknown): string {
       return shared
     }
     if (error.status === 401) {
-      // The panel answers an unknown email and a wrong password identically, and so
+      // The panel answers an unknown identifier and a wrong password identically, and so
       // does this copy: it must not hint at which accounts exist.
-      return 'That email and password do not match an account.'
+      return 'Those sign-in details do not match an account.'
     }
   }
   return 'Something went wrong. Try again.'
@@ -27,7 +27,7 @@ function LoginPage() {
   const [params] = useSearchParams()
   const justRegistered = params.get('registered') === '1'
 
-  const [email, setEmail] = useState('')
+  const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -37,7 +37,7 @@ function LoginPage() {
     setError('')
     setBusy(true)
     try {
-      await signIn(email, password)
+      await signIn(identifier, password)
       playSound('done')
       navigate('/cabinet', { replace: true })
     } catch (problem) {
@@ -68,14 +68,16 @@ function LoginPage() {
 
       <form className="form" onSubmit={onSubmit}>
         <div className="field">
-          <label htmlFor="email">Email</label>
+          <label htmlFor="identifier">Email or login</label>
           <input
-            id="email"
-            name="email"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
+            id="identifier"
+            name="username"
+            type="text"
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            value={identifier}
+            onChange={(event) => setIdentifier(event.target.value)}
             required
           />
         </div>

@@ -6,7 +6,7 @@ export type Auth = {
   user: Me | null
   /** False until the first `/api/me` has answered, so pages do not flash a redirect. */
   ready: boolean
-  signIn: (email: string, password: string) => Promise<void>
+  signIn: (identifier: string, password: string) => Promise<void>
   signOut: () => Promise<void>
   refresh: () => Promise<void>
 }

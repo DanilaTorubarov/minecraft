@@ -35,7 +35,8 @@ struct Registration {
 
 #[derive(serde::Deserialize)]
 struct Login {
-    email: String,
+    #[serde(alias = "email")]
+    identifier: String,
     password: String,
 }
 
@@ -501,20 +502,21 @@ async fn login_user(
     State(pool): State<sqlx::PgPool>,
     Json(input): Json<Login>
 ) -> Result<impl IntoResponse, StatusCode> {
-    let email = input.email.to_lowercase();
-    // A locked account must look exactly like a wrong password, so the endpoint
-    // never reveals which accounts exist.
-    if account_is_locked(&pool, &email).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    let identifier = input.identifier.trim().to_lowercase();
+    // Email wins a cross-field collision; never try another account's password.
     let row = sqlx
-        ::query("SELECT id, password_hash FROM users WHERE email = $1")
-        .bind(&email)
+        ::query("SELECT id, email, password_hash FROM users WHERE email = $1 OR login = $1 ORDER BY (email = $1) DESC LIMIT 1")
+        .bind(&identifier)
         .fetch_optional(&pool).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(row) = row else {
         return Err(StatusCode::UNAUTHORIZED);
     };
+    // Both identifiers share the same canonical account lockout and failure log.
+    let email: String = row.try_get("email").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if account_is_locked(&pool, &email).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let user_id: i64 = row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let password_hash: String = row
         .try_get("password_hash")
@@ -2846,6 +2848,238 @@ mod test {
         sqlx::query("DELETE FROM users WHERE email= $1").bind(&email).execute(&pool).await?;
         assert_eq!(registered, StatusCode::CREATED);
         assert_eq!(logged_in, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn login_name_is_normalized_and_creates_the_correct_session() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let login = format!("player_{id}@realm");
+        let result: TestResult = async {
+            let registered = register_request(&pool, "Test", &login, &email, "test-password").await?;
+            let wrong = login_request(&pool, &login, "wrong-password").await?;
+            let response = post_json_response(&pool, "/api/login", serde_json::json!({
+                "identifier": format!("  {}  ", login.to_uppercase()), "password": "test-password"
+            })).await?;
+            let cookie = session_cookie_from(&response).unwrap_or_default();
+            let me = send(&pool, "GET", "/api/me", Some(&cookie), None).await?;
+            let body = body_json(me).await?;
+            let failures: i64 = sqlx::query_scalar("SELECT count(*) FROM login_failures WHERE email = $1")
+                .bind(&email).fetch_one(&pool).await?;
+            delete_user(&pool, &email).await?;
+            assert_eq!(registered, StatusCode::CREATED);
+            assert_eq!(wrong, StatusCode::UNAUTHORIZED);
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(body["email"], email);
+            assert_eq!(failures, 0);
+            Ok(())
+        }.await;
+        delete_user(&pool, &email).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn login_and_email_share_account_lockout() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let login = format!("player_{id}");
+        register_request(&pool, "Test", &login, &email, "test-password").await?;
+        let result: TestResult = async {
+            let mut statuses = Vec::new();
+            for attempt in 0..lockout_threshold() {
+                let identifier = if attempt % 2 == 0 { &email } else { &login };
+                statuses.push(login_from(&pool, identifier, "wrong-password", &random_ip()).await?);
+            }
+            let by_email = login_from(&pool, &email, "test-password", &random_ip()).await?;
+            let by_login = login_from(&pool, &login, "test-password", &random_ip()).await?;
+            delete_user(&pool, &email).await?;
+            assert!(statuses.iter().all(|status| *status == StatusCode::UNAUTHORIZED));
+            assert_eq!(by_email, StatusCode::UNAUTHORIZED);
+            assert_eq!(by_login, StatusCode::UNAUTHORIZED);
+            Ok(())
+        }.await;
+        delete_user(&pool, &email).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn email_match_wins_over_another_accounts_login() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@realm");
+        let other_email = format!("other_{id}@example.com");
+        let result: TestResult = async {
+            register_request(&pool, "Test", &id, &email, "first-password").await?;
+            register_request(&pool, "Other", &email, &other_email, "second-password").await?;
+            let first = login_request(&pool, &email, "first-password").await?;
+            let second = login_request(&pool, &email, "second-password").await?;
+            let other = login_request(&pool, &other_email, "second-password").await?;
+            delete_user(&pool, &email).await?;
+            delete_user(&pool, &other_email).await?;
+            assert_eq!(first, StatusCode::OK);
+            assert_eq!(second, StatusCode::UNAUTHORIZED);
+            assert_eq!(other, StatusCode::OK);
+            Ok(())
+        }.await;
+        delete_user(&pool, &email).await?;
+        delete_user(&pool, &other_email).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn login_rejects_malformed_or_ambiguous_payloads_without_a_cookie() -> TestResult {
+        let pool = connect().await?;
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"identifier": "player"}),
+            serde_json::json!({"password": "secret"}),
+            serde_json::json!({"identifier": null, "password": "secret"}),
+            serde_json::json!({"identifier": 123, "password": "secret"}),
+            serde_json::json!({"identifier": "player", "password": null}),
+            serde_json::json!({"identifier": "player", "email": "other@example.com", "password": "secret"}),
+        ] {
+            let response = post_json_response(&pool, "/api/login", payload.clone()).await?;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{payload}");
+            assert!(session_cookie_from(&response).is_none());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn login_unknown_or_blank_identifiers_create_no_credentials_or_failures() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        for identifier in [String::new(), " \t\n ".to_owned(), format!("missing_{id}"), format!("missing_{id}@example.com")] {
+            let response = post_json_response(&pool, "/api/login", serde_json::json!({
+                "identifier": identifier, "password": "test-password"
+            })).await?;
+            let status = response.status();
+            let cookie = session_cookie_from(&response);
+            let body = axum::body::to_bytes(response.into_body(), 1024).await?;
+            let tracked: i64 = sqlx::query_scalar("SELECT count(*) FROM login_failures WHERE email = $1")
+                .bind(identifier.trim()).fetch_one(&pool).await?;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert!(cookie.is_none());
+            assert!(body.is_empty(), "unknown identifiers must not disclose account details");
+            assert_eq!(tracked, 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn login_accepts_both_payload_names_without_normalizing_the_password() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let login = format!("player_!@{id}");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            register_request(&pool, "Test", &login, &email, "  MixedCase-password  ").await?;
+            let mut observations = Vec::new();
+            for field in ["identifier", "email"] {
+                for value in [&email, &login] {
+                    let mut payload = serde_json::json!({"password": "  MixedCase-password  "});
+                    payload[field] = serde_json::json!(format!(" \t{}\n ", value.to_uppercase()));
+                    let response = post_json_response(&pool, "/api/login", payload).await?;
+                    let cookie = session_cookie_from(&response);
+                    let me = get_with_cookie(&pool, "/api/me", cookie.as_deref()).await?;
+                    observations.push((response.status(), me.status(), body_json(me).await?));
+                }
+            }
+            let trimmed = login_request(&pool, &login, "MixedCase-password").await?;
+            let lowercased = login_request(&pool, &email, "  mixedcase-password  ").await?;
+            Ok((observations, trimmed, lowercased))
+        }.await;
+        delete_user(&pool, &email).await?;
+        let (observations, trimmed, lowercased) = result?;
+        for (status, me_status, body) in observations {
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(me_status, StatusCode::OK);
+            assert_eq!(body["email"], email);
+            assert_eq!(body["login_displayed"], login);
+        }
+        assert_eq!(trimmed, StatusCode::UNAUTHORIZED);
+        assert_eq!(lowercased, StatusCode::UNAUTHORIZED);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn login_success_resets_failures_from_either_identifier() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let login = format!("player_{id}");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            register_request(&pool, "Test", &login, &email, "test-password").await?;
+            let mut observations = Vec::new();
+            for (failed_identifier, successful_identifier) in [(&email, &login), (&login, &email)] {
+                let failed = login_request(&pool, failed_identifier, "wrong-password").await?;
+                let count: i32 = sqlx::query_scalar("SELECT failed_count FROM login_failures WHERE email = $1")
+                    .bind(&email).fetch_one(&pool).await?;
+                let success = login_request(&pool, successful_identifier, "test-password").await?;
+                let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM login_failures WHERE email = $1 OR email = $2")
+                    .bind(&email).bind(&login).fetch_one(&pool).await?;
+                observations.push((failed, count, success, remaining));
+            }
+            Ok(observations)
+        }.await;
+        delete_user(&pool, &email).await?;
+        for observation in result? {
+            assert_eq!(observation, (StatusCode::UNAUTHORIZED, 1, StatusCode::OK, 0));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn login_collision_cannot_bypass_a_locked_email_owner() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@realm");
+        let other_email = format!("other_{id}@example.com");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            register_request(&pool, "Test", &id, &email, "first-password").await?;
+            register_request(&pool, "Other", &email, &other_email, "second-password").await?;
+            sqlx::query("INSERT INTO login_failures (email, failed_count, first_failed_at, locked_until) VALUES ($1, 1, now(), now() + interval '1 hour')")
+                .bind(&email).execute(&pool).await?;
+            let mut responses = Vec::new();
+            for password in ["first-password", "second-password"] {
+                let response = post_json_response(&pool, "/api/login", serde_json::json!({"identifier": email.to_uppercase(), "password": password})).await?;
+                responses.push((response.status(), session_cookie_from(&response)));
+            }
+            let other_failures: i64 = sqlx::query_scalar("SELECT count(*) FROM login_failures WHERE email = $1")
+                .bind(&other_email).fetch_one(&pool).await?;
+            let other = login_request(&pool, &other_email, "second-password").await?;
+            Ok((responses, other_failures, other))
+        }.await;
+        delete_user(&pool, &email).await?;
+        delete_user(&pool, &other_email).await?;
+        let (responses, other_failures, other) = result?;
+        for (status, cookie) in responses {
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert!(cookie.is_none());
+        }
+        assert_eq!(other_failures, 0);
+        assert_eq!(other, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_signup_cannot_sign_in_by_login_until_confirmation() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            let challenge = pending_signup(&pool, &email, &id).await?;
+            let before = login_request(&pool, &id, "signup-password").await?;
+            let confirmed = confirm_signup(&pool, &challenge, "123456").await?;
+            let after = login_request(&pool, &id, "signup-password").await?;
+            Ok((before, confirmed, after))
+        }.await;
+        delete_user(&pool, &email).await?;
+        clean_signup(&pool, &email).await?;
+        assert_eq!(result?, (StatusCode::UNAUTHORIZED, StatusCode::CREATED, StatusCode::OK));
         Ok(())
     }
 

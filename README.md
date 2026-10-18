@@ -297,7 +297,7 @@ The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar 
 
 Account contains the existing registration, login and cabinet routes. The cabinet puts link status first, with linking beside account details when its window has enough room. Authentication pairs a sourced-icon welcome sidebar with the form; narrower windows hide the sidebar. The user-selected Asadal wallpaper sits lower behind the desktop and appears once. It is decorative artwork, never an image of the real server. Light uses that Asadal scene; Dark switches to the user-supplied night park. Both have provenance sidecars.
 
-Open **Settings → Appearance** for **Light, Dark, and System**. Fresh browsers, invalid preferences and unavailable storage default to Light. Explicit choices persist locally as `minecraft-theme`; System follows the operating system and changes synchronize across tabs. Storage failure still allows selection for the current page. Open Sans is self-hosted with its license. Confirmed links use the supplied green Vista shield; unlinked accounts use its red Off shield and explicit text. Notices use the supplied Warning shield. Search Globe marks Account and the favicon; Personalization marks Settings. CSS draws the traffic-light window controls. Windows flex with a damped wobbly-glass effect, and the sourced Asadal image becomes a WebGL live wallpaper with ambient water movement, pointer/touch ripples, rising bubbles, sweeping sunbeams, and traveling glints. Its ambient animation stems loop without a visible cut; all motion falls back to still presentation under Reduced Motion, and the wallpaper also falls back when WebGL is unavailable. No new raster artwork was generated. The panel displays only account and link data the server knows. Green Aero arrow, hand, text and disabled cursors retain native fallbacks and unchanged touch/forced-color behavior. Asset sources remain in `frontend/src/assets/icons/SOURCES.md` and `cursors/SOURCES.md`.
+Open **Settings → Appearance** for **Light, Dark, and System**. Fresh browsers, invalid preferences and unavailable storage default to System. Explicit choices persist locally as `minecraft-theme`; System follows the operating system and changes synchronize across tabs. Storage failure still allows selection for the current page. Open Sans is self-hosted with its license. Confirmed links use the supplied green Vista shield; unlinked accounts use its red Off shield and explicit text. Notices use the supplied Warning shield. Search Globe marks Account and the favicon; Personalization marks Settings. CSS draws the traffic-light window controls. Windows flex with a damped wobbly-glass effect, and the sourced Asadal image becomes a WebGL live wallpaper with ambient water movement, pointer/touch ripples, rising bubbles, sweeping sunbeams, and traveling glints. Its ambient animation stems loop without a visible cut; all motion falls back to still presentation under Reduced Motion, and the wallpaper also falls back when WebGL is unavailable. No new raster artwork was generated. The panel displays only account and link data the server knows. Green Aero arrow, hand, text and disabled cursors retain native fallbacks and unchanged touch/forced-color behavior. Asset sources remain in `frontend/src/assets/icons/SOURCES.md` and `cursors/SOURCES.md`.
 
 | Asset | Source | Notes |
 | --- | --- | --- |
@@ -393,7 +393,7 @@ It is configured for a hostile environment out of the box (`allowChat: false`, `
 | Setting | Default | Ours | Why |
 | --- | --- | --- | --- |
 | `passwordHash` | `SHA256` | `BCRYPT` | SHA-256 is fast; cheap to brute-force if `authme.db` leaks |
-| `minPasswordLength` | `5` | `10` | This password is the only gate on an offline server |
+| `minPasswordLength` | `5` | `6` | Matches the website minimum for new/changed passwords |
 | `maxLoginPerIp` / `maxJoinPerIp` | `0` (unlimited) | `3` | Stops one host running a credential-stuffing run |
 | `displayOtherAccounts` | `true` | `false` | Otherwise it tells a player which other accounts share their IP |
 
@@ -511,3 +511,5 @@ docker compose --env-file .env.docker down
 ```
 
 `docker compose --env-file .env.docker down -v` also **deletes the database volume and its data**. Use it only when you want a fresh database.
+
+Sign-in accepts either an email address or a login name, trimmed and case-insensitive. Both share the account’s existing lockout counter. `POST /api/login` takes `{identifier, password}`; the legacy `{email, password}` payload remains supported. If an email exactly matches another account’s login name, the email owner takes precedence; the other account can sign in with its own email.

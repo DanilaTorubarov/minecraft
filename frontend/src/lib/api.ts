@@ -138,8 +138,8 @@ export async function getMe(): Promise<Me | null> {
   return (await response.json()) as Me
 }
 
-export async function logIn(email: string, password: string): Promise<void> {
-  const response = await send('POST', '/api/login', { email, password })
+export async function logIn(identifier: string, password: string): Promise<void> {
+  const response = await send('POST', '/api/login', { identifier, password })
   if (!response.ok) {
     throw new ApiError(response.status)
   }

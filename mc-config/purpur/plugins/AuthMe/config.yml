@@ -40,7 +40,5 @@ settings:
         # AuthMe's default is salted SHA-256, which is fast and therefore cheap
         # to brute-force if authme.db ever leaks. BCrypt is deliberately slow.
         passwordHash: BCRYPT
-        # The default is 5. This password is the only thing standing between an
-        # attacker and a player's identity on an offline server, so raise it.
-        # Typed in-game, hence lower than the panel's 15-character rule.
-        minPasswordLength: 10
+        # Match the website minimum: six characters for new/changed passwords.
+        minPasswordLength: 6

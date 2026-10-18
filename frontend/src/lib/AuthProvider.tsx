@@ -31,8 +31,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    await logIn(email, password)
+  const signIn = useCallback(async (identifier: string, password: string) => {
+    await logIn(identifier, password)
     // Re-read rather than trusting the login response: the session cookie is
     // HttpOnly, so the server's own view of it is the only view that counts.
     setUser(await getMe())

@@ -93,3 +93,22 @@ Inventory grids now cap their width (568px for nine slots, 312px for equipment),
 - Register now switches to a labeled one-time-code field, expiry countdown, resend and change-details actions, with explicit loading/error/expiry states and a Mailpit-only delivery notice. Successful confirmation signs in, with a login notice if sign-in fails. The Compose tests service now starts Mailpit automatically.
 - Verification: `cargo check --tests`, production Docker build, ESLint, **88 Rust/PostgreSQL tests**, and **33 frontend tests** passed. New backend coverage checks expiry, attempt exhaustion, concurrent/single-use confirmation, resend replacement, mailbox budget rollback and duplicate-login races. Existing test users complete confirmation through a test-only code fixture.
 - A disposable live API flow fetched the actual registration code from Mailpit, verified that pre-confirmation login failed, confirmed the code, checked `email_verified`, logged in, and rejected replay. Its database account and pending/budget data were removed. Desktop and 360px confirmation-step previews were inspected using the real component with seeded sample state; capture `.impeccable/review/registration-confirmation.png` is ignored. No real external inbox delivery was tested: current local delivery is Mailpit; production SMTP configuration remains operator-owned in `EMAIL.md`.
+
+## Password minimum and theme fixes — 2026-10-18
+
+- AuthMe's committed template now sets `minPasswordLength: 6` for new/changed Minecraft passwords, matching the website minimum. Existing passwords are unchanged. The earlier ten-character policy above describes the previous checkpoint.
+- Missing, invalid and unavailable website theme preferences now fall back to System in both early HTML boot and React; explicit Light/Dark/System choices remain valid.
+- Dark wallpaper is centered in WebGL and the static fallback. Its previous 130px downward shift clamped the top texture row into vertical streaks; the daylight offset is preserved. Dark browser preview confirms a clean top edge; capture `.impeccable/review/dark-wallpaper-fixed.png` is ignored.
+- Verification: `cargo check --tests`, ESLint, all 33 frontend tests, and the production Docker build passed. No running services were restarted or deployed. Once pushed to `main`, the configured GitHub workflow tests and deploys the commit and restarts Purpur, which syncs the AuthMe template on boot.
+
+## Email-or-login sign-in — 2026-10-18
+
+- Website sign-in now accepts a trimmed, case-insensitive email or login name. The form uses “Email or login” and username autocomplete. The API accepts `{identifier, password}` and retains the legacy `{email, password}` payload.
+- Lockout and failed-attempt tracking use the resolved account’s canonical email for both identifiers; generic 401 responses and password/email-change session serialization remain intact. Email matches take precedence if another account has that same login; no fallback tries a different account’s password.
+- Verification: `cargo check --tests`, all 91 Rust/PostgreSQL tests, all 34 frontend tests, ESLint, and the production Docker build passed. Browser preview confirms the new label. Changes remain local and unpushed.
+
+## Additional sign-in regression coverage — 2026-10-18
+
+- Added six backend tests for malformed/ambiguous payloads, unknown/blank identifiers without cookies or failure rows, normalized email/login through both payload names with correct session ownership and exact password preservation, bidirectional failure-counter reset, locked cross-account email/login collisions, and pending-signup login before/after confirmation. Inserting test cases clean up accounts before assertions.
+- Added two frontend tests for network failure and rate-limit/server error propagation; the existing sign-in contract test also verifies same-origin credentials.
+- Verification: all **97 Rust/PostgreSQL tests** and **36 frontend tests** passed, along with `cargo check --tests`, ESLint and `git diff --check`. This increment changes tests and this checkpoint only; nothing was pushed or deployed.

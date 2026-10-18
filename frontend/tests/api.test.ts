@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
-import { ApiError, formatDuration, getStats, logOut, register, confirmRegistration } from '../src/lib/api.ts'
+import { ApiError, formatDuration, getStats, logIn, logOut, register, confirmRegistration } from '../src/lib/api.ts'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -79,4 +79,34 @@ test('registration confirmation sends both the browser challenge and code and re
   await confirmRegistration('challenge', '012345')
   globalThis.fetch = async () => new Response(null, { status: 400 })
   await assert.rejects(confirmRegistration('challenge', '012345'), (error) => error instanceof ApiError && error.status === 400)
+})
+
+test('sign-in sends either email or login as the identifier and preserves authentication errors', async () => {
+  for (const identifier of ['test@example.com', 'Test_Player']) {
+    globalThis.fetch = async (path, options) => {
+      assert.equal(path, '/api/login')
+      assert.equal(options?.method, 'POST')
+      assert.equal(options?.credentials, 'same-origin')
+      assert.deepEqual(JSON.parse(String(options?.body)), { identifier, password: 'test-password' })
+      return new Response(null, { status: 200 })
+    }
+    await logIn(identifier, 'test-password')
+  }
+  globalThis.fetch = async () => new Response(null, { status: 401 })
+  await assert.rejects(logIn('missing', 'wrong'), (error) => error instanceof ApiError && error.status === 401)
+})
+
+
+test('sign-in network failure rejects instead of reporting success', async () => {
+  globalThis.fetch = async () => { throw new TypeError('offline') }
+  await assert.rejects(logIn('Test_Player', 'password'),
+    (error) => error instanceof ApiError && error.status === 0)
+})
+
+test('sign-in preserves rate-limit and server failures for user feedback', async () => {
+  for (const status of [429, 500, 503]) {
+    globalThis.fetch = async () => new Response(null, { status })
+    await assert.rejects(logIn('Test_Player', 'password'),
+      (error) => error instanceof ApiError && error.status === status)
+  }
 })

@@ -7,8 +7,8 @@
     <meta name="color-scheme" content="light dark" />
     <script>
       (() => {
-        let theme = 'light';
-        try { theme = localStorage.getItem('minecraft-theme') || 'light'; } catch {}
+        let theme = 'system';
+        try { const stored = localStorage.getItem('minecraft-theme'); theme = stored === 'light' || stored === 'dark' ? stored : 'system'; } catch {}
         document.documentElement.dataset.theme = theme === 'system'
           ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
           : (theme === 'dark' ? 'dark' : 'light');
