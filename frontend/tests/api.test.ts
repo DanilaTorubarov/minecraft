@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
-import { ApiError, formatDuration, getStats, logOut } from '../src/lib/api.ts'
+import { ApiError, formatDuration, getStats, logOut, register, confirmRegistration } from '../src/lib/api.ts'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -54,4 +54,29 @@ test('play time renders as whole units, never as a countdown', () => {
   assert.equal(formatDuration(90061), '1d 1h 1m')
   assert.equal(formatDuration(86400), '1d')
   assert.equal(formatDuration(-12), '0s')
+})
+
+
+test('registration returns a pending challenge and never treats immediate account creation as confirmation', async () => {
+  const challenge = { challenge: 'a'.repeat(64), expires_in: 900, email_delivery: 'preview' }
+  globalThis.fetch = async (path, options) => {
+    assert.equal(path, '/api/register')
+    assert.equal(options?.method, 'POST')
+    return new Response(JSON.stringify(challenge), { status: 202 })
+  }
+  const input = { displayed_nickname: 'Test', login: 'Tester', email: 'test@example.com', password: 'password' }
+  assert.deepEqual(await register(input), challenge)
+  globalThis.fetch = async () => new Response(null, { status: 201 })
+  await assert.rejects(register(input), (error) => error instanceof ApiError && error.status === 201)
+})
+
+test('registration confirmation sends both the browser challenge and code and rejects expiry', async () => {
+  globalThis.fetch = async (path, options) => {
+    assert.equal(path, '/api/register/confirm')
+    assert.deepEqual(JSON.parse(String(options?.body)), { challenge: 'challenge', code: '012345' })
+    return new Response(null, { status: 201 })
+  }
+  await confirmRegistration('challenge', '012345')
+  globalThis.fetch = async () => new Response(null, { status: 400 })
+  await assert.rejects(confirmRegistration('challenge', '012345'), (error) => error instanceof ApiError && error.status === 400)
 })

@@ -1,6 +1,6 @@
 # Automatic account emails
 
-The website now sends mailbox-confirmation links and security notifications using
+The website sends registration codes, mailbox-confirmation links, and security notifications using
 SMTP (the standard protocol for sending email). The website server sends the
 message to a delivery provider, and the provider delivers it to Gmail, Outlook,
 or the recipient's other mailbox. You do not need to operate your own mail server.
@@ -9,15 +9,20 @@ or the recipient's other mailbox. You do not need to operate your own mail serve
 
 Local development is configured to use **Mailpit**, a fake delivery server:
 
-1. Open `https://localhost`, register a new account with a displayed nickname,
-   and open **Account → Security**.
-2. Keep the current address to verify it, or enter a different address. Enter
-   the current website password and press **Send confirmation**.
-3. Open **http://localhost:8025**. The confirmation email appears here, even if
-   you used a made-up address. It will NOT arrive in Gmail or another real inbox.
-4. Open the link and press **Confirm email**. The link expires after 15 minutes
-   and works once. The new address becomes the login email only after confirmation;
-   website sessions are then signed out. Log in with the confirmed address.
+1. Open `https://localhost/register`, enter the account details, and press
+   **Send confirmation code**. The account does not exist yet.
+2. Open **http://localhost:8025** and read the six-digit registration code.
+   Local mail appears here even for a made-up address; it does not arrive in a
+   real inbox. Enter the code in the same registration window within 15 minutes.
+3. Press **Confirm email & create account**. The address is marked verified and
+   the website signs you in. Codes work once; a resend invalidates the old code.
+   Resends require a 60-second wait, with at most five emails per mailbox per
+   hour and five incorrect attempts per code. An expired/exhausted code requires
+   a new request. Reloading the registration page also requires a new request.
+4. Later email changes remain in **Account → Security**: enter the current
+   website password and request confirmation of the destination address. That
+   separate flow sends a single-use link valid for 15 minutes. Confirming it
+   changes the login email and signs website sessions out.
 
 Mailpit's inbox is bound to `127.0.0.1` and its SMTP port is not published. The
 container stores preview mail only temporarily; it is not a production mailbox.
@@ -69,7 +74,21 @@ docker compose --env-file .env.docker up -d --force-recreate app proxy
 
 ## What is implemented
 
-- Registration uses one displayed nickname instead of legal names.
+- Registration uses one displayed nickname instead of legal names and requires
+  a six-digit email code valid for 15 minutes. Migration `0011` keeps pending
+  signups separate from users; they cannot log in. Passwords are Argon2 hashes,
+  and codes are hashed together with an unguessable browser challenge. Neither
+  the code nor the challenge is stored in plaintext or logged. Confirmation
+  creates a verified user and consumes the pending signup in one transaction.
+  Existing accounts keep their current verification state and login access.
+- `POST /api/register` returns `202 {challenge, expires_in, email_delivery}` only
+  after SMTP accepts the message; its JSON response has `Cache-Control: no-store`.
+  `POST /api/register/confirm {challenge, code}` returns `201` on success, `400`
+  for an invalid/expired/exhausted/used code, or `409` if the email/login became
+  taken. IP limits apply to both endpoints; mailbox/resend limits return `429`.
+  SMTP failures return `503` and roll back the pending signup. An expired pending
+  row is removed on a later registration request. The browser keeps the challenge
+  only in memory, never in local storage or a URL.
 - Overview contains linking and account details; Security contains password and
   email changes.
 - Password changes require the current password and at least 6 characters for

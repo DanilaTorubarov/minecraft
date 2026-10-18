@@ -32,7 +32,7 @@ The panel never sees or stores a Minecraft password. In-game authentication stay
 
 Confirmed:
 - Each Minecraft UUID owns a coin balance shared between the game and website. Each uncancelled block broken after AuthMe login earns 1 coin. `/bal` and `/balance` show the player's own balance; Statistics shows each linked account and their combined total. New balances start at zero; historical activity is not retroactively rewarded. Balances survive unlinking.
-- Register, log in, log out, and a session that lasts 24 hours, absolute.
+- Register with a six-digit email confirmation code valid for 15 minutes, log in, log out, and a session that lasts 24 hours, absolute. The account is created only after mailbox confirmation; code resends and attempts are limited. Existing accounts retain login access.
 - One website account may own one or more linked Minecraft accounts, and can unlink them.
 - After in-game authentication, `/website email` privately reminds the player of their linked website email using a masked address. It does not verify the email or reset a password.
 - A link code is single-use, valid for five minutes, and only the newest one per account works.

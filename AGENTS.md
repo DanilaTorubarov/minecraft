@@ -31,7 +31,7 @@
 - Postgres string comparison is case-sensitive; email/login lookups rely on the app-level normalization below, not on the database.
 
 ## API semantics
-- Register: `201` created · `400` validation failure · `409` email or login already taken.
+- Register: `POST /api/register` → `202 {challenge, expires_in, email_delivery}` after sending a six-digit code (15-minute TTL); no user exists until `POST /api/register/confirm {challenge, code}` → `201`. Invalid/expired/used/exhausted codes → `400`; taken email/login → `409`; resend/mailbox/IP budgets → `429`; SMTP failure → `503`. Pending signups in migration `0011` hold Argon2 password hashes, SHA-256 challenge hashes and SHA-256(challenge:code), never raw codes/challenges. Five wrong attempts per code; 60-second resend cooldown; five emails per mailbox/hour. Confirmation creates a verified user and consumes the pending signup transactionally. Existing users retain their verification state and login access.
 - Login: `200` success · `401` unknown email OR wrong password (intentionally identical — do not leak which accounts exist).
 - Logout: `200` always; deletes the session row and clears the cookie (idempotent, no session required).
 - Me: `200` with the current user, or `401` when the session cookie is missing, unknown, or expired.

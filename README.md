@@ -212,6 +212,22 @@ Details:
 - Statistics survive unlinking: the rows are keyed by UUID with no foreign key, so unlinking hides them and re-linking the same in-game name restores them.
 - `stats-report-seconds` (default `5`) in `mc-config/purpur/plugins/LinkBridge/config.yml` sets the flush interval.
 
+## Registration email confirmation
+
+New website accounts require a six-digit email code valid for **15 minutes**.
+`POST /api/register` sends the code and returns `202` with an opaque browser
+challenge; no user is created yet. The registration page shows the code field,
+expiry countdown, and resend action. `POST /api/register/confirm` consumes the
+code and creates a verified account (`201`), then the page signs in. Wrong,
+expired, used or exhausted codes return `400`; a taken email/login returns `409`.
+Codes allow five incorrect attempts, and resending waits 60 seconds with a
+five-per-mailbox hourly limit. Existing IP limits also apply. Delivery failure
+returns `503` without creating an account. Existing users retain login access.
+
+The local setup delivers to [Mailpit](http://localhost:8025), not a real inbox.
+For real email delivery, configure SMTP as described in [EMAIL.md](EMAIL.md).
+Migration `0011` stores only hashed pending credentials; confirmation is atomic.
+
 ## Inventory
 
 Each player app also has an **Inventory** page: what that player is carrying, as the game server last saw it — armor, off hand, hotbar and main inventory, with every item in its own bubble over the desktop scenery. The panel draws the layout the game reports; it never invents one.

@@ -1,6 +1,6 @@
-import { useState, type SubmitEvent } from 'react'
+import { useEffect, useState, type SubmitEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { ApiError, register, sharedMessage } from '../lib/api'
+import { ApiError, confirmRegistration, register, sharedMessage, type RegistrationChallenge } from '../lib/api'
 import { playSound } from '../lib/sounds'
 import { useAuth } from '../lib/auth-context'
 
@@ -36,6 +36,7 @@ function messageFor(error: unknown): string {
     if (shared !== null) {
       return shared
     }
+    if (error.status === 503) return 'The confirmation email could not be sent. Please try again later.'
     if (error.status === 409) {
       return 'That email or login is already taken. Log in instead, or pick another.'
     }
@@ -58,6 +59,56 @@ function RegisterPage() {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [challenge, setChallenge] = useState<RegistrationChallenge | null>(null)
+  const [code, setCode] = useState('')
+  const [expiresAt, setExpiresAt] = useState(0)
+  const [resendAt, setResendAt] = useState(0)
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (!challenge) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [challenge])
+  const secondsLeft = Math.max(0, Math.ceil((expiresAt - now) / 1000))
+  const resendWait = Math.max(0, Math.ceil((resendAt - now) / 1000))
+
+  async function sendCode() {
+    setError('')
+    setBusy(true)
+    try {
+      const result = await register({ displayed_nickname: displayedNickname, login, email, password })
+      const sentAt = Date.now()
+      setChallenge(result)
+      setCode('')
+      setExpiresAt(sentAt + result.expires_in * 1000)
+      setResendAt(sentAt + 60_000)
+      setNow(sentAt)
+    } catch (problem) { setError(messageFor(problem)) }
+    finally { setBusy(false) }
+  }
+
+  async function onConfirm(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!challenge) return
+    setError('')
+    setBusy(true)
+    try {
+      await confirmRegistration(challenge.challenge, code)
+      playSound('done')
+      try {
+        await signIn(email, password)
+        navigate('/cabinet', { replace: true })
+      } catch {
+        navigate('/login', { replace: true, state: { securityNotice: 'Email confirmed and account created. Log in to continue.' } })
+      }
+      setPassword('')
+      setConfirm('')
+    } catch (problem) {
+      setError(problem instanceof ApiError && problem.status === 400
+        ? 'That code is incorrect, expired, already used, or has too many attempts. Try again or request a new code.'
+        : messageFor(problem))
+    } finally { setBusy(false) }
+  }
 
   async function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -69,26 +120,40 @@ function RegisterPage() {
       return
     }
 
-    setBusy(true)
-    try {
-      await register({ displayed_nickname: displayedNickname, login, email, password })
-      // Registering does not mint a session, so sign straight in and continue to the
-      // page the player actually came for.
-      await signIn(email, password)
-      playSound('done')
-      navigate('/cabinet', { replace: true })
-    } catch (problem) {
-      setError(messageFor(problem))
-      setBusy(false)
-    }
+    await sendCode()
   }
+
+  if (challenge) return <>
+    <div className="page-head"><h1>Confirm your email</h1>
+      <p className="page-sub">Enter the six-digit code sent to {email.toLowerCase()}. Your account is created after confirmation.</p>
+    </div>
+    {challenge.email_delivery === 'preview' && <p className="note">Local email preview: open <a href="http://localhost:8025" target="_blank" rel="noreferrer">Mailpit</a> to read your code. It will not arrive in a real inbox.</p>}
+    {error && <p className="note" data-tone="error" role="alert">{error}</p>}
+    <form className="form" onSubmit={onConfirm}>
+      <div className="field">
+        <label htmlFor="registration-code">Confirmation code</label>
+        <input id="registration-code" name="code" inputMode="numeric" autoComplete="one-time-code"
+          pattern="[0-9]{6}" maxLength={6} value={code} required autoFocus
+          aria-describedby="registration-code-hint" disabled={busy}
+          onChange={event => setCode(event.target.value.replace(/\D/g, ''))} />
+        <span className="field-hint" id="registration-code-hint">{secondsLeft > 0
+          ? `Code expires in ${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')}. Only the newest code works.`
+          : 'This code has expired. Request a new code to continue.'}</span>
+      </div>
+      <div className="btn-row">
+        <button className="btn btn-primary" type="submit" disabled={busy || code.length !== 6 || secondsLeft === 0}>{busy ? 'Please wait…' : 'Confirm email & create account'}</button>
+        <button className="btn" type="button" disabled={busy || resendWait > 0} onClick={() => void sendCode()}>{resendWait > 0 ? `Resend code in ${resendWait}s` : 'Resend code'}</button>
+      </div>
+    </form>
+    <p className="form-foot"><button className="btn btn-quiet" type="button" disabled={busy} onClick={() => { setChallenge(null); setCode(''); setError('') }}>Change registration details</button></p>
+  </>
 
   return (
     <>
       <div className="page-head">
         <h1>Register</h1>
         <p className="page-sub">
-          Create an account, then link your in-game name from your account page.
+          Confirm your email with a code valid for 15 minutes, then link your in-game name.
         </p>
       </div>
 
@@ -189,7 +254,7 @@ function RegisterPage() {
 
         <div className="btn-row">
           <button type="submit" className="btn btn-primary" disabled={busy}>
-            {busy ? 'Creating your account…' : 'Create account'}
+            {busy ? 'Sending confirmation…' : 'Send confirmation code'}
           </button>
         </div>
       </form>

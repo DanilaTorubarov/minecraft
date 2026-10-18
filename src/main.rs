@@ -51,6 +51,8 @@ fn app(pool: sqlx::PgPool) -> Router {
     );
     Router::new()
         .route("/api/register", register)
+        .route("/api/register/confirm", post(confirm_registration).layer(
+            middleware::from_fn_with_state(pool.clone(), rate_limit_security_ip)))
         .route("/api/login", login)
         .route("/api/logout", post(logout_user))
         .route("/api/me", get(current_user))
@@ -361,7 +363,7 @@ fn lockout_seconds(failed_count: i64, threshold: i64, base: i64, max: i64) -> i6
 async fn register_user(
     State(pool): State<sqlx::PgPool>,
     Json(input): Json<Registration>
-) -> Result<StatusCode, StatusCode> {
+) -> Result<impl IntoResponse, StatusCode> {
     let email = input.email.to_lowercase();
     let login = input.login.to_lowercase();
     let missing_text = [&input.email, &input.displayed_nickname, &input.login]
@@ -393,22 +395,105 @@ async fn register_user(
         .hash_password(password_bytes)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .to_string();
-    sqlx
-        ::query(
-            "INSERT INTO users (displayed_nickname,login,login_displayed,email,password_hash) VALUES ($1,$2,$3,$4,$5)"
-        )
-        .bind(input.displayed_nickname.trim())
+    let challenge = new_session_token()?;
+    // Bind the short code to an unguessable browser challenge. Neither the
+    // challenge nor the code is stored in plaintext or written to logs.
+    let code = registration_code()?;
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("DELETE FROM pending_registrations WHERE expires_at <= now()")
+        .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let updated = sqlx::query("INSERT INTO pending_registrations
+        (email, challenge_hash, code_hash, displayed_nickname, login, login_displayed, password_hash, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '15 minutes')
+        ON CONFLICT (email) DO UPDATE SET challenge_hash = EXCLUDED.challenge_hash,
+        code_hash = EXCLUDED.code_hash, displayed_nickname = EXCLUDED.displayed_nickname,
+        login = EXCLUDED.login, login_displayed = EXCLUDED.login_displayed,
+        password_hash = EXCLUDED.password_hash, created_at = now(),
+        expires_at = EXCLUDED.expires_at, failed_attempts = 0
+        WHERE pending_registrations.created_at <= now() - interval '60 seconds'")
+        .bind(&email).bind(hash_token(&challenge)).bind(hash_token(&format!("{challenge}:{code}")))
+        .bind(input.displayed_nickname.trim()).bind(&login).bind(&input.login).bind(password_hash)
+        .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if updated.rows_affected() == 0 { return Err(StatusCode::TOO_MANY_REQUESTS); }
+    // A persistent mailbox budget also applies across changing client IPs.
+    if ip_limit_exceeded(&pool, "register_email", 5, 3600, &hash_token(&email)).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.is_some() {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+    send_account_mail(&email, "Confirm your registration",
+        format!("Your website registration code is:\n\n{code}\n\nEnter this six-digit code in the registration window. It expires in 15 minutes and works once. Only the newest code is valid. If you did not request this, ignore this email.")).await?;
+    let expires_in: i64 = sqlx::query_scalar("SELECT greatest(0, floor(extract(epoch FROM expires_at - clock_timestamp())))::bigint FROM pending_registrations WHERE email = $1")
+        .bind(&email).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((StatusCode::ACCEPTED, [(header::CACHE_CONTROL, "no-store")], Json(RegistrationChallenge {
+        challenge, expires_in: expires_in.min(900) as u32, email_delivery: smtp_mode(),
+    })))
+}
+
+#[derive(serde::Serialize)]
+struct RegistrationChallenge {
+    challenge: String,
+    expires_in: u32,
+    email_delivery: &'static str,
+}
+
+fn registration_code() -> Result<String, StatusCode> {
+    loop {
+        let mut bytes = [0u8; 4];
+        getrandom::fill(&mut bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let value = u32::from_le_bytes(bytes);
+        // Rejection sampling keeps all six-digit codes equally likely.
+        if value < 4_294_000_000 { return Ok(format!("{:06}", value % 1_000_000)); }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RegistrationConfirmation { challenge: String, code: String }
+
+async fn confirm_registration(
+    State(pool): State<sqlx::PgPool>,
+    Json(input): Json<RegistrationConfirmation>,
+) -> Result<StatusCode, StatusCode> {
+    if input.challenge.len() != 64 || !input.challenge.bytes().all(|b| b.is_ascii_hexdigit())
+        || input.code.len() != 6 || !input.code.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = sqlx::query("SELECT email, code_hash, displayed_nickname, login, login_displayed, password_hash
+        FROM pending_registrations WHERE challenge_hash = $1 AND expires_at > now()
+        AND failed_attempts < 5 FOR UPDATE")
+        .bind(hash_token(&input.challenge)).fetch_optional(&mut *tx).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::BAD_REQUEST)?;
+    let stored: String = row.try_get("code_hash").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let supplied = hash_token(&format!("{}:{}", input.challenge, input.code));
+    if !constant_time_eq(stored.as_bytes(), supplied.as_bytes()) {
+        sqlx::query("UPDATE pending_registrations SET failed_attempts = failed_attempts + 1 WHERE challenge_hash = $1")
+            .bind(hash_token(&input.challenge)).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let email: String = row.try_get("email").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let login: String = row.try_get("login").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // The early check improves feedback; the unique constraints arbitrate races.
+    if sqlx::query("SELECT 1 FROM users WHERE email = $1 OR login = $2")
+        .bind(&email).bind(&login).fetch_optional(&mut *tx).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.is_some() {
+        return Err(StatusCode::CONFLICT);
+    }
+    sqlx::query("INSERT INTO users (displayed_nickname, login, login_displayed, email, password_hash, email_verified_at)
+        VALUES ($1, $2, $3, $4, $5, now())")
+        .bind(row.try_get::<String, _>("displayed_nickname").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
         .bind(&login)
-        .bind(&input.login)
+        .bind(row.try_get::<String, _>("login_displayed").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
         .bind(&email)
-        .bind(&password_hash)
-        .execute(&pool).await
-        .map_err(|error| {
-            match error {
-                sqlx::Error::Database(db) if db.is_unique_violation() => StatusCode::CONFLICT,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            }
+        .bind(row.try_get::<String, _>("password_hash").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .execute(&mut *tx).await.map_err(|error| match error {
+            sqlx::Error::Database(db) if db.is_unique_violation() => StatusCode::CONFLICT,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
+    sqlx::query("DELETE FROM pending_registrations WHERE email = $1").bind(email)
+        .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::CREATED)
 }
 
@@ -2182,16 +2267,151 @@ mod test {
         email: &str,
         password: &str
     ) -> Result<StatusCode, Box<dyn std::error::Error>> {
-        post_json(
-            pool,
-            "/api/register",
-            serde_json::json!({
-                "displayed_nickname": displayed_nickname,
-                "login": login,
-                "email": email,
-                "password": password,
-            })
-        ).await
+        let response = post_json_response(pool, "/api/register", serde_json::json!({
+            "displayed_nickname": displayed_nickname, "login": login, "email": email, "password": password,
+        })).await?;
+        if response.status() != StatusCode::ACCEPTED { return Ok(response.status()); }
+        let body = body_json(response).await?;
+        let challenge = body["challenge"].as_str().ok_or("missing signup challenge")?;
+        // Existing account tests need a confirmed fixture. Install a known code
+        // only in this database fixture; production never exposes plaintext codes.
+        sqlx::query("UPDATE pending_registrations SET code_hash = $1 WHERE challenge_hash = $2")
+            .bind(hash_token(&format!("{challenge}:123456"))).bind(hash_token(challenge)).execute(pool).await?;
+        let status = post_json(pool, "/api/register/confirm", serde_json::json!({"challenge": challenge, "code": "123456"})).await?;
+        sqlx::query("DELETE FROM auth_rate_limits WHERE scope = 'register_email' AND subject = $1")
+            .bind(hash_token(&email.to_lowercase())).execute(pool).await?;
+        Ok(status)
+    }
+
+    async fn pending_signup(pool: &sqlx::PgPool, email: &str, login: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let response = post_json_response(pool, "/api/register", serde_json::json!({
+            "displayed_nickname": "Test", "login": login, "email": email, "password": "signup-password",
+        })).await?;
+        if response.status() != StatusCode::ACCEPTED { return Err(format!("signup returned {}", response.status()).into()); }
+        let body = body_json(response).await?;
+        let challenge = body["challenge"].as_str().ok_or("missing signup challenge")?.to_owned();
+        sqlx::query("UPDATE pending_registrations SET code_hash = $1 WHERE challenge_hash = $2")
+            .bind(hash_token(&format!("{challenge}:123456"))).bind(hash_token(&challenge)).execute(pool).await?;
+        Ok(challenge)
+    }
+
+    async fn clean_signup(pool: &sqlx::PgPool, email: &str) -> TestResult {
+        sqlx::query("DELETE FROM pending_registrations WHERE email = $1").bind(email.to_lowercase()).execute(pool).await?;
+        sqlx::query("DELETE FROM users WHERE email = $1").bind(email.to_lowercase()).execute(pool).await?;
+        sqlx::query("DELETE FROM auth_rate_limits WHERE scope = 'register_email' AND subject = $1")
+            .bind(hash_token(&email.to_lowercase())).execute(pool).await?;
+        Ok(())
+    }
+
+    async fn confirm_signup(pool: &sqlx::PgPool, challenge: &str, code: &str) -> Result<StatusCode, Box<dyn std::error::Error>> {
+        post_json(pool, "/api/register/confirm", serde_json::json!({"challenge": challenge, "code": code})).await
+    }
+
+    #[tokio::test]
+    async fn registration_only_creates_a_verified_account_after_one_confirmation() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            let challenge = pending_signup(&pool, &email, &id).await?;
+            let before = login_request(&pool, &email, "signup-password").await?;
+            let ttl: bool = sqlx::query_scalar("SELECT expires_at - created_at = interval '15 minutes' FROM pending_registrations WHERE email = $1")
+                .bind(&email).fetch_one(&pool).await?;
+            let (a, b) = tokio::join!(confirm_signup(&pool, &challenge, "123456"), confirm_signup(&pool, &challenge, "123456"));
+            let verified: bool = sqlx::query_scalar("SELECT email_verified_at IS NOT NULL FROM users WHERE email = $1")
+                .bind(&email).fetch_one(&pool).await?;
+            let after = login_request(&pool, &email, "signup-password").await?;
+            let replay = confirm_signup(&pool, &challenge, "123456").await?;
+            Ok((before, ttl, a?, b?, verified, after, replay))
+        }.await;
+        clean_signup(&pool, &email).await?;
+        let (before, ttl, a, b, verified, after, replay) = result?;
+        assert_eq!(before, StatusCode::UNAUTHORIZED);
+        assert!(ttl && verified);
+        assert!((a == StatusCode::CREATED && b == StatusCode::BAD_REQUEST) || (b == StatusCode::CREATED && a == StatusCode::BAD_REQUEST));
+        assert_eq!(after, StatusCode::OK);
+        assert_eq!(replay, StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registration_codes_expire_and_lock_after_five_wrong_attempts() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            let challenge = pending_signup(&pool, &email, &id).await?;
+            let mut statuses = Vec::new();
+            for _ in 0..5 { statuses.push(confirm_signup(&pool, &challenge, "654321").await?); }
+            let locked = confirm_signup(&pool, &challenge, "123456").await?;
+            sqlx::query("UPDATE pending_registrations SET failed_attempts = 0, expires_at = now() - interval '1 second' WHERE email = $1")
+                .bind(&email).execute(&pool).await?;
+            let expired = confirm_signup(&pool, &challenge, "123456").await?;
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE email = $1").bind(&email).fetch_one(&pool).await?;
+            Ok((statuses, locked, expired, count))
+        }.await;
+        clean_signup(&pool, &email).await?;
+        let (statuses, locked, expired, count) = result?;
+        assert!(statuses.iter().all(|s| *s == StatusCode::BAD_REQUEST));
+        assert_eq!((locked, expired, count), (StatusCode::BAD_REQUEST, StatusCode::BAD_REQUEST, 0));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registration_resends_are_limited_and_invalidate_the_old_challenge() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            let old = pending_signup(&pool, &email, &id).await?;
+            let early = post_json(&pool, "/api/register", serde_json::json!({"displayed_nickname":"Test", "login":id, "email":email, "password":"signup-password"})).await?;
+            sqlx::query("UPDATE pending_registrations SET created_at = now() - interval '61 seconds' WHERE email = $1").bind(&email).execute(&pool).await?;
+            let new = pending_signup(&pool, &email, &id).await?;
+            let invalid = confirm_signup(&pool, &old, "123456").await?;
+            let accepted = confirm_signup(&pool, &new, "123456").await?;
+            Ok((early, old, new, invalid, accepted))
+        }.await;
+        clean_signup(&pool, &email).await?;
+        let (early, old, new, invalid, accepted) = result?;
+        assert_eq!(early, StatusCode::TOO_MANY_REQUESTS);
+        assert_ne!(old, new);
+        assert_eq!((invalid, accepted), (StatusCode::BAD_REQUEST, StatusCode::CREATED));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_signups_cannot_overwrite_a_confirmed_login() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let other = format!("test_other_{id}@example.com");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            let a = pending_signup(&pool, &email, &id).await?;
+            let b = pending_signup(&pool, &other, &id).await?;
+            let first = confirm_signup(&pool, &a, "123456").await?;
+            let second = confirm_signup(&pool, &b, "123456").await?;
+            Ok((first, second))
+        }.await;
+        clean_signup(&pool, &email).await?;
+        clean_signup(&pool, &other).await?;
+        assert_eq!(result?, (StatusCode::CREATED, StatusCode::CONFLICT));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registration_mailbox_budget_rejects_without_leaving_a_pending_account() -> TestResult {
+        let pool = connect().await?;
+        let id = random_id().to_lowercase();
+        let email = format!("test_{id}@example.com");
+        let result: Result<_, Box<dyn std::error::Error>> = async {
+            for _ in 0..5 { ip_limit_exceeded(&pool, "register_email", 5, 3600, &hash_token(&email)).await?; }
+            let status = post_json(&pool, "/api/register", serde_json::json!({"displayed_nickname":"Test", "login":id, "email":email, "password":"signup-password"})).await?;
+            let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM pending_registrations WHERE email = $1").bind(&email).fetch_one(&pool).await?;
+            Ok((status, pending))
+        }.await;
+        clean_signup(&pool, &email).await?;
+        assert_eq!(result?, (StatusCode::TOO_MANY_REQUESTS, 0));
+        Ok(())
     }
 
     async fn login_request(

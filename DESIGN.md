@@ -225,3 +225,5 @@ Inventory bubbles use a clear center, a crisp Fresnel rim, restrained thin-film 
 Bubble highlights must fade directly into the sphere: no broad filled oval or sharply bounded reflection patch across the upper hemisphere.
 
 Inventory bubbles bob by just 3px vertically and 1px horizontally on staggered 5–6.4 second loops, pausing on cell hover or keyboard focus. Nine-column grids cap at 568px and equipment at 312px, with 8px gaps (6px in narrow windows), so wide windows do not spread bubbles apart.
+
+Registration uses the existing form/notice styles in two steps: account details and then mailbox confirmation. The confirmation step shows the destination email, one labeled six-digit code field with one-time-code autocomplete, a server-derived expiry countdown, confirm/create and resend actions, and a way to change details. Failed/expired codes and delivery failures remain explicit. Mailpit preview mode explains local delivery and links to its inbox; real SMTP mode omits that notice. Passwords/challenges remain in memory for this flow, and account creation is followed by sign-in or a clear login fallback.

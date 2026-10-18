@@ -51,6 +51,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     command: cargo test
 
 

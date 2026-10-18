@@ -145,11 +145,17 @@ export async function logIn(email: string, password: string): Promise<void> {
   }
 }
 
-export async function register(input: Registration): Promise<void> {
+export type RegistrationChallenge = { challenge: string; expires_in: number; email_delivery: 'preview' | 'smtp' | 'unavailable' }
+
+export async function register(input: Registration): Promise<RegistrationChallenge> {
   const response = await send('POST', '/api/register', input)
-  if (!response.ok) {
-    throw new ApiError(response.status)
-  }
+  if (response.status !== 202) throw new ApiError(response.status)
+  return await response.json() as RegistrationChallenge
+}
+
+export async function confirmRegistration(challenge: string, code: string): Promise<void> {
+  const response = await send('POST', '/api/register/confirm', { challenge, code })
+  if (!response.ok) throw new ApiError(response.status)
 }
 
 export async function logOut(): Promise<void> {
