@@ -14,6 +14,7 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   settings: ['Website preferences', 'Saved on this device'],
   stats: ['Server-measured activity', 'No invented numbers'],
   player: ['Minecraft player', 'Statistics & skin'],
+  casino: ['Server Mini Games', 'Play and test your luck'],
 }
 
 type Gesture = {

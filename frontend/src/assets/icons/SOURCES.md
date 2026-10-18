@@ -14,6 +14,9 @@ Catalog: https://frutigeraeroarchive.org/icons
 | vista-firewall-warning.png | https://frutigeraeroarchive.org/images/icons/windows_vista/vista_firewall_status_3.ico |
 | vista-personalization.png | https://frutigeraeroarchive.org/images/icons/windows_vista/vista_personalization.ico |
 | vista-perf-center.png | https://frutigeraeroarchive.org/images/icons/windows_vista/vista_perf_center.ico |
+| minigames-gamepad.png | https://frutigeraeroarchive.org/images/icons/windows_vista/vista_console.ico |
+| game-lucky-chest.png | https://icons.iconarchive.com/icons/iconarchive/seaside/256/Treasure-Chest-icon.png |
+| game-minesweeper.png | https://icons.iconarchive.com/icons/everaldo/crystal-clear/128/App-core-bomb-icon.png |
 
 Each PNG is the original 256×256, 32-bit RGBA PNG frame extracted byte-for-byte
 from its ICO container, with no redraw, generation, resizing, or pixel changes.

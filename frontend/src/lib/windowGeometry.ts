@@ -1,6 +1,6 @@
 export type WindowRect = { x: number; y: number; width: number; height: number }
 export type DesktopSize = { width: number; height: number }
-export type WindowKind = 'account' | 'settings' | 'stats' | 'player'
+export type WindowKind = 'account' | 'settings' | 'stats' | 'player' | 'casino'
 
 export function fitWindow(rect: WindowRect, area: DesktopSize, minWidth = 520): WindowRect {
   const width = Math.max(1, Math.min(area.width - 24, Math.max(minWidth, rect.width)))
@@ -20,6 +20,14 @@ export function initialWindow(area: DesktopSize, kind: WindowKind = 'account'): 
       x: area.width - width - 64,
       y: 62,
     }, area, 380)
+  }
+  if (kind === 'casino') {
+    const width = Math.min(880, area.width - 96)
+    return fitWindow({
+      width, height: Math.min(580, area.height - 40),
+      x: (area.width - width) / 2 + 24,
+      y: 36,
+    }, area, 520)
   }
   if (kind === 'stats' || kind === 'player') {
     const width = Math.min(900, area.width - 96)

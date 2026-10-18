@@ -15,6 +15,8 @@ import globeIcon from '../assets/icons/vista-search-globe.png'
 import personalizationIcon from '../assets/icons/vista-personalization.png'
 import perfCenterIcon from '../assets/icons/vista-perf-center.png'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
+import minigamesIcon from '../assets/icons/minigames-gamepad.png'
+import MinigamesPage from '../pages/MinigamesPage'
 
 function Shell() {
   const { user, signOut } = useAuth()
@@ -26,16 +28,19 @@ function Shell() {
   const [accountOpen, setAccountOpen] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
+  const [casinoOpen, setCasinoOpen] = useState(false)
   const [active, setActive] = useState('account')
   const [accountActivation, setAccountActivation] = useState(0)
   const [settingsActivation, setSettingsActivation] = useState(0)
   const [statsActivation, setStatsActivation] = useState(0)
+  const [casinoActivation, setCasinoActivation] = useState(0)
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
   const [playerApps, setPlayerApps] = useState<Record<string, { open: boolean; activation: number }>>({})
   const accountDock = useRef<HTMLButtonElement>(null)
   const settingsDock = useRef<HTMLButtonElement>(null)
   const statsDock = useRef<HTMLButtonElement>(null)
+  const casinoDock = useRef<HTMLButtonElement>(null)
   const playerDocks = useRef(new Map<string, HTMLButtonElement>())
   const playerAppKey = (uuid: string) => `${user?.id}:${uuid}`
   function openPlayer(uuid: string) {
@@ -52,9 +57,11 @@ function Shell() {
   function openAccount() { setAccountOpen(true); setActive('account'); setAccountActivation((value) => value + 1) }
   function openSettings() { setSettingsOpen(true); setActive('settings'); setSettingsActivation((value) => value + 1) }
   function openStats() { setStatsOpen(true); setActive('stats'); setStatsActivation((value) => value + 1) }
+  function openCasino() { setCasinoOpen(true); setActive('casino'); setCasinoActivation((value) => value + 1) }
   function hideAccount() { setAccountOpen(false); setActive('settings'); accountDock.current?.focus() }
   function hideSettings() { setSettingsOpen(false); setActive('account'); settingsDock.current?.focus() }
   function hideStats() { setStatsOpen(false); setActive('account'); statsDock.current?.focus() }
+  function hideCasino() { setCasinoOpen(false); setActive('account'); casinoDock.current?.focus() }
 
   async function handleSignOut() {
     setLeaving(true)
@@ -84,6 +91,7 @@ function Shell() {
         <nav className="desktop-menu" aria-label="Applications">
           <button onClick={openAccount} data-ui-sound={accountOpen ? 'click' : 'open'} aria-controls="account-window">Account</button>
           <button onClick={openStats} data-ui-sound={statsOpen ? 'click' : 'open'} aria-controls="stats-window">Global Statistics</button>
+          <button onClick={openCasino} data-ui-sound={casinoOpen ? 'click' : 'open'} aria-controls="casino-window">Мини-игры</button>
           {statsAccounts.map((account) => <button key={account.uuid} className="player-menu-app" onClick={() => openPlayer(account.uuid)} aria-controls={`player-${account.uuid}`} data-ui-sound={playerApps[playerAppKey(account.uuid)]?.open ? 'click' : 'open'}><PlayerHead username={account.username} textureHash={account.skin_hash} />{account.username}</button>)}
           <button onClick={openSettings} data-ui-sound={settingsOpen ? 'click' : 'open'} aria-controls="settings-window">Settings</button>
         </nav>
@@ -146,6 +154,13 @@ function Shell() {
               onGoToAccount={() => { navigate('/cabinet', { replace: true }); openAccount() }} />
           </DesktopWindow>
         ))}
+        <DesktopWindow id="casino-window" title="Мини-игры" icon={minigamesIcon} kind="casino" open={casinoOpen} activation={casinoActivation} active={active === 'casino'} onFocus={() => setActive('casino')} onClose={hideCasino} onMinimize={hideCasino}>
+          <div className="workspace casino-workspace">
+            <main className="main" id="casino-content">
+              <MinigamesPage onGoToAccount={() => { navigate('/login', { replace: true }); openAccount() }} />
+            </main>
+          </div>
+        </DesktopWindow>
         <DesktopWindow id="settings-window" title="Settings" icon={personalizationIcon} kind="settings" open={settingsOpen} activation={settingsActivation} active={active === 'settings'} onFocus={() => setActive('settings')} onClose={hideSettings} onMinimize={hideSettings}>
           <div className="settings-content">
             <div className="settings-heading"><img src={personalizationIcon} alt="" /><div><h1>Settings</h1><p>Make this desktop yours.</p></div></div>
@@ -158,6 +173,7 @@ function Shell() {
       <nav className="desktop-dock" aria-label="Dock">
         <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? 'click' : 'open'} onClick={openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
         <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? 'click' : 'open'} onClick={openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Global Statistics</span></button>
+        <button ref={casinoDock} className="dock-app" data-ui-sound={casinoOpen ? 'click' : 'open'} onClick={openCasino} aria-controls="casino-window" aria-expanded={casinoOpen} data-open={casinoOpen}><img src={minigamesIcon} alt="" /><span>Мини-игры</span></button>
         {statsAccounts.map((account) => <button key={account.uuid} ref={(node) => { if (node) playerDocks.current.set(account.uuid, node); else playerDocks.current.delete(account.uuid) }} className="dock-app" title={`${account.username} player app`} onClick={() => openPlayer(account.uuid)} aria-controls={`player-${account.uuid}`} aria-expanded={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-open={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-ui-sound={playerApps[playerAppKey(account.uuid)]?.open ? 'click' : 'open'}><PlayerHead username={account.username} textureHash={account.skin_hash} /><span>{account.username}</span></button>)}
         <span className="dock-divider" />
         <button ref={settingsDock} className="dock-app" data-ui-sound={settingsOpen ? 'click' : 'open'} onClick={openSettings} aria-controls="settings-window" aria-expanded={settingsOpen} data-open={settingsOpen}><img src={personalizationIcon} alt="" /><span>Settings</span></button>

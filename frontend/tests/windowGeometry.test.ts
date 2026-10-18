@@ -17,7 +17,7 @@ test('resizing respects usable minimums and shrinks to a smaller viewport', () =
 })
 test('initial windows reserve space for the menu and dock', () => {
   const area = { width: 1280, height: 620 }
-  for (const kind of ['account', 'settings', 'stats'] as const) {
+  for (const kind of ['account', 'settings', 'stats', 'casino'] as const) {
     const rect = initialWindow(area, kind)
     assert.ok(rect.x >= 12 && rect.y >= 8)
     assert.ok(rect.x + rect.width <= area.width - 12)

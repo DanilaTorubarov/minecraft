@@ -1,6 +1,6 @@
 services:
   proxy:
-    image: dhi.io/caddy:2
+    image: caddy:2
     restart: unless-stopped
     ports:
       - "80:8080"
@@ -23,18 +23,18 @@ services:
         condition: service_healthy
 
   db:
-    image: dhi.io/postgres:18
+    image: postgres:17
     environment:
       POSTGRES_DB: project_db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-d", "project_db"]
       interval: 5s
       retries: 10
   tests:
-    image: dhi.io/rust:1-dev
+    image: rust:1
     profiles: ["tests"]
     working_dir: /app
     volumes:
