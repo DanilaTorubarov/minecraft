@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { fitWindow, initialWindow, type WindowKind, type WindowRect } from '../lib/windowGeometry'
 
 type Props = {
@@ -10,7 +10,7 @@ type Props = {
 }
 const desktopSize = () => ({ width: window.innerWidth, height: Math.max(280, window.innerHeight - 148) })
 const FOOTER: Record<WindowKind, [string, string]> = {
-  account: ['Minecraft account portal', 'No game passwords shared'],
+  account: ['Oasis Aero', 'No game passwords shared'],
   settings: ['Website preferences', 'Saved on this device'],
   stats: ['Server-measured activity', 'No invented numbers'],
   player: ['Minecraft player', 'Statistics & skin'],
@@ -44,6 +44,7 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
   const titleRef = useRef<HTMLDivElement>(null)
   const gesture = useRef<Gesture | null>(null)
   const settleAnimation = useRef<Animation | null>(null)
+  const wasOpen = useRef(open)
   const moved = useRef(false)
   const minimum = kind === 'settings' ? 380 : 520
   const fitted = fitWindow(maximized ? { x: 12, y: 8, width: area.width, height: area.height } : rect, area, minimum)
@@ -60,6 +61,28 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
     }
   }, [open, activation])
   useEffect(() => () => settleAnimation.current?.cancel(), [])
+
+  useLayoutEffect(() => {
+    const node = windowRef.current
+    const closing = wasOpen.current && !open
+    wasOpen.current = open
+    if (node === null) return
+    node.hidden = !open
+    if (!closing || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+    // Keep the glass visible for its exit, but inert from the moment it closes.
+    // Cleanup cancels this exit if the dock reopens it before it finishes.
+    node.hidden = false
+    settleAnimation.current?.cancel()
+    node.style.transform = ''
+    node.style.transformOrigin = ''
+    const animation = node.animate([
+      { opacity: 1, transform: 'none' },
+      { opacity: 0, transform: 'translateY(14px) scale(.94, .97)' },
+    ], { duration: 180, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' })
+    animation.onfinish = () => { node.hidden = true }
+    return () => { animation.cancel() }
+  }, [open])
 
   function playWobble(x: number, y: number, duration = 900) {
     const node = windowRef.current
@@ -166,7 +189,7 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
 
   return (
     <section ref={windowRef} id={id} className={`desktop-window ${kind}-window${dragging ? ' dragging' : ''}`}
-      aria-label={`${title} window`} hidden={!open} data-active={active}
+      aria-label={`${title} window`} hidden={!open} data-open={open} aria-hidden={!open} inert={!open} data-active={active}
       onPointerDownCapture={onFocus} onFocusCapture={onFocus}
       style={{ left: fitted.x, top: fitted.y, width: fitted.width, height: fitted.height }}>
       <div className="window-titlebar" ref={titleRef} tabIndex={0} role="toolbar"

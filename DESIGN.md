@@ -1,5 +1,5 @@
 ---
-name: Minecraft account portal
+name: Oasis Aero
 description: An old Mac desktop with Frutiger Aero glass over the supplied Asadal landscape.
 colors:
   text: "#173c50"
@@ -134,11 +134,13 @@ components:
     rounded: "{rounded.note}"
     padding: "{spacing.note}"
 ---
-# Design System: Minecraft account desktop
+# Design System: Oasis Aero
 
 ## Overview
 
 **Creative North Star: "Old Mac desktop / Frutiger Aero"**
+
+The website name is **Oasis Aero**. The menu pairs the sourced Search Globe with an Open Sans wordmark, with Aero in the semantic link blue. The welcome panel, browser title and Account footer use the same name. Minecraft remains the term for game accounts and activity. Bubble rim colors use soft radial patches instead of conic gradients to avoid axis seams when the pointer animates the wallpaper underneath.
 
 Account linking lives in a small desktop: a pearl menu bar, a bottom dock, independent glass windows for Account, Global Statistics, Settings, and each linked Minecraft nickname, and a quiet animated music player beside the dock. Aqua traffic lights and glossy blue controls bring the old Mac silhouette into the user-approved Frutiger Aero world. Light is the fresh-browser default and carries the supplied Asadal landscape; optional Dark uses smoked blue over a user-supplied night park scene.
 
@@ -194,8 +196,8 @@ Windows use 12px corners, the dock 15px, status entries 8px, linking containers 
 
 ## Components
 
-- **Desktop navigation:** menu and dock launch Account, Global Statistics, Settings, and a separate app for every linked Minecraft nickname. The Globe is the Account icon; Performance Center marks Global Statistics; Personalization marks Settings; server-reported skin heads mark player apps. The menu and dock scroll horizontally when the account list exceeds available width. Dock dots indicate open windows. Closing or minimizing hides a window, retains its mounted contents and geometry, and returns focus to its dock control; reopening raises and focuses it. Closing Account never logs out. Logout remains a separate menu action with failure feedback in Account.
-- **Music player:** a horizontal transport beside the bottom dock, matching its height. Track selection, previous / play-pause / stop / next, mute, volume (default 30%), looping, and seek with time readout remain visible. Stop pauses and rewinds to zero. Skipping preserves playback intent. Small level bars animate only during playback while the page is visible; controls press gently on activation. No decorative disc or new image assets are used. It starts paused and remembers track/volume/mute. A labeled Credits button opens the full track, artist, and Creative Commons attribution above the strip, dismissible outside or with Escape.
+- **Desktop navigation:** menu and dock launch Account, Global Statistics, Settings, and a separate app for every linked Minecraft nickname. The Globe is the Account icon; Performance Center marks Global Statistics; Personalization marks Settings; server-reported skin heads mark player apps. The menu and dock scroll horizontally when the account list exceeds available width. Dock dots indicate open windows. Dock buttons toggle their app closed when already open; menu entries continue to raise and focus it. Closing or minimizing shrinks and fades the glass over 180ms before hiding it, with immediate focus return and inert contents during the exit. Reopening interrupts the exit; Reduced Motion hides immediately. Closing or minimizing hides a window, retains its mounted contents and geometry, and returns focus to its dock control; reopening raises and focuses it. Closing Account never logs out. Logout remains a separate menu action with failure feedback in Account.
+- **Music player:** a horizontal transport beside the bottom dock, matching its height. Track selection, previous / play-pause / stop / next, mute, volume (default 30%), looping, and seek with time readout remain visible. Stop pauses and rewinds to zero. Skipping preserves playback intent. Small level bars animate only during playback while the page is visible; controls press gently on activation. No decorative disc or new image assets are used. It starts paused and remembers track/volume/mute. On mobile (≤760px), a centered 44px Music button above the dock reveals or hides the centered transport; controls start collapsed, playback stays mounted, and Escape closes the transport with focus returned to the button. A labeled Credits button opens the full track, artist, and Creative Commons attribution above the strip, dismissible outside or with Escape.
 - **Window controls:** drag a title bar or focus it and use arrow keys to move in 10px increments, Shift for 40px. The lower-right grip supports pointer or arrow-key resizing with the same steps. Double-click the title bar or use the green control to maximize/restore; Reset restores initial geometry. Bounds are clamped after changes and viewport resizing. Close, minimize, maximize/restore and Reset have explicit accessible names.
 - **Account navigation:** React Router links in `.account-toolbar` use compact `.btn-quiet` chrome and a focus-colored current-route border. A skip link opens Account and focuses main content.
 - **Settings:** Appearance contains the visible Color theme label and native Light / Dark / System select. `minecraft-theme` persists explicit preferences. New, invalid, missing or unavailable storage defaults to System; existing Light/Dark/System choices remain valid. System follows OS changes, and storage events synchronize tabs. The early HTML script and `lib/theme.ts` must agree to avoid a theme flash. Storage failure still permits a current-page selection.

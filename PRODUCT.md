@@ -53,7 +53,7 @@ Deliberately undecided:
 
 ## Brand Commitments
 
-None. There is no name, logo, or established voice yet, and copy stays plain and neutral. Nothing may claim a brand the operator has not chosen.
+The website is named **Oasis Aero**, chosen by the user. Its wordmark pairs the sourced Search Globe with the name in Open Sans and a blue Aero accent. Preserve the old Mac / Frutiger Aero desktop and plain, practical copy; keep Minecraft terminology for game accounts and activity.
 
 ## Evidence on Hand
 

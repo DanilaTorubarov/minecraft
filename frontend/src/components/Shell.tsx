@@ -80,7 +80,7 @@ function Shell() {
         requestAnimationFrame(() => document.getElementById('main-content')?.focus())
       }}>Skip to content</a>
       <header className="desktop-menubar">
-        <button className="desktop-brand" data-ui-sound={accountOpen ? 'click' : 'open'} onClick={openAccount}><img src={globeIcon} alt="" />Minecraft<span>Account desktop</span></button>
+        <button className="desktop-brand" data-ui-sound={accountOpen ? 'click' : 'open'} onClick={openAccount}><img src={globeIcon} alt="" /><strong className="brand-wordmark">Oasis <span>Aero</span></strong></button>
         <nav className="desktop-menu" aria-label="Applications">
           <button onClick={openAccount} data-ui-sound={accountOpen ? 'click' : 'open'} aria-controls="account-window">Account</button>
           <button onClick={openStats} data-ui-sound={statsOpen ? 'click' : 'open'} aria-controls="stats-window">Global Statistics</button>
@@ -102,7 +102,7 @@ function Shell() {
           <div className={`workspace ${authPage ? 'workspace-auth' : ''}`}>
             {authPage && <aside className="welcome-scene" aria-label="Welcome">
               <img className="welcome-icon" src={globeIcon} alt="" />
-              <div><h2>A place for your in-game identity.</h2><p>Connect your Minecraft account. Keep your next adventure close.</p></div>
+              <div><h2>Welcome to Oasis Aero.</h2><p>Connect your Minecraft account. Keep your next adventure close.</p></div>
               <div className="scene-caption"><img src={firewallOnIcon} alt="" /><div><strong>Your game password stays in the game.</strong><span>Link securely with a single-use code.</span></div></div>
             </aside>}
             <main className="main" id="main-content" tabIndex={-1}>
@@ -156,11 +156,11 @@ function Shell() {
         </DesktopWindow>
       </div>
       <nav className="desktop-dock" aria-label="Dock">
-        <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? 'click' : 'open'} onClick={openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
-        <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? 'click' : 'open'} onClick={openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Global Statistics</span></button>
-        {statsAccounts.map((account) => <button key={account.uuid} ref={(node) => { if (node) playerDocks.current.set(account.uuid, node); else playerDocks.current.delete(account.uuid) }} className="dock-app" title={`${account.username} player app`} onClick={() => openPlayer(account.uuid)} aria-controls={`player-${account.uuid}`} aria-expanded={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-open={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-ui-sound={playerApps[playerAppKey(account.uuid)]?.open ? 'click' : 'open'}><PlayerHead username={account.username} textureHash={account.skin_hash} /><span>{account.username}</span></button>)}
+        <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? 'close' : 'open'} onClick={accountOpen ? hideAccount : openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
+        <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? 'close' : 'open'} onClick={statsOpen ? hideStats : openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Global Statistics</span></button>
+        {statsAccounts.map((account) => <button key={account.uuid} ref={(node) => { if (node) playerDocks.current.set(account.uuid, node); else playerDocks.current.delete(account.uuid) }} className="dock-app" title={`${account.username} player app`} onClick={() => playerApps[playerAppKey(account.uuid)]?.open ? hidePlayer(account.uuid) : openPlayer(account.uuid)} aria-controls={`player-${account.uuid}`} aria-expanded={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-open={playerApps[playerAppKey(account.uuid)]?.open ?? false} data-ui-sound={playerApps[playerAppKey(account.uuid)]?.open ? 'close' : 'open'}><PlayerHead username={account.username} textureHash={account.skin_hash} /><span>{account.username}</span></button>)}
         <span className="dock-divider" />
-        <button ref={settingsDock} className="dock-app" data-ui-sound={settingsOpen ? 'click' : 'open'} onClick={openSettings} aria-controls="settings-window" aria-expanded={settingsOpen} data-open={settingsOpen}><img src={personalizationIcon} alt="" /><span>Settings</span></button>
+        <button ref={settingsDock} className="dock-app" data-ui-sound={settingsOpen ? 'close' : 'open'} onClick={settingsOpen ? hideSettings : openSettings} aria-controls="settings-window" aria-expanded={settingsOpen} data-open={settingsOpen}><img src={personalizationIcon} alt="" /><span>Settings</span></button>
       </nav>
       <MusicPlayer />
     </div>
