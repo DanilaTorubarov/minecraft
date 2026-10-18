@@ -10,14 +10,15 @@ This file records the state at this checkpoint. It is historical evidence, not a
 - Global Statistics combines the current user's linked accounts only. Each nickname/skin-head launcher opens an independent player app with Statistics and Skin pages. Shared statistics refresh every five seconds; each window keeps its own page and geometry during the linked session.
 - SkinsRestorer 15.12.6 on Purpur only, AuthMe-gated commands, Ely.by-first/Mojang-fallback skin lookup. TLauncher skins can be imported as standard PNGs; launcher rendering overrides remain client-controlled.
 - Owned-player website skin upload: PNG validation and metadata stripping, Classic/Slim preview, durable MineSkin signing queue, and LinkBridge 1.4.0 synchronization into SkinsRestorer. Migration `0009` separates observed textures from link-owned pending uploads. Saved means server storage acknowledged, not a visual guarantee on every client.
+- Player inventory: LinkBridge samples every authenticated player's inventory on the server thread (storage, armor, off hand — 41 slots with amounts, durability, custom names and enchantments) and reports the newest snapshot; item textures come from the official Minecraft client textures packaged for the server version and are uploaded once per item key. The player app's **Inventory** page shows them as still Frutiger Aero bubbles with amount pill, wear bar and enchantment glow, and an honest empty state until the server reports one. Migration `0010` adds `player_inventory` (replaced per report, no link FK) and `item_icons` (the first upload for a key wins).
 - Aero desktop, independent windows, sourced skin heads, Light Asadal / Dark night-park wallpapers, animated wallpaper, music widget beside the dock, and interface sounds. Preserve asset attribution and provenance.
 
 ## Deployment observed at checkpoint
 
 - Web app rebuilt successfully through Docker; `https://localhost/` returned HTTP 200.
-- App, Caddy, PostgreSQL, Mailpit, and Velocity were running; PostgreSQL, Mailpit, and Velocity reported healthy.
-- **Purpur was stopped** after an interrupted download left `mc/purpur/purpur-26.3-2652.jar` incomplete (34,249,194 bytes). Minecraft gameplay and game-to-panel synchronization are unavailable until the backend is restored.
-- A recovered full jar was preserved locally at `.plugin-build/purpur-26.3-2652-verified.jar` (58,033,746 bytes). Its MD5 matches the provider metadata: `bbf5d8703bc8ee5aa6c5251e1bbcaa78`; ZIP integrity passed. This generated file is ignored by Git. Recovery remains outstanding: with Purpur stopped, verify/copy this jar over the incomplete runtime jar, start only Purpur, and inspect startup logs and health. Do not delete worlds, AuthMe data, skin selections, or volumes.
+- App, Caddy, PostgreSQL, Mailpit, Velocity and Purpur are running; PostgreSQL, Mailpit, Velocity and Purpur reported healthy.
+- **Purpur recovered.** An interrupted download had left `mc/purpur/purpur-26.3-2652.jar` incomplete (34,249,194 bytes) and Purpur was stopped, which took gameplay and game-to-panel synchronization offline. On restart the image re-fetched the jar and the download completed: the runtime jar is now 58,033,746 bytes with MD5 `bbf5d8703bc8ee5aa6c5251e1bbcaa78`, identical to the preserved `.plugin-build/purpur-26.3-2652-verified.jar`. Purpur booted in 7.6 s, is healthy, and enabled AuthMe 6.0.1, SkinsRestorer 15.12.6 and LinkBridge 1.5.0 with no load or dependency errors. The preserved jar stays as the offline recovery copy (ignored by Git). Never delete worlds, AuthMe data, skin selections or volumes.
+- `mc/purpur/plugins/` holds LinkBridge 1.5.0; the build script retired earlier jars to `.jar.disabled`.
 - Compose retains AuthMe's shared library cache, uses the European Paper Maven mirror, and disables HTTP/2 for artifact downloads. Network availability is still required.
 
 ## Verification evidence
@@ -27,6 +28,14 @@ At this checkpoint:
 - `cargo check --tests`: passed.
 - Frontend ESLint: passed; Node 24 regression tests: **31 passed**.
 - Docker production build: TypeScript/Vite and Rust release build passed; HTTPS returned 200.
+
+Inventory change (same day):
+
+- `cargo check --tests`: passed. Compose `tests` suite: **83 passed** — four new inventory/item-icon checks (service token, malformed snapshots, snapshot replacement and owner-only reads, icon caching and serving), plus the pre-existing set.
+- The three fixed-window burst tests (login, register, link claim) now wait for a fresh rate-limit window before their burst: a window rollover mid-burst resets the counter and made them fail rarely under parallel load.
+- Frontend: TypeScript/Vite build, ESLint and **31** Node tests passed.
+- Gradle/JDK 25 built and installed LinkBridge **1.5.0** (inventory reporter + item-icon upload); older jars were retired to `.jar.disabled` by the build script.
+- Live after the rebuild: `https://localhost/` serves the new bundle (`index-DJmEdAKS.js`, `index-EzIIO8cT.css`); migration `0010` applied (`player_inventory`, `item_icons` present); `GET /api/players/{uuid}/inventory` answers `401` without a session; `POST /internal/inventory/report` still answers `404` through the public proxy. A browser-level look at the Inventory page was **not** possible here — the browser tools could not reach the local HTTPS stack — so its appearance rests on the frontend build/lint and the CSS review, not a capture.
 
 During the implementation preceding this checkpoint:
 
@@ -53,4 +62,26 @@ The checkpoint commit includes source, migrations, templates, supplied assets an
 
 ## Next verification
 
-Restore and start Purpur, confirm AuthMe / SkinsRestorer / LinkBridge startup, then verify skin rendering with an authenticated player and an unmodified second client. Check both a known official account and a known Ely.by account. Client skin replacement may affect the result; appearance never changes authentication or offline UUID ownership.
+Purpur is running again and reports healthy; AuthMe 6.0.1, SkinsRestorer 15.12.6 and LinkBridge 1.5.0 enabled cleanly. What remains is client-level: verify skin rendering with an authenticated player and an unmodified second client, checking both a known official account and a known Ely.by account. Client skin replacement may affect the result; appearance never changes authentication or offline UUID ownership.
+
+Then, with the same authenticated player, open that player's app on the website and check the **Inventory** page against the game: armor, off hand, hotbar and main inventory in the game's own slots, amounts and wear matching, enchanted items glowing, a renamed item showing its name, and common items (tools, blocks, food) showing real textures while model-assembled items (heads, potions) fall back to the sourced Performance Center artwork. Confirm nothing is shown before the plugin's first report, that a report lands within one sampling interval of an inventory change, and that unlinking hides the inventory while re-linking restores it.
+
+## Inventory icon and bubble correction — 2026-10-18
+
+- The original inventory implementation assumed dedicated-server jars contained client textures. Inspection found zero `assets/minecraft/textures/` entries in both the Mojang server jar and Purpur jar, and zero cached item icons. LinkBridge 1.5.1 now packages 2,131 original PNGs from the official 26.3 client; the build verifies Mojang metadata/client SHA-1 checksums and keeps downloads in `.plugin-build/client-textures/`.
+- Built and installed 1.5.1, restarted Purpur, and observed its enable message and healthy container status. Cached official textures for the three existing reported item keys through the internal endpoint (HTTP 200): stone sword, rotten flesh, leather helmet. No player inventory contents changed.
+- Inventory uses clearer Aero bubbles in both themes, immediate item-name/detail tooltips on hover/focus/touch with Escape dismissal, and correct Bukkit armor ordering (39 helmet through 36 boots). Tooltip portals escape window clipping and switch below items near the viewport top.
+- Verification: `cargo check --tests`, production Docker TypeScript/Vite build, ESLint and all 31 frontend regression tests passed. Light desktop and dark 360px-wide content were inspected with the actual InventoryPage in an isolated sample-data preview; keyboard name disclosure and Escape dismissal were checked. `.impeccable/review/inventory-final.png` records the light preview. The authenticated live player page was not inspected, and client-level inventory/skin verification remains outstanding.
+- During server startup/rebuild the logs included a panel-sync timeout and a transient watchdog dump with the main thread parked; Purpur subsequently reported healthy. No restart loop was observed.
+
+## Matching background bubbles — 2026-10-18
+
+Background and inventory bubbles now share the same CSS glass material in `frontend/src/index.css`: clear centers, cyan lower caustics, restrained colored rims and curved highlights, with matching Light/Dark overrides. Wallpaper size, depth blur, rise/drift, film animation and reduced-motion behavior are preserved. The Docker production build passed and the local app was rebuilt. Live Light and Dark appearances were inspected; the Light capture is `.impeccable/review/background-bubbles.png` (ignored).
+
+## Bubble reflection refinement — 2026-10-18
+
+Replaced the broad rotated oval reflection in the shared inventory/background bubble material with two small, softly fading upper-rim glints. Docker production build passed and the local app was rebuilt; the live background was inspected with the oval patch absent. Capture: `.impeccable/review/bubble-reflection-fixed.png` (ignored).
+
+## Compact moving inventory bubbles — 2026-10-18
+
+Inventory grids now cap their width (568px for nine slots, 312px for equipment), with 8px gaps and 6px gaps in narrow containers. Bubbles gently bob 3px vertically/1px horizontally on staggered loops, pausing on hover/focus; the existing global reduced-motion rule disables the animation. Docker production build passed and the app was rebuilt. Sample-data previews were inspected at wide Light and 360px Dark sizes; browser computed styles confirmed active motion and paused inspection, and the name tooltip remained available. Capture: `.impeccable/review/inventory-compact.png` (ignored).

@@ -106,42 +106,54 @@ body::before {
   50% { opacity: .14; }
 }
 .live-wallpaper-particles { position: absolute; inset: 0; overflow: hidden; }
-/* Optical reference: UNSW Physclips soap-film photographs and Pksois23's
-   Thin Film Interference Soap Bubble (Commons). These are CSS material layers,
-   not image assets: a clear center, grazing-angle rim, film bands, and glints. */
+/* Shared Aero glass: inventory slots and floating wallpaper bubbles use the
+   same clear center, cyan caustic, thin-film rim and soft rim glints. */
+:is(.wallpaper-bubble, .inv-bubble) {
+  --bubble-rim: rgb(255 255 255 / 90%);
+  --bubble-water: rgb(78 185 225 / 22%);
+  --bubble-shade: rgb(19 111 157 / 28%);
+  border-radius: 50%; border: 1px solid var(--bubble-rim);
+  background:
+    radial-gradient(ellipse at 50% 100%, rgb(166 249 247 / 70%), transparent 44%),
+    radial-gradient(circle at 50% 42%, transparent 42%, var(--bubble-water) 73%, var(--bubble-shade) 100%);
+  box-shadow: inset 1px 2px 3px rgb(255 255 255 / 80%), inset -2px -3px 5px var(--bubble-shade), 0 4px 7px rgb(18 69 96 / 15%);
+  isolation: isolate;
+}
+:is(.wallpaper-bubble, .inv-bubble)::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: conic-gradient(from 190deg, #a1f4ed, #92d6ff 15%, #d2bbf5 29%, #f6d9bf 40%, #fff 52%, #a0dfee 70%, #b5f1da 88%, #a1f4ed);
+  mask-image: radial-gradient(circle, transparent 59%, rgb(0 0 0 / 12%) 67%, rgb(0 0 0 / 65%) 91%, transparent 100%);
+  opacity: .65;
+}
+:is(.wallpaper-bubble, .inv-bubble)::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background:
+    radial-gradient(ellipse 12% 5% at 33% 13%, rgb(255 255 255 / 88%), rgb(255 255 255 / 24%) 45%, transparent 100%),
+    radial-gradient(ellipse 4% 8% at 15% 30%, rgb(255 255 255 / 52%), transparent 100%);
+  pointer-events: none; z-index: 2;
+}
+:root[data-theme='dark'] :is(.wallpaper-bubble, .inv-bubble) {
+  --bubble-rim: rgb(191 235 255 / 65%);
+  --bubble-water: rgb(70 163 217 / 20%);
+  --bubble-shade: rgb(0 18 43 / 55%);
+  background:
+    radial-gradient(ellipse at 50% 100%, rgb(76 209 220 / 38%), transparent 44%),
+    radial-gradient(circle at 50% 42%, rgb(55 111 146 / 9%) 42%, var(--bubble-water) 73%, var(--bubble-shade) 100%);
+  box-shadow: inset 1px 2px 3px rgb(213 242 255 / 35%), inset -2px -3px 5px var(--bubble-shade), 0 4px 7px rgb(0 8 18 / 35%);
+}
+:root[data-theme='dark'] :is(.wallpaper-bubble, .inv-bubble)::after { opacity: .55; }
 .wallpaper-bubble {
   position: absolute; left: var(--bubble-x); bottom: -12vh;
   width: var(--bubble-size); height: var(--bubble-size);
-  overflow: hidden; isolation: isolate; border: 1px solid rgb(255 255 255 / 76%);
-  border-radius: 50%; opacity: 0;
-  background: radial-gradient(circle, transparent 0 56%, rgb(212 245 255 / 2%) 67%, rgb(202 241 255 / 10%) 79%, rgb(243 253 255 / 30%) 91%, rgb(255 255 255 / 80%) 98%, rgb(255 255 255 / 96%) 100%);
-  box-shadow: inset 1px 2px 2px rgb(255 255 255 / 88%), inset -2px -3px 4px rgb(95 177 220 / 36%), 0 3px 7px rgb(8 52 87 / 12%);
+  overflow: hidden; opacity: 0;
   filter: blur(var(--bubble-blur)); will-change: transform, opacity;
   animation: wallpaper-bubble-rise var(--bubble-duration) linear var(--bubble-delay) infinite;
 }
-.wallpaper-bubble::before {
-  content: ''; position: absolute; inset: 0; border-radius: inherit;
-  background:
-    radial-gradient(ellipse at 24% 28%, transparent 36%, rgb(119 242 255 / 75%) 43%, rgb(166 137 255 / 65%) 48%, rgb(255 142 209 / 75%) 53%, transparent 60%),
-    radial-gradient(ellipse at 78% 73%, transparent 30%, rgb(255 204 124 / 75%) 41%, rgb(255 132 203 / 80%) 46%, rgb(119 218 255 / 80%) 51%, transparent 59%),
-    conic-gradient(from 15deg, #94f4ff, #bdacff 12%, #ffb5da 22%, #ffe3a2 32%, #acffe2 43%, #79dfff 53%, #d5afff 64%, #ffbdce 76%, #ffe7aa 84%, #a1ffe9 93%, #94f4ff);
-  -webkit-mask-image: radial-gradient(circle, transparent 0 43%, rgb(0 0 0 / 3%) 54%, rgb(0 0 0 / 16%) 66%, rgb(0 0 0 / 50%) 82%, #000 96%);
-  mask-image: radial-gradient(circle, transparent 0 43%, rgb(0 0 0 / 3%) 54%, rgb(0 0 0 / 16%) 66%, rgb(0 0 0 / 50%) 82%, #000 96%);
-  opacity: .85; animation: wallpaper-bubble-film 18s ease-in-out var(--bubble-delay) infinite;
-}
-.wallpaper-bubble::after {
-  content: ''; position: absolute; inset: 0; border-radius: inherit;
-  background:
-    radial-gradient(ellipse 3% 4% at 26% 19%, #fff 0 45%, rgb(255 255 255 / 82%) 57%, transparent 100%),
-    radial-gradient(ellipse 10% 3% at 33% 15%, rgb(255 255 255 / 94%) 0 36%, rgb(255 255 255 / 30%) 65%, transparent 100%),
-    radial-gradient(ellipse 2% 3% at 78% 81%, #fff 0 30%, rgb(222 249 255 / 76%) 54%, transparent 100%),
-    radial-gradient(ellipse 7% 2% at 71% 87%, rgb(255 255 255 / 80%) 0 25%, transparent 100%);
-}
+.wallpaper-bubble::before { animation: wallpaper-bubble-film 18s ease-in-out var(--bubble-delay) infinite; }
 @keyframes wallpaper-bubble-film {
   0%, 100% { transform: rotate(-18deg); }
   50% { transform: rotate(38deg); }
 }
-:root[data-theme='dark'] .wallpaper-bubble { border-color: rgb(226 249 255 / 82%); }
 @keyframes wallpaper-bubble-rise {
   0% { transform: translate3d(0, 4vh, 0) scale(.68); opacity: 0; }
   9% { opacity: var(--bubble-opacity); }

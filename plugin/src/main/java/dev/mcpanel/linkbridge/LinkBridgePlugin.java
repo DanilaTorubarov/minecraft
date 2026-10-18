@@ -3,6 +3,7 @@ package dev.mcpanel.linkbridge;
 import fr.xephi.authme.api.v3.AuthMeApi;
 import fr.xephi.authme.events.LoginEvent;
 import fr.xephi.authme.events.RegisterEvent;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -14,6 +15,7 @@ import java.nio.file.StandardCopyOption;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -22,9 +24,12 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -48,6 +53,8 @@ import org.bukkit.event.player.PlayerItemBreakEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
@@ -70,6 +77,15 @@ import org.bukkit.plugin.java.JavaPlugin;
  * are counted: a cancelled break, a teleport, or a look-around that moves nobody
  * adds nothing. Activity only counts after AuthMe has authenticated the player:
  * before that they are standing at the login gate, not playing.
+ *
+ * <p>Finally, the plugin samples each authenticated player's inventory and
+ * reports the latest snapshot — hotbar, main inventory, armor and off hand,
+ * with amounts, durability, custom names and enchantments — to
+ * {@code /internal/inventory/report}. A snapshot is current state, not a
+ * delta: the panel keeps only the newest one. Item textures come straight from
+ * the official Minecraft client textures packaged for the server version and are uploaded once per item key to
+ * {@code /internal/items/icons}, so an icon always matches the version that
+ * produced the snapshot.
  */
 public final class LinkBridgePlugin extends JavaPlugin implements CommandExecutor, Listener {
 
@@ -86,6 +102,17 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     /** Player UUID to the epoch millisecond of their last /website attempt. */
     private final Map<UUID, Long> lastAttempt = new ConcurrentHashMap<>();
+
+    /** The latest inventory snapshot the panel accepted, per player UUID. */
+    private final Map<UUID, String> inventoryAccepted = new ConcurrentHashMap<>();
+    /** Epoch millisecond of the last accepted inventory snapshot, per player UUID. */
+    private final Map<UUID, Long> inventoryAcceptedAt = new ConcurrentHashMap<>();
+    /** Snapshots waiting for the panel; the newest body per UUID wins. */
+    private final Map<UUID, String> inventoryPending = new ConcurrentHashMap<>();
+    /** Item keys whose texture the panel has (or will never have) accepted. */
+    private final Set<String> iconsAccepted = ConcurrentHashMap.newKeySet();
+    /** Item keys queued for a texture upload; failures re-queue on the next sample. */
+    private final Set<String> iconsQueued = ConcurrentHashMap.newKeySet();
 
     /** Players who entered a bed and have not left it yet, for the sleep counter. */
     private final Set<UUID> sleeping = ConcurrentHashMap.newKeySet();
@@ -112,6 +139,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private String balanceUrl = "";
     private String skinsSyncUrl = "";
     private String skinsReportUrl = "";
+    private String inventoryUrl = "";
+    private String iconsUrl = "";
     private final java.util.concurrent.atomic.AtomicBoolean skinSyncRunning = new java.util.concurrent.atomic.AtomicBoolean();
     private String pendingBody;
     private List<Delta> pendingBatch = List.of();
@@ -120,6 +149,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private String serviceToken = "";
     private long cooldownMillis;
     private long statsReportSeconds;
+    private long inventoryReportSeconds;
     private Duration requestTimeout = Duration.ofSeconds(10);
     private long lastTickAt = 0;
 
@@ -167,6 +197,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, () -> flush(null, requestTimeout),
                 statsReportSeconds * 20L, statsReportSeconds * 20L);
+        // Bukkit inventories may only be read on the server thread, so the
+        // sampler runs there; the actual HTTP work happens off-thread.
+        getServer().getScheduler()
+            .runTaskTimer(this, this::snapshotInventories, 100L, 100L);
+        getServer().getScheduler()
+            .runTaskTimerAsynchronously(this, this::flushInventories, 200L, 200L);
     }
 
     @Override
@@ -175,6 +211,27 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         // timeout keeps the shutdown quick when the panel is down.
         try {
             flush(null, Duration.ofSeconds(3));
+        } catch (Exception ignored) {
+            // Nothing useful to do on the way down.
+        }
+        // Same for inventories: hand in the current snapshot of everyone still
+        // online so the panel shows what they were actually carrying. One
+        // request per player, so the whole pass is bounded by a deadline
+        // instead of multiplying a timeout by the number of players; the
+        // background sender would have caught them otherwise.
+        try {
+            if (!inventoryUrl.isBlank()) {
+                long deadline = System.currentTimeMillis() + 3000;
+                for (Player player : getServer().getOnlinePlayers()) {
+                    if (System.currentTimeMillis() >= deadline) {
+                        break;
+                    }
+                    if (!isAuthenticated(player)) {
+                        continue;
+                    }
+                    post(inventoryUrl, inventorySnapshot(player), Duration.ofSeconds(1));
+                }
+            }
         } catch (Exception ignored) {
             // Nothing useful to do on the way down.
         }
@@ -197,6 +254,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         balanceUrl = base + "/internal/balance";
         skinsSyncUrl = base + "/internal/skins/sync";
         skinsReportUrl = base + "/internal/skins/report";
+        inventoryUrl = base + "/internal/inventory/report";
+        iconsUrl = base + "/internal/items/icons";
 
         String panel = getConfig().getString("panel-url", "");
         panelUrl = panel == null ? "" : panel.trim();
@@ -206,6 +265,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         cooldownMillis = Math.max(0, getConfig().getInt("cooldown-seconds", 3)) * 1000L;
         statsReportSeconds = Math.max(1, getConfig().getInt("stats-report-seconds", 5));
+        inventoryReportSeconds = Math.max(5, getConfig().getInt("inventory-report-seconds", 60));
         requestTimeout = Duration.ofSeconds(Math.max(1, getConfig().getInt("timeout-seconds", 10)));
     }
 
@@ -907,6 +967,222 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         } catch (Exception error) {
             getLogger().warning("Skin synchronization unavailable: " + error.getClass().getSimpleName());
         } finally { skinSyncRunning.set(false); }
+    }
+
+    // --- Measuring and reporting inventories ---------------------------------
+
+    /**
+     * Samples the live inventories of authenticated players on the server
+     * thread (Bukkit inventories may only be read there) and queues anything
+     * new for the asynchronous sender.
+     *
+     * <p>A snapshot is current state, not a delta: the panel keeps only the
+     * newest one. A changed inventory is queued at once, and the same snapshot
+     * is re-sent once a while even without changes, so the panel's "last seen"
+     * stays honest and a lost send repairs itself.
+     */
+    private void snapshotInventories() {
+        long now = System.currentTimeMillis();
+        for (Player player : getServer().getOnlinePlayers()) {
+            if (!isAuthenticated(player)) {
+                continue;
+            }
+            UUID uuid = player.getUniqueId();
+            try {
+                String snapshot = inventorySnapshot(player);
+                Long acceptedAt = inventoryAcceptedAt.get(uuid);
+                boolean changed = !snapshot.equals(inventoryAccepted.get(uuid));
+                boolean stale = acceptedAt == null || now - acceptedAt >= inventoryReportSeconds * 1000L;
+                if (changed || stale) {
+                    inventoryPending.put(uuid, snapshot);
+                }
+                queueIconKeys(player.getInventory());
+            } catch (Exception error) {
+                getLogger().warning("Could not read an inventory snapshot: " + error.getClass().getSimpleName());
+            }
+        }
+    }
+
+    /** Reads the 41-slot player layout: hotbar, main, armor, off hand. */
+    private String inventorySnapshot(Player player) {
+        PlayerInventory inventory = player.getInventory();
+        StringBuilder body = new StringBuilder("{\"uuid\":\"").append(player.getUniqueId())
+            .append("\",\"username\":\"").append(jsonEscape(player.getName()))
+            .append("\",\"slots\":[");
+        int index = 0;
+        for (ItemStack item : inventory.getStorageContents()) {
+            if (index++ > 0) body.append(',');
+            body.append(slotJson(item));
+        }
+        for (ItemStack item : inventory.getArmorContents()) {
+            if (index++ > 0) body.append(',');
+            body.append(slotJson(item));
+        }
+        if (index++ > 0) body.append(',');
+        body.append(slotJson(inventory.getItemInOffHand()));
+        body.append("]}");
+        return body.toString();
+    }
+
+    private String slotJson(ItemStack item) {
+        if (item == null || item.getType() == Material.AIR) {
+            return "null";
+        }
+        StringBuilder slot = new StringBuilder("{\"key\":\"")
+            .append(jsonEscape(item.getType().key().asString()))
+            .append("\",\"amount\":").append(item.getAmount());
+        if (item instanceof Damageable damageable) {
+            slot.append(",\"damage\":").append(damageable.getDamage())
+                .append(",\"max_damage\":").append(damageable.getMaxDamage());
+        } else {
+            slot.append(",\"damage\":null,\"max_damage\":null");
+        }
+        String display = null;
+        try {
+            var displayComponent = item.displayName();
+            display = displayComponent == null
+                ? null
+                : net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(displayComponent);
+        } catch (Exception error) {
+            display = null;
+        }
+        if (display != null) {
+            display = display.length() > 128 ? display.substring(0, 128) : display;
+        }
+        slot.append(",\"display_name\":").append(display == null ? "null" : "\"" + jsonEscape(display) + "\"");
+        slot.append(",\"enchantments\":{");
+        int enchantIndex = 0;
+        for (Map.Entry<Enchantment, Integer> entry : item.getEnchantments().entrySet()) {
+            NamespacedKey key = entry.getKey().getKey();
+            if (key == null) {
+                continue;
+            }
+            if (enchantIndex++ > 0) slot.append(',');
+            slot.append('"').append(jsonEscape(key.asString())).append("\":").append(entry.getValue());
+        }
+        slot.append("}}");
+        return slot.toString();
+    }
+
+    /** Every item key whose texture the panel has not accepted yet. */
+    private void queueIconKeys(PlayerInventory inventory) {
+        for (ItemStack item : inventory.getStorageContents()) {
+            queueIconKey(item);
+        }
+        for (ItemStack item : inventory.getArmorContents()) {
+            queueIconKey(item);
+        }
+        queueIconKey(inventory.getItemInOffHand());
+    }
+
+    private void queueIconKey(ItemStack item) {
+        if (item == null || item.getType() == Material.AIR) {
+            return;
+        }
+        String key = item.getType().key().asString();
+        if (!iconsAccepted.contains(key)) {
+            iconsQueued.add(key);
+        }
+    }
+
+    /**
+     * Sends queued item textures and inventory snapshots. Runs off-thread and
+     * never overlaps itself, because the scheduler re-arms it after it
+     * returns. One pass handles a bounded number of each, so a busy server or
+     * a slow panel keeps the pass short instead of starving the main loop.
+     */
+    private void flushInventories() {
+        if (!inventoryUrl.isBlank()) {
+            if (!iconsQueued.isEmpty()) {
+                sendIconBatch(new ArrayList<>(iconsQueued), requestTimeout);
+            }
+            Map<UUID, String> pending = new LinkedHashMap<>();
+            for (Map.Entry<UUID, String> entry : inventoryPending.entrySet()) {
+                pending.put(entry.getKey(), entry.getValue());
+                if (pending.size() >= 25) {
+                    break;
+                }
+            }
+            for (Map.Entry<UUID, String> entry : pending.entrySet()) {
+                HttpResponse<String> response = post(inventoryUrl, entry.getValue(), requestTimeout);
+                if (response != null && response.statusCode() == 200) {
+                    inventoryPending.remove(entry.getKey());
+                    inventoryAccepted.put(entry.getKey(), entry.getValue());
+                    inventoryAcceptedAt.put(entry.getKey(), System.currentTimeMillis());
+                } else if (response == null) {
+                    // The panel is unreachable; keep everything for the next pass.
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Uploads one batch of item textures from the official version-matched
+     * client PNGs packaged in this plugin, so an icon always matches the version that produced
+     * the snapshot. Keys without a texture file are marked accepted so they
+     * are never retried; the panel then answers no icon and the website shows
+     * its fallback artwork with the item name. A failed batch stays unmarked
+     * and is re-queued by the next sample.
+     */
+    private void sendIconBatch(List<String> keys, Duration timeout) {
+        Map<String, String> encoded = new LinkedHashMap<>();
+        for (String key : keys) {
+            if (encoded.size() >= 100) {
+                break;
+            }
+            byte[] bytes = iconBytes(key);
+            if (bytes == null) {
+                iconsAccepted.add(key);
+            } else {
+                encoded.put(key, java.util.Base64.getEncoder().encodeToString(bytes));
+            }
+        }
+        if (encoded.isEmpty()) {
+            iconsQueued.removeAll(keys);
+            return;
+        }
+        StringBuilder body = new StringBuilder("{\"items\":[");
+        boolean first = true;
+        for (Map.Entry<String, String> entry : encoded.entrySet()) {
+            if (!first) body.append(',');
+            first = false;
+            body.append("{\"key\":\"").append(jsonEscape(entry.getKey()))
+                .append("\",\"icon\":\"").append(entry.getValue()).append("\"}");
+        }
+        body.append("]}");
+        HttpResponse<String> response = post(iconsUrl, body.toString(), timeout);
+        if (response != null && response.statusCode() == 200) {
+            iconsAccepted.addAll(encoded.keySet());
+        }
+        iconsQueued.removeAll(keys);
+    }
+
+    /**
+     * The item's texture from the version-matched client assets in this plugin jar: most items live under
+     * {@code textures/item}, most blocks under {@code textures/block}, and
+     * armor under {@code textures/item/armor}. The first readable PNG wins;
+     * nothing here is generated or substituted.
+     */
+    private byte[] iconBytes(String key) {
+        String name = key.startsWith("minecraft:") ? key.substring("minecraft:".length()) : key;
+        for (String path : List.of(
+            "assets/minecraft/textures/item/" + name + ".png",
+            "assets/minecraft/textures/block/" + name + ".png",
+            "assets/minecraft/textures/item/armor/" + name + ".png")) {
+            try (InputStream stream = getResource(path)) {
+                if (stream == null) {
+                    continue;
+                }
+                byte[] bytes = stream.readAllBytes();
+                if (bytes.length >= 4 && (bytes[0] & 0xFF) == 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G') {
+                    return bytes;
+                }
+            } catch (IOException error) {
+                // Try the next candidate path.
+            }
+        }
+        return null;
     }
 
     // --- Panel calls ----------------------------------------------------------

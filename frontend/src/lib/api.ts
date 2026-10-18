@@ -266,6 +266,39 @@ export type SkinView = {
   observed_at: string | null
   upload: { status: 'queued' | 'signing' | 'ready' | 'saved' | 'failed'; error: string | null } | null
 }
+
+/** One inventory slot as the game holds it; null means the slot is empty. */
+export type InventorySlot = {
+  /** registry key, e.g. `minecraft:diamond_sword` */
+  key: string
+  amount: number
+  /** wear already taken; only present for damageable items, in a pair with max_damage */
+  damage: number | null
+  max_damage: number | null
+  /** a renamed item's plain-text name, when the player renamed it */
+  display_name: string | null
+  /** enchantment key (without the `minecraft:` prefix for display) to level */
+  enchantments: Record<string, number>
+  /** data URL of the item texture from the server jar, or null when none is stored */
+  icon: string | null
+} | null
+
+/**
+ * The 41-slot layout the plugin reports: hotbar 0-8, main inventory 9-35,
+ * armor (helmet, chest, legs, boots) 36-39, off hand 40.
+ */
+export type InventoryView = {
+  username: string | null
+  /** when the game server last reported this snapshot, or null when never */
+  updated_at: string | null
+  slots: InventorySlot[] | null
+}
+
+export async function getPlayerInventory(uuid: string): Promise<InventoryView> {
+  const response = await send('GET', `/api/players/${encodeURIComponent(uuid)}/inventory`)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as InventoryView
+}
 export async function getPlayerSkin(uuid: string): Promise<SkinView> {
   const response = await send('GET', `/api/players/${encodeURIComponent(uuid)}/skin`)
   if (!response.ok) throw new ApiError(response.status)

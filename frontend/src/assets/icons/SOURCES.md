@@ -48,3 +48,21 @@ The player app's Skin page loads the actual PNG from
 arms. Selected-upload previews use a local object URL. Uploaded skins are
 user-provided artwork, not generated project assets. The server strips PNG
 metadata before sending an unlisted image to MineSkin for signing.
+
+
+## Minecraft item icons
+
+The Inventory page draws each item with the texture the game itself uses.
+LinkBridge reads the PNG straight out of the running server's own asset files —
+`assets/minecraft/textures/item/<name>.png`, `…/block/<name>.png`, or
+`…/item/armor/<name>.png` — and uploads it once per item key, so the picture
+always matches the Minecraft version that produced the snapshot. The panel keeps
+the first upload for a key and serves it as a data URL; nothing is redrawn,
+generated, substituted or fetched from a third party. Mojang's texture artwork
+rights remain with their owners.
+
+Many items are assembled from a model rather than one flat PNG (heads, potions,
+some blocks). When no texture file is readable for an item key, the bubble shows
+the sourced `vista-perf-center.png` above with the item's name; offline, unknown,
+or failing icons never invent a picture. The item's name, amount, wear and
+enchantments are always stated in text.

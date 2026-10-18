@@ -64,8 +64,12 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/stats", get(stats_for_user))
         .route("/api/players/{uuid}/skin", get(player_skin).post(upload_player_skin)
             .layer(axum::extract::DefaultBodyLimit::max(300 * 1024)))
+        .route("/api/players/{uuid}/inventory", get(player_inventory))
         .route("/internal/skins/sync", post(sync_player_skins))
         .route("/internal/skins/report", post(report_player_skin))
+        .route("/internal/inventory/report", post(report_inventory))
+        .route("/internal/items/icons", post(report_item_icons)
+            .layer(axum::extract::DefaultBodyLimit::max(700 * 1024)))
         .route("/internal/link/claim", claim)
         .route("/internal/link/status", post(link_status))
         .route("/internal/link/email", post(link_email))
@@ -1338,6 +1342,287 @@ async fn balance_for_player(
     Ok(([(header::CACHE_CONTROL, "no-store")], coins.unwrap_or(0).to_string()))
 }
 
+// --- Player inventory ------------------------------------------------------
+
+// The player inventory exactly as the game holds it: hotbar 0-8, main 9-35,
+// armor (helmet, chest, legs, boots) 36-39 and the off hand at 40. The plugin
+// reports all 41 slots, so the panel draws the layout without guessing where
+// anything sits. A null entry is an empty slot.
+const INVENTORY_SLOT_COUNT: usize = 41;
+const INVENTORY_MAX_KEY: usize = 128;
+const INVENTORY_MAX_NAME: usize = 128;
+const INVENTORY_MAX_DAMAGE: i64 = 10_000;
+const INVENTORY_MAX_AMOUNT: i64 = 230;
+const INVENTORY_MAX_ENCHANTMENTS: usize = 32;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct InventorySlotReport {
+    key: String,
+    amount: i64,
+    #[serde(default)] damage: Option<i64>,
+    #[serde(default)] max_damage: Option<i64>,
+    #[serde(default)] display_name: Option<String>,
+    #[serde(default)] enchantments: std::collections::BTreeMap<String, i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct InventoryReport {
+    uuid: String,
+    username: String,
+    // Null entries are empty slots; the plugin reports all 41 so the layout
+    // survives the trip without guessing.
+    slots: Vec<Option<InventorySlotReport>>,
+}
+
+#[derive(serde::Serialize)]
+struct InventorySlotView {
+    key: String,
+    amount: i64,
+    damage: Option<i64>,
+    max_damage: Option<i64>,
+    display_name: Option<String>,
+    enchantments: std::collections::BTreeMap<String, i64>,
+    icon: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct InventoryView {
+    username: Option<String>,
+    updated_at: Option<String>,
+    slots: Option<Vec<Option<InventorySlotView>>>,
+}
+
+/// A namespaced registry key such as `minecraft:diamond_sword`.
+/// A registry key as the game writes it: one namespace, one colon, one path
+/// (`minecraft:stone_sword`). Both halves are non-empty, lowercase, and drawn
+/// from the character set keys actually use; a bare word is not a key.
+fn is_item_key(key: &str) -> bool {
+    if key.is_empty() || key.len() > INVENTORY_MAX_KEY {
+        return false;
+    }
+    let mut parts = key.split(':');
+    let (Some(namespace), Some(path)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    parts.next().is_none()
+        && !namespace.is_empty()
+        && !path.is_empty()
+        && key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b':' | b'-' | b'.'))
+}
+
+fn valid_inventory_slot(slot: &InventorySlotReport) -> bool {
+    // Durability only travels as a pair; half of it is a broken report, and the
+    // website can only draw a wear bar from both numbers together.
+    let durability = match (slot.damage, slot.max_damage) {
+        (None, None) => true,
+        (Some(damage), Some(max)) => {
+            (0..=INVENTORY_MAX_DAMAGE).contains(&damage)
+                && (1..=INVENTORY_MAX_DAMAGE).contains(&max)
+                && damage <= max
+        }
+        _ => false,
+    };
+    is_item_key(&slot.key)
+        && (1..=INVENTORY_MAX_AMOUNT).contains(&slot.amount)
+        && durability
+        && match &slot.display_name {
+            None => true,
+            Some(name) => !name.trim().is_empty() && name.chars().count() <= INVENTORY_MAX_NAME,
+        }
+        && slot.enchantments.len() <= INVENTORY_MAX_ENCHANTMENTS
+        && slot.enchantments.iter().all(|(key, level)| is_item_key(key) && (1..=32_767).contains(level))
+}
+
+fn valid_inventory_report(report: &InventoryReport) -> bool {
+    is_uuid(&report.uuid)
+        && is_minecraft_username(&report.username)
+        && report.slots.len() == INVENTORY_SLOT_COUNT
+        && report.slots.iter().all(|slot| match slot {
+            None => true,
+            Some(slot) => valid_inventory_slot(slot),
+        })
+}
+
+// Deliberately not rate limited, like the statistics reports: snapshots come
+// from the game server's single container address, at most one per inventory
+// change plus one periodic refresh per player, behind the proxy block and the
+// service token.
+async fn report_inventory(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(mut report): Json<InventoryReport>
+) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    report.uuid = report.uuid.trim().to_lowercase();
+    report.username = report.username.trim().to_owned();
+    for slot in report.slots.iter_mut().flatten() {
+        slot.key = slot.key.trim().to_lowercase();
+        slot.display_name = slot.display_name.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned);
+        slot.enchantments = slot.enchantments.iter()
+            .map(|(key, level)| (key.trim().to_lowercase(), *level))
+            .collect();
+    }
+    if !valid_inventory_report(&report) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let slots = serde_json::to_string(&report.slots).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("INSERT INTO player_inventory (uuid, username, slots) VALUES ($1, $2, $3::jsonb)
+                 ON CONFLICT (uuid) DO UPDATE SET
+                   username = EXCLUDED.username,
+                   slots = EXCLUDED.slots,
+                   updated_at = now()")
+        .bind(&report.uuid)
+        .bind(&report.username)
+        .bind(slots)
+        .execute(&pool).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+// The session cookie decides what is visible: only the inventory of accounts
+// this user has linked. A snapshot about a UUID the user does not link is
+// stored, but no request can make it visible. `slots` is null until the game
+// server has reported one, like `stats` on `/api/stats`.
+async fn player_inventory(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Path(uuid): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let uuid = uuid.to_lowercase();
+    owns_player(&pool, user_id, &uuid).await?;
+    let row = sqlx::query("SELECT username, updated_at::text AS updated_at, slots::text AS slots
+                           FROM player_inventory WHERE uuid = $1")
+        .bind(&uuid)
+        .fetch_optional(&pool).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Ok((
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(InventoryView { username: None, updated_at: None, slots: None }),
+        ));
+    };
+    let slots_json: String = row.get("slots");
+    let raw: Vec<Option<InventorySlotReport>> =
+        serde_json::from_str(&slots_json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Every item key in the snapshot, resolved to its stored texture in one
+    // indexed lookup. Keys without a stored icon answer null; the website then
+    // shows its fallback artwork and the item name.
+    let mut icon_keys: Vec<String> = raw.iter().flatten().map(|slot| slot.key.clone()).collect();
+    icon_keys.sort();
+    icon_keys.dedup();
+    let mut icons: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if !icon_keys.is_empty() {
+        let icon_rows = sqlx::query("SELECT key, data_url FROM item_icons WHERE key = ANY($1::text[])")
+            .bind(&icon_keys)
+            .fetch_all(&pool).await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        for icon in icon_rows {
+            let key: String = icon.get("key");
+            let data_url: String = icon.get("data_url");
+            icons.insert(key, data_url);
+        }
+    }
+    let slots: Vec<Option<InventorySlotView>> = raw
+        .into_iter()
+        .map(|slot| {
+            slot.map(|slot| InventorySlotView {
+                icon: icons.remove(&slot.key),
+                key: slot.key,
+                amount: slot.amount,
+                damage: slot.damage,
+                max_damage: slot.max_damage,
+                display_name: slot.display_name,
+                enchantments: slot.enchantments,
+            })
+        })
+        .collect();
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(InventoryView {
+            username: Some(row.get("username")),
+            updated_at: Some(row.get("updated_at")),
+            slots: Some(slots),
+        }),
+    ))
+}
+
+// --- Item icons ------------------------------------------------------------
+
+const ICON_REPORT_MAX_ITEMS: usize = 100;
+// Base64 of at most 48 KiB of PNG: one 16x16 texture is a few hundred bytes,
+// so the cap is against a bug, not a skin-sized upload.
+const ICON_MAX_DATA_LEN: usize = 64 * 1024;
+const ICON_MAX_PNG_BYTES: usize = 48 * 1024;
+
+#[derive(serde::Deserialize)]
+struct IconReport {
+    items: Vec<IconUpload>,
+}
+
+#[derive(serde::Deserialize)]
+struct IconUpload {
+    key: String,
+    icon: String,
+}
+
+/// The PNG signature alone is forgeable, so the picture is fully decoded before
+/// anything is stored: an icon the panel serves must be a real picture, not a
+/// payload wearing a PNG header. The base64 and byte caps are the real guard;
+/// this only proves the bytes decode.
+fn decoded_png_bytes(data: &str) -> Option<Vec<u8>> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).ok()?;
+    if bytes.len() < 8 || bytes.len() > ICON_MAX_PNG_BYTES {
+        return None;
+    }
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    // Well above any vanilla texture, small enough that a decompression bomb
+    // cannot be pushed through this endpoint.
+    decoder.set_limits(png::Limits { bytes: 4 * 1024 * 1024 });
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    reader.next_frame(&mut buffer).ok()?;
+    Some(bytes)
+}
+
+// The plugin sends the exact texture bytes from the running server jar, so an
+// icon always matches the version its snapshot was measured on. The first
+// upload for a key is kept: a texture does not change under a running server.
+async fn report_item_icons(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(mut report): Json<IconReport>
+) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    for item in report.items.iter_mut() {
+        item.key = item.key.trim().to_lowercase();
+        item.icon = item.icon.trim().to_owned();
+    }
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !(1..=ICON_REPORT_MAX_ITEMS).contains(&report.items.len()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut decoded: Vec<(String, Vec<u8>)> = Vec::with_capacity(report.items.len());
+    for item in &report.items {
+        if !is_item_key(&item.key) || item.icon.len() > ICON_MAX_DATA_LEN || !seen.insert(item.key.clone()) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let Some(bytes) = decoded_png_bytes(&item.icon) else {
+            return Err(StatusCode::BAD_REQUEST);
+        };
+        decoded.push((item.key.clone(), bytes));
+    }
+    for (key, bytes) in decoded {
+        // Re-encode so the stored data URL is canonical base64.
+        let data_url = format!("data:image/png;base64,{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes));
+        sqlx::query("INSERT INTO item_icons (key, data_url) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING")
+            .bind(&key)
+            .bind(data_url)
+            .execute(&pool).await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    Ok(StatusCode::OK)
+}
+
 #[derive(serde::Serialize)]
 struct AccountStats {
     play_seconds: i64,
@@ -2005,6 +2290,17 @@ mod test {
                 .execute(pool).await?;
         }
         Ok(())
+    }
+
+    // A fixed rate-limit window can roll over in the middle of a burst: the
+    // counter resets and the limiter looks asleep. Every burst test starts with
+    // enough of the window left that its few requests cannot straddle a
+    // boundary — otherwise the suite fails rarely and only under load.
+    async fn wait_for_fresh_rate_window(window_seconds: i64) {
+        const HEADROOM_SECONDS: i64 = 15;
+        while window_seconds - (now_unix() % window_seconds) <= HEADROOM_SECONDS {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
     }
 
     // The service token the tests service is configured with.
@@ -2710,6 +3006,7 @@ mod test {
         let ip = random_ip();
         prune_rate_limits(&pool).await?;
         clear_rate_limits(&pool, &ip).await?;
+        wait_for_fresh_rate_window(login_ip_window_seconds()).await;
         let mut response = None;
         for _ in 0..(login_ip_limit() + 1) {
             response = Some(
@@ -2741,6 +3038,7 @@ mod test {
         let ip = random_ip();
         prune_rate_limits(&pool).await?;
         clear_rate_limits(&pool, &ip).await?;
+        wait_for_fresh_rate_window(register_ip_window_seconds()).await;
         let mut response = None;
         for _ in 0..(register_ip_limit() + 1) {
             response = Some(
@@ -2776,6 +3074,7 @@ mod test {
         prune_rate_limits(&pool).await?;
         clear_rate_limits(&pool, &blocked).await?;
         clear_rate_limits(&pool, &other).await?;
+        wait_for_fresh_rate_window(login_ip_window_seconds()).await;
         for _ in 0..=login_ip_limit() {
             login_from(&pool, "nobody@example.com", "a-long-test-password", &blocked).await?;
         }
@@ -3504,6 +3803,7 @@ mod test {
         let ip = random_ip();
         prune_rate_limits(&pool).await?;
         clear_rate_limits(&pool, &ip).await?;
+        wait_for_fresh_rate_window(link_claim_ip_window_seconds()).await;
         let mut response = None;
         for _ in 0..(link_claim_ip_limit() + 1) {
             response = Some(
@@ -4044,6 +4344,244 @@ mod test {
         assert_eq!(cooldown, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(unlinked, StatusCode::NO_CONTENT);
         assert_eq!(remaining,0);
+        Ok(())
+    }
+
+    // --- Inventory ---------------------------------------------------------
+
+    // Two tiny, real 1x1 PNGs; the second exists only to prove the first upload wins.
+    const INVENTORY_ICON_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const INVENTORY_ICON_PNG_OTHER: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+    // A 41-slot snapshot: an enchanted, worn sword in the first hotbar slot and
+    // a helmet in the first armor slot, everything else empty.
+    fn inventory_body(uuid: &str, username: &str) -> serde_json::Value {
+        let mut slots = Vec::new();
+        for _ in 0..INVENTORY_SLOT_COUNT {
+            slots.push(serde_json::json!(null));
+        }
+        slots[0] = serde_json::json!({
+            "key": "minecraft:stone_sword",
+            "amount": 1,
+            "damage": 5,
+            "max_damage": 127,
+            "display_name": "Sharp",
+            "enchantments": { "minecraft:sharpness": 3 }
+        });
+        slots[36] = serde_json::json!({
+            "key": "minecraft:leather_helmet",
+            "amount": 1,
+            "damage": 0,
+            "max_damage": 165,
+            "display_name": null,
+            "enchantments": {}
+        });
+        serde_json::json!({ "uuid": uuid, "username": username, "slots": slots })
+    }
+
+    async fn post_inventory(
+        pool: &sqlx::PgPool,
+        token: Option<&str>,
+        body: serde_json::Value
+    ) -> Result<StatusCode, Box<dyn std::error::Error>> {
+        Ok(post_internal(pool, "/internal/inventory/report", token, body, &random_ip()).await?.status())
+    }
+
+    async fn get_inventory(
+        pool: &sqlx::PgPool,
+        cookie: Option<&str>,
+        uuid: &str
+    ) -> Result<(StatusCode, axum::response::Response), Box<dyn std::error::Error>> {
+        let response = send(pool, "GET", &format!("/api/players/{uuid}/inventory"), cookie, None).await?;
+        Ok((response.status(), response))
+    }
+
+    // `delete_user` cannot reach these tables: both are keyed by in-game UUID
+    // without a foreign key, so tests remove their own rows.
+    async fn delete_player_inventory(
+        pool: &sqlx::PgPool,
+        uuid: &str
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        sqlx::query("DELETE FROM player_inventory WHERE uuid = $1")
+            .bind(uuid)
+            .execute(pool).await?;
+        Ok(())
+    }
+
+    async fn delete_item_icons(
+        pool: &sqlx::PgPool,
+        keys: &[String]
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        sqlx::query("DELETE FROM item_icons WHERE key = ANY($1::text[])")
+            .bind(keys)
+            .execute(pool).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inventory_report_requires_the_service_token() -> TestResult {
+        let pool = connect().await?;
+        let uuid = test_uuid(&random_ip());
+        let body = inventory_body(&uuid, "InvTest");
+        let missing = post_inventory(&pool, None, body.clone()).await?;
+        let wrong = post_inventory(&pool, Some("not-the-token"), body.clone()).await?;
+        let accepted = post_inventory(&pool, Some(&test_service_token()), body).await?;
+        let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM player_inventory WHERE uuid = $1")
+            .bind(&uuid).fetch_one(&pool).await?;
+        delete_player_inventory(&pool, &uuid).await?;
+        assert_eq!(missing, StatusCode::UNAUTHORIZED);
+        assert_eq!(wrong, StatusCode::UNAUTHORIZED);
+        assert_eq!(accepted, StatusCode::OK);
+        assert_eq!(stored, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inventory_report_rejects_malformed_snapshots() -> TestResult {
+        let pool = connect().await?;
+        let uuid = test_uuid(&random_ip());
+        let token = test_service_token();
+        let bad_uuid = inventory_body("not-a-uuid", "InvTest");
+        let mut wrong_count = inventory_body(&uuid, "InvTest");
+        wrong_count["slots"].as_array_mut().expect("slots array").pop();
+        let mut bad_amount = inventory_body(&uuid, "InvTest");
+        bad_amount["slots"][0]["amount"] = serde_json::json!(9999);
+        let mut bad_damage = inventory_body(&uuid, "InvTest");
+        bad_damage["slots"][0]["damage"] = serde_json::json!(128);
+        let mut lone_damage = inventory_body(&uuid, "InvTest");
+        lone_damage["slots"][0]["max_damage"] = serde_json::json!(null);
+        let mut bad_key = inventory_body(&uuid, "InvTest");
+        bad_key["slots"][0]["key"] = serde_json::json!("minecraft:Stone Sword");
+        // A bare word is not a registry key: the namespace and colon are required.
+        let mut bare_key = inventory_body(&uuid, "InvTest");
+        bare_key["slots"][0]["key"] = serde_json::json!("stone_sword");
+        let (bad_uuid, wrong_count, bad_amount, bad_damage, lone_damage, bad_key, bare_key) = tokio::join!(
+            post_inventory(&pool, Some(&token), bad_uuid),
+            post_inventory(&pool, Some(&token), wrong_count),
+            post_inventory(&pool, Some(&token), bad_amount),
+            post_inventory(&pool, Some(&token), bad_damage),
+            post_inventory(&pool, Some(&token), lone_damage),
+            post_inventory(&pool, Some(&token), bad_key),
+            post_inventory(&pool, Some(&token), bare_key),
+        );
+        let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM player_inventory WHERE uuid = $1")
+            .bind(&uuid).fetch_one(&pool).await?;
+        assert_eq!(bad_uuid?, StatusCode::BAD_REQUEST);
+        assert_eq!(wrong_count?, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_amount?, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_damage?, StatusCode::BAD_REQUEST);
+        assert_eq!(lone_damage?, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_key?, StatusCode::BAD_REQUEST);
+        assert_eq!(bare_key?, StatusCode::BAD_REQUEST);
+        assert_eq!(stored, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inventory_snapshot_is_replaced_and_owner_only() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let (other_email, other_cookie) = fresh_user(&pool).await?;
+        let uuid = test_uuid(&random_ip());
+        let endpoint = format!("/api/players/{uuid}/inventory");
+        let outcome = async {
+            let linked = claim(&pool, &start_code(&pool, &cookie).await?, &uuid, "InvTest").await?;
+            let anonymous = send(&pool, "GET", &endpoint, None, None).await?.status();
+            let stranger = send(&pool, "GET", &endpoint, Some(&other_cookie), None).await?.status();
+            // No snapshot yet: 200 with null slots, never a made-up inventory.
+            let (empty_status, empty) = get_inventory(&pool, Some(&cookie), &uuid).await?;
+            let empty_cache = empty.headers().get(header::CACHE_CONTROL).cloned();
+            let empty_body = body_json(empty).await?;
+            let first = post_inventory(&pool, Some(&test_service_token()), inventory_body(&uuid, "InvTest")).await?;
+            // A later snapshot replaces the earlier one: the sword is gone.
+            let mut second = inventory_body(&uuid, "InvTest");
+            second["slots"][0] = serde_json::json!(null);
+            second["slots"][9] = serde_json::json!({ "key": "minecraft:cooked_beef", "amount": 14 });
+            let second_status = post_inventory(&pool, Some(&test_service_token()), second).await?;
+            let (found_status, found_response) = get_inventory(&pool, Some(&cookie), &uuid).await?;
+            let found = body_json(found_response).await?;
+            let unlinked = send(&pool, "DELETE", &format!("/api/link/{uuid}"), Some(&cookie), None).await?.status();
+            // The snapshot outlives the link; once unlinked it is invisible again.
+            let after_unlink = get_inventory(&pool, Some(&cookie), &uuid).await?.0;
+            Ok::<_, Box<dyn std::error::Error>>((linked, anonymous, stranger, empty_status, empty_cache, empty_body, first, second_status, found_status, found, unlinked, after_unlink))
+        }.await;
+        delete_user(&pool, &email).await?;
+        delete_user(&pool, &other_email).await?;
+        delete_player_inventory(&pool, &uuid).await?;
+        let (linked, anonymous, stranger, empty_status, empty_cache, empty_body, first, second_status, found_status, found, unlinked, after_unlink) = outcome?;
+        assert_eq!(linked, StatusCode::OK);
+        assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+        assert_eq!(stranger, StatusCode::NOT_FOUND);
+        assert_eq!(empty_status, StatusCode::OK);
+        assert_eq!(empty_cache, Some(header::HeaderValue::from_static("no-store")));
+        assert!(empty_body["slots"].is_null());
+        assert_eq!(first, StatusCode::OK);
+        assert_eq!(second_status, StatusCode::OK);
+        assert_eq!(found_status, StatusCode::OK);
+        assert_eq!(found["username"], "InvTest");
+        assert!(found["updated_at"].is_string());
+        assert!(found["slots"][0].is_null());
+        assert_eq!(found["slots"][9]["key"], "minecraft:cooked_beef");
+        assert_eq!(found["slots"][9]["amount"], 14);
+        assert!(found["slots"][9]["icon"].is_null());
+        assert_eq!(found["slots"][36]["key"], "minecraft:leather_helmet");
+        assert_eq!(unlinked, StatusCode::NO_CONTENT);
+        assert_eq!(after_unlink, StatusCode::NOT_FOUND);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn item_icons_are_cached_once_and_served_with_inventory() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let uuid = test_uuid(&random_ip());
+        let token = test_service_token();
+        let first_key = format!("invtest-{}:a", random_id().to_lowercase());
+        let second_key = format!("invtest-{}:b", random_id().to_lowercase());
+        let outcome = async {
+            let linked = claim(&pool, &start_code(&pool, &cookie).await?, &uuid, "InvTest").await?;
+            let body = serde_json::json!({ "items": [
+                { "key": first_key, "icon": INVENTORY_ICON_PNG },
+                { "key": second_key, "icon": INVENTORY_ICON_PNG }
+            ]});
+            let missing = post_internal(&pool, "/internal/items/icons", None, body.clone(), &random_ip()).await?.status();
+            let bad_key = post_internal(&pool, "/internal/items/icons", Some(&token), serde_json::json!({ "items": [{ "key": "Bad Key", "icon": INVENTORY_ICON_PNG }] }), &random_ip()).await?.status();
+            let unqualified = post_internal(&pool, "/internal/items/icons", Some(&token), serde_json::json!({ "items": [{ "key": "stone_sword", "icon": INVENTORY_ICON_PNG }] }), &random_ip()).await?.status();
+            let bad_png = post_internal(&pool, "/internal/items/icons", Some(&token), serde_json::json!({ "items": [{ "key": "invtest:notpng", "icon": "bm90LWEtcG5n" }] }), &random_ip()).await?.status();
+            let duplicate = post_internal(&pool, "/internal/items/icons", Some(&token), serde_json::json!({ "items": [
+                { "key": first_key, "icon": INVENTORY_ICON_PNG },
+                { "key": first_key, "icon": INVENTORY_ICON_PNG }
+            ]}), &random_ip()).await?.status();
+            let accepted = post_internal(&pool, "/internal/items/icons", Some(&token), body, &random_ip()).await?.status();
+            // A later, different upload for the same key must not overwrite it.
+            let replacement = post_internal(&pool, "/internal/items/icons", Some(&token), serde_json::json!({ "items": [{ "key": first_key, "icon": INVENTORY_ICON_PNG_OTHER }] }), &random_ip()).await?.status();
+            let stored: Option<String> = sqlx::query_scalar("SELECT data_url FROM item_icons WHERE key = $1").bind(&first_key).fetch_optional(&pool).await?;
+            // The inventory report names the stored keys and the read answers icons.
+            let mut snapshot = inventory_body(&uuid, "InvTest");
+            snapshot["slots"][0]["key"] = serde_json::json!(first_key);
+            snapshot["slots"][36]["key"] = serde_json::json!(second_key);
+            let reported = post_inventory(&pool, Some(&token), snapshot).await?;
+            let (status, response) = get_inventory(&pool, Some(&cookie), &uuid).await?;
+            let found = body_json(response).await?;
+            Ok::<_, Box<dyn std::error::Error>>((linked, missing, bad_key, unqualified, bad_png, duplicate, accepted, replacement, stored, reported, status, found))
+        }.await;
+        delete_user(&pool, &email).await?;
+        delete_player_inventory(&pool, &uuid).await?;
+        delete_item_icons(&pool, &[first_key.clone(), second_key.clone()]).await?;
+        let (linked, missing, bad_key, unqualified, bad_png, duplicate, accepted, replacement, stored, reported, status, found) = outcome?;
+        assert_eq!(linked, StatusCode::OK);
+        assert_eq!(missing, StatusCode::UNAUTHORIZED);
+        assert_eq!(bad_key, StatusCode::BAD_REQUEST);
+        assert_eq!(unqualified, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_png, StatusCode::BAD_REQUEST);
+        assert_eq!(duplicate, StatusCode::BAD_REQUEST);
+        assert_eq!(accepted, StatusCode::OK);
+        assert_eq!(replacement, StatusCode::OK);
+        assert_eq!(stored, Some(format!("data:image/png;base64,{INVENTORY_ICON_PNG}")));
+        assert_eq!(reported, StatusCode::OK);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(found["slots"][0]["icon"], format!("data:image/png;base64,{INVENTORY_ICON_PNG}"));
+        assert_eq!(found["slots"][36]["icon"], format!("data:image/png;base64,{INVENTORY_ICON_PNG}"));
         Ok(())
     }
 

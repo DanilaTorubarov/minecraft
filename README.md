@@ -212,6 +212,52 @@ Details:
 - Statistics survive unlinking: the rows are keyed by UUID with no foreign key, so unlinking hides them and re-linking the same in-game name restores them.
 - `stats-report-seconds` (default `5`) in `mc-config/purpur/plugins/LinkBridge/config.yml` sets the flush interval.
 
+## Inventory
+
+Each player app also has an **Inventory** page: what that player is carrying, as the game server last saw it — armor, off hand, hotbar and main inventory, with every item in its own bubble over the desktop scenery. The panel draws the layout the game reports; it never invents one.
+
+```
+authenticated player in game      LinkBridge plugin             panel
+──────────────────────────        ───────────────               ─────
+hotbar, main inventory, armor,
+off hand — amounts, durability,
+custom names, enchantments
+                                  sampled every five seconds on
+                                  the server thread; a new
+                                  snapshot on change, and a
+                                  periodic re-send:
+                                  POST /internal/inventory/report
+                                  Authorization: Bearer <LINK_SERVICE_TOKEN>
+                                  { uuid, username, slots: [ 41 entries ] }
+                                                    replaces
+                                                    player_inventory
+                                  item textures read from the
+                                  running server jar, once per
+                                  item key:
+                                  POST /internal/items/icons
+GET /api/players/{uuid}/inventory → the 41 slots, each with its
+                                    stored icon, or null slots
+                                    until a snapshot arrives
+```
+
+| Method | Path | Auth | Result |
+| --- | --- | --- | --- |
+| `GET` | `/api/players/{uuid}/inventory` | owning session | `200` `{username, updated_at, slots}`, `Cache-Control: no-store`; `404` if not owned |
+| `POST` | `/internal/inventory/report` | service token | `200`, `400` malformed snapshot, `401` bad token, `503` not configured; blocked by the public proxy |
+| `POST` | `/internal/items/icons` | service token | `200`, `400` malformed batch, `401` bad token, `503` not configured; blocked by the public proxy |
+
+Details:
+
+- A snapshot is **current state, not a delta**: it replaces the previous one for that UUID. Rows are keyed by UUID with no foreign key, so an inventory survives unlinking (it is invisible while unlinked) and re-linking restores it.
+- The layout is the game's own: storage `0–35` (hotbar `0–8`, main `9–35`), armor `36–39` (helmet, chestplate, leggings, boots) and off hand `40`. A null entry is an empty slot.
+- Each item carries its registry key, amount, wear (`damage` and `max_damage` together, drawn as a bar that turns amber and then red), a name when the player renamed it, and its enchantments — an enchanted item's bubble glows.
+- Item icons come from the official Minecraft client textures packaged for the server version, so a picture always matches the version that produced the snapshot, and are stored once per item key. An item with no readable texture (some items are assembled from models rather than a single PNG) shows the sourced Performance Center artwork with its name; nothing is ever generated.
+
+The LinkBridge build downloads the official Minecraft **26.3 client** from Mojang’s version manifest, verifies the metadata and client SHA-1 checksums, and packages only item/block texture PNGs. Dedicated-server jars omit these textures. The cache lives in `.plugin-build/client-textures/`; the installed plugin carries the textures when moving the stack. Keep `textureVersion` in `plugin/build.gradle` aligned with `paper-api` and the backend version. See [plugin/TEXTURES.md](plugin/TEXTURES.md). Inventory item names appear on hover, keyboard focus and touch; Escape dismisses the tooltip.
+- Until the game server has reported anything for a UUID, `slots` is `null` and the page says so. No item, number or inventory is invented.
+- The page refreshes every five seconds while it is visible. `inventory-report-seconds` (default `60`) in `mc-config/purpur/plugins/LinkBridge/config.yml` is how often an unchanged inventory is re-sent; a change is reported as soon as it is sampled.
+- The report endpoint is **not** rate limited, for the same reason as `link_status` and the statistics report: it is reachable only from the game server's single container address, behind the service token, at a bounded rate — one snapshot per inventory change plus a periodic refresh per player.
+
 ## Coins
 
 Each Minecraft account (offline UUID) has its own persistent balance in the panel database. After AuthMe login, every successful, uncancelled player block break earns **1 coin**, automatically, in every game mode. Placing blocks does not earn coins; placing and breaking the same block again does. There is no spending, transfer, purchase, interest, or retroactive reward for historical statistics in this first version. Existing accounts start at zero when migration `0007` is installed.
@@ -228,7 +274,7 @@ Build the plugin with `./scripts/build-plugin.sh`, rebuild the API with `docker 
 
 Three client-rendered pages: `/register`, `/login`, and `/cabinet` — the account page, where the link state, the link code, and the linked accounts live. Deep links work because the server hands back the built `index.html` for any path that is not a real file. A path that *does* name a file keeps its `404`, so a stale page pointing at a chunk that no longer exists fails loudly instead of returning HTML where JavaScript was expected.
 
-The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Global Statistics, Settings, and an independent player app for each linked Minecraft nickname, containing Statistics and Skin pages. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
+The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Global Statistics, Settings, and an independent player app for each linked Minecraft nickname, containing Statistics, Inventory and Skin pages. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
 
 Account contains the existing registration, login and cabinet routes. The cabinet puts link status first, with linking beside account details when its window has enough room. Authentication pairs a sourced-icon welcome sidebar with the form; narrower windows hide the sidebar. The user-selected Asadal wallpaper sits lower behind the desktop and appears once. It is decorative artwork, never an image of the real server. Light uses that Asadal scene; Dark switches to the user-supplied night park. Both have provenance sidecars.
 
@@ -244,7 +290,7 @@ See `frontend/src/assets/ARTWORK.md` for artwork provenance and the archive’s 
 Its checks are `npm run build` (`tsc -b && vite build`), `npm run lint`, and
 `npm test` (Node 24's built-in test runner). The image build runs the build check;
 run lint and tests separately in the Node container used by the Dockerfile.
-The 10 frontend tests cover successful logout, server errors, connection failures, theme preference parsing and storage fallback, System resolution, early-boot theme parity, and window geometry/bounds. Pointer, keyboard, focus and responsive window behavior also require browser verification.
+The 31 frontend tests cover successful logout, server errors, connection failures, theme preference parsing and storage fallback, System resolution, early-boot theme parity, window geometry/bounds, and player-sounds settings. Pointer, keyboard, focus and responsive window behavior also require browser verification.
 
 ## Minecraft server
 
@@ -300,13 +346,13 @@ Apply configuration changes with `docker compose --env-file .env.docker up -d --
 
 The installed release's official asset SHA-256 is `a85b4a370f988741c9a38f4d0498262edacbf3220314790ac1c127461996359c`. Upgrade the pinned Compose URL and verify the new release digest together.
 
-Each linked nickname opens an independent **player app**, identified by its nickname and Minecraft skin head. It contains all features for that player, currently **Statistics** and **Skin**. Its selected page, mounted contents and geometry survive hiding and reopening during the linked session.
+Each linked nickname opens an independent **player app**, identified by its nickname and Minecraft skin head. It contains all features for that player, currently **Statistics**, **Inventory** and **Skin**. Its selected page, mounted contents and geometry survive hiding and reopening during the linked session.
 
 The Skin page shows the latest server-reported texture/model and accepts a 64 × 64 or legacy 64 × 32 PNG up to 256 KiB. Choose Classic or Slim arms, preview the local file, then choose **Save skin**. The current front-facing preview draws the actual `textures.minecraft.net` PNG and outer layer locally. Website heads use the server-reported texture hash through MCHeads, rather than guessing by username. Unknown textures and image failures use the sourced Performance Center artwork. A website upload changes this server's skin selection, not a Microsoft or launcher account.
 
 The panel fully decodes and re-encodes uploads to strip PNG metadata, then sends them to MineSkin as **unlisted** images for signing. Anonymous signing needs no configuration; optionally set `MINESKIN_API_KEY` in `.env.docker`. This is an external service dependency. The durable SQL queue survives restarts, retries network/server errors and rate limits, and fails signing after ten minutes. PNG bytes are discarded after signing succeeds or fails. Each player has a 30-second accepted-upload cooldown; another upload cannot begin while one is pending.
 
-Progress distinguishes queued/signing, prepared and waiting for the game server (`ready`), saved, and failed. LinkBridge 1.4.0 synchronizes every five seconds without overlapping passes, processing up to 25 linked players, oldest checked first. It stores signed selections through the SkinsRestorer API even while a player is offline, and refreshes live players only after AuthMe authentication. **Saved** acknowledges server storage; it does not prove every client rendered the skin. Acknowledgements must match both the upload request and signed texture. Observed skin snapshots survive unlinking; pending uploads are deleted with the link.
+Progress distinguishes queued/signing, prepared and waiting for the game server (`ready`), saved, and failed. LinkBridge 1.5.0 synchronizes every five seconds without overlapping passes, processing up to 25 linked players, oldest checked first. It stores signed selections through the SkinsRestorer API even while a player is offline, and refreshes live players only after AuthMe authentication. **Saved** acknowledges server storage; it does not prove every client rendered the skin. Acknowledgements must match both the upload request and signed texture. Observed skin snapshots survive unlinking; pending uploads are deleted with the link.
 
 | Method | Path | Auth | Result |
 | --- | --- | --- | --- |

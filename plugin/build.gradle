@@ -2,6 +2,51 @@ plugins {
     id 'java'
 }
 
+// Dedicated servers omit client textures. Package the official, version-matched
+// item/block PNGs so JavaPlugin.getResource can actually find inventory artwork.
+def textureVersion = '26.3' // Keep in step with paper-api below.
+def textureCache = layout.projectDirectory.dir('../.plugin-build/client-textures')
+def textureOutput = layout.buildDirectory.dir('generated/client-textures')
+tasks.register('prepareItemTextures') {
+    outputs.dir(textureOutput)
+    inputs.property('minecraftVersion', textureVersion)
+    doLast {
+        def cache = textureCache.asFile
+        cache.mkdirs()
+        def fetch = { String url ->
+            def connection = URI.create(url).toURL().openConnection()
+            connection.connectTimeout = 30000
+            connection.readTimeout = 120000
+            connection.inputStream.withCloseable { it.bytes }
+        }
+        def sha1 = { byte[] bytes -> java.security.MessageDigest.getInstance('SHA-1').digest(bytes).encodeHex().toString() }
+        def metadata = new File(cache, "${textureVersion}.json")
+        if (!metadata.exists()) {
+            def manifest = new groovy.json.JsonSlurper().parse(fetch('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'))
+            def versionEntry = manifest.versions.find { it.id == textureVersion }
+            if (versionEntry == null) throw new GradleException("Unknown Minecraft version: ${textureVersion}")
+            def bytes = fetch(versionEntry.url)
+            if (sha1(bytes) != versionEntry.sha1) throw new GradleException('Minecraft metadata checksum mismatch')
+            metadata.bytes = bytes
+        }
+        def client = new groovy.json.JsonSlurper().parse(metadata).downloads.client
+        def jar = new File(cache, "${textureVersion}-client.jar")
+        if (!jar.exists() || sha1(jar.bytes) != client.sha1) {
+            def bytes = fetch(client.url)
+            if (sha1(bytes) != client.sha1) throw new GradleException('Minecraft client checksum mismatch')
+            jar.bytes = bytes
+        }
+        delete(textureOutput)
+        copy {
+            from zipTree(jar)
+            include 'assets/minecraft/textures/item/**/*.png', 'assets/minecraft/textures/block/**/*.png'
+            into textureOutput
+        }
+    }
+}
+sourceSets.main.resources.srcDir(textureOutput)
+tasks.named('processResources') { dependsOn('prepareItemTextures') }
+
 group = 'dev.mcpanel'
 // Single source of truth for the version is plugin.yml; scripts/build-plugin.sh
 // reads it and passes it in. Direct `gradle jar` runs get a placeholder.

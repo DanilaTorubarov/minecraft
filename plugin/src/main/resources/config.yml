@@ -1,6 +1,7 @@
 # The panel on the internal Compose network, not the public URL: /internal/* is
 # blocked at the reverse proxy, so the public hostname would only ever answer 404.
-# Link, status, email-hint, balance, and statistics endpoints are derived from this.
+# Link, status, email-hint, balance, statistics, inventory, and item-icon
+# endpoints are derived from this.
 api-base: "http://app:8080"
 
 # Where a player who has not linked yet is sent. This one is the public site,
@@ -22,6 +23,11 @@ cooldown-seconds: 3
 # reported to the panel. Activity is also reported when a player quits and on
 # server shutdown.
 stats-report-seconds: 5
+
+# How often the current inventory snapshot is re-sent even when nothing
+# changed. Changed inventories are sent as soon as they are sampled; the
+# periodic re-send keeps the panel's "last seen" time honest.
+inventory-report-seconds: 60
 
 # How long to wait for the panel before giving up on a request.
 timeout-seconds: 10

@@ -327,6 +327,69 @@
 .stat-open .player-head { width: 24px; height: 24px; }
 .player-menu-app { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 .player-menu-app .player-head { width: 20px; height: 20px; }
+
+/* Inventory uses the shared Aero glass in a compact grid, with a gentle
+   staggered bob that pauses during inspection. */
+.inv-section-title { font-size: 16px; font-weight: 600; letter-spacing: -.2px; margin: 20px 0 10px; }
+.inv-section-title:first-child { margin-top: 0; }
+.inv-grid { display: grid; gap: 8px; margin-bottom: 20px; }
+.inv-main-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); max-width: 568px; }
+.inv-equipment-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); max-width: 312px; }
+.inv-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+.inv-bubble { position: relative; width: 100%; max-width: 56px; aspect-ratio: 1; display: grid; place-items: center; }
+.inv-bubble.inv-enchanted { outline: 1px solid rgb(176 126 226 / 65%); box-shadow: inset 1px 2px 3px rgb(255 255 255 / 80%), inset -2px -3px 5px var(--bubble-shade), 0 4px 9px rgb(116 66 175 / 30%); }
+.inv-bubble.inv-empty { --bubble-water: rgb(78 185 225 / 10%); --bubble-shade: rgb(19 111 157 / 15%); }
+.inv-empty::before { opacity: .35; }
+.inv-empty::after { opacity: .65; }
+:root[data-theme='dark'] .inv-empty { --bubble-water: rgb(70 163 217 / 9%); --bubble-shade: rgb(0 18 43 / 30%); }
+.inv-cell:has(.inv-bubble:focus), .inv-cell:has(.inv-bubble:hover) { z-index: 1; }
+.inv-bubble:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.inv-tooltip {
+  position: fixed; transform: translateY(-100%); z-index: 10000;
+  width: 260px; max-width: calc(100vw - 24px); padding: 10px 13px;
+  border: 1px solid var(--glass-edge); border-radius: 7px;
+  color: var(--text); background: var(--surface);
+  box-shadow: 0 5px 16px rgb(0 20 40 / 25%);
+  font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
+  max-height: min(170px, 40vh); overflow-y: auto;
+}
+.inv-tooltip[data-below="true"] { transform: none; }
+.inv-tooltip strong { display: block; font-size: 13px; }
+.inv-tooltip span { display: block; color: var(--muted); }
+.inv-icon { width: 56%; height: 56%; object-fit: contain; image-rendering: pixelated; filter: drop-shadow(0 1px 1px rgb(10 45 70 / 45%)); z-index: 1; }
+.inv-amount {
+  position: absolute; right: 1px; bottom: 1px; z-index: 2;
+  font-size: 10px; font-weight: 700; line-height: 1.3; color: #173c50;
+  background: rgb(255 255 255 / 88%); border-radius: 8px; padding: 0 4px;
+}
+.inv-durability { position: absolute; left: 16%; bottom: 13%; height: 3px; max-width: 68%; border-radius: 2px; z-index: 2; }
+.inv-durability[data-level='ok'] { background: var(--success); }
+.inv-durability[data-level='warn'] { background: #c9930a; }
+.inv-durability[data-level='low'] { background: var(--danger); }
+.inv-label { font-size: 10px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+/* A window narrow enough to squeeze the nine-column grid: keep the bubbles
+   round and the counts legible instead of letting the pill swallow the icon. */
+@container (max-width: 520px) {
+  .inv-grid { gap: 6px; }
+  .inv-amount { font-size: 9px; padding: 0 3px; }
+  .inv-label { font-size: 9px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .inv-bubble {
+    animation: inventory-bubble-float var(--inv-float-duration, 5.6s) ease-in-out var(--inv-float-delay, 0s) infinite;
+    transition: box-shadow 160ms ease, transform 160ms var(--motion-glide);
+  }
+  .inv-cell:nth-child(4n + 1) { --inv-float-delay: -1.4s; }
+  .inv-cell:nth-child(4n + 2) { --inv-float-delay: -3.8s; --inv-float-duration: 6.4s; }
+  .inv-cell:nth-child(4n + 3) { --inv-float-delay: -2.6s; --inv-float-duration: 5s; }
+  .inv-cell:nth-child(4n) { --inv-float-delay: -4.6s; --inv-float-duration: 6s; }
+  .inv-cell:is(:hover, :focus-within) .inv-bubble { animation-play-state: paused; }
+  .inv-bubble:hover { transform: translateY(-2px); }
+}
+@keyframes inventory-bubble-float {
+  0%, 100% { translate: -.5px 1px; }
+  50% { translate: .5px -2px; }
+}
 .desktop-menu { min-width: 0; overflow-x: auto; }
 .desktop-menu > button { flex: none; }
 .desktop-dock { max-width: calc(100vw - 24px); overflow-x: auto; overflow-y: hidden; }
