@@ -8,9 +8,9 @@ The `proxy` container runs Caddy and terminates HTTPS — it is the only web ser
 
 | Path | What it is |
 | --- | --- |
-| `src/main.rs` | The entire Rust API — authentication, security, linking, statistics, coins, and skin uploads |
+| `src/main.rs` | The entire Rust API — authentication, security, linking, statistics, coins, minigames, and skin uploads |
 | `migrations/` | The SQL schema, applied by sqlx automatically on startup |
-| `frontend/` | The React 19 + Vite app — `/register`, `/login`, and the `/cabinet` account page |
+| `frontend/` | The React 19 + Vite app — `/register`, `/login`, and the `/cabinet` account page, plus the desktop's Account, Statistics, Minigames and Settings windows |
 | `Dockerfile` | Multi-stage build: npm build → cargo build → slim runtime image |
 | `compose.yaml` | The whole stack — `proxy`, `app`, `db`, `velocity`, `purpur`, and a `tests` profile |
 | `Caddyfile` | TLS termination, security headers, and the `/internal/*` block |
@@ -289,11 +289,45 @@ Each Minecraft account (offline UUID) has its own persistent balance in the pane
 
 Build the plugin with `./scripts/build-plugin.sh`, rebuild the API with `docker compose --env-file .env.docker up --build -d app`, then restart Purpur with `docker compose --env-file .env.docker restart purpur`. The builder renames older LinkBridge jars to `.jar.disabled` so only one version loads. Upgrade both halves together: the new report format requires `report_id`.
 
+## Minigames
+
+Two games in the desktop's **Minigames** window spend exactly the coins `/bal` reports: **Lucky Chest** (three reels) and **Minesweeper** (a 5×5 field with TNT and ores). A coin is a coin in both directions — a stake leaves the balance the in-game command shows and a win is credited back to it, so a result is visible in game on the next `/bal`.
+
+```
+browser                            panel                              Postgres
+───────                            ─────                              ────────
+pick the paying account,
+send a stake or a cell             one live round per user and game
+POST /api/minigames/...     ───▶   roll or deal on the server,       ───▶  minigame_rounds
+                                   charge and pay in one                 one guarded UPDATE
+                                   transaction                           on player_stats.coins
+◀──── the round, what it paid, and the new balance
+```
+
+| Method | Path | Auth | Result |
+| --- | --- | --- | --- |
+| `GET` | `/api/minigames/config` | none | `200` the paytable, limits and return rates — the numbers the server pays from |
+| `GET` | `/api/minigames/state` | session | `200` `{active}` — the live Minesweeper round, or `null` |
+| `POST` | `/api/minigames/chest/spin` | session | `200` `{round_id, bet, reels, multiplier_x100, payout, balance}`; `400` bad stake or client id, `404` not your account, `409` not enough coins |
+| `POST` | `/api/minigames/mines/start` | session | `200` the round; an existing live round is resumed rather than charged a second stake |
+| `POST` | `/api/minigames/mines/reveal` | session | `200` the round with that cell opened; TNT settles it as a loss |
+| `POST` | `/api/minigames/mines/cashout` | session | `200` the settled round; `400` below the minimum number of opened cells |
+
+Details:
+
+- **The server decides everything.** The browser sends a stake, or the cell it wants to open, and never an outcome; it displays the balance the response carries. There is no client-side RNG, no client-side balance, and no sandbox mode.
+- **One account pays.** Coins live on a single Minecraft UUID, so one linked account is the payer: the window shows a picker when the user has several and remembers the choice (`minecraft-minigame-payer`). With no linked account the page shows the ordinary “Link an account” pointer instead — nothing is simulated.
+- **The house keeps about 8%.** Lucky Chest returns **91.8%** of every coin staked. Each Minesweeper table (8, 10, 13 or 16 TNT) returns **92.6–92.8%** when cashing out at the earliest allowed moment, and the per-cell reward rises with the TNT count so the harder tables are wilder rather than worse. An automated test proves that no deeper cash-out beats that return, and the window displays the same figures `chest_rtp_x10000`/`mines_rtp_x10000` compute.
+- **One live round per user and game.** Reloading resumes the round already paid for. A round the player walks away from forfeits its stake after **15 minutes** (`MINIGAME_ROUND_TTL_SECONDS`); refunding it would let anyone scout a field for free. A chest spin carries a browser-generated `client_id`, so a retried request returns the same spin instead of charging twice, and a repeated cash-out or reveal returns the settled round.
+- **Minesweeper never leaks the field.** Until a cell is opened a response says only how many TNT the table holds. Once a round is settled — cashed out, blown up, or expired — it reveals the whole board.
+- Every coin change is one statement, `UPDATE player_stats SET coins = coins ± $1 WHERE uuid = $2 AND coins >= $1`, inside the round's transaction. The `coins >=` guard and the column's `CHECK (coins >= 0)` mean a balance can never go negative, even with two requests racing.
+- Rounds live in `minigame_rounds` (migration `0014`), keyed to the user with `ON DELETE CASCADE`, with a partial unique index that allows exactly one `active` round per user and game. The UUID column has no foreign key: like statistics, a round outlives unlinking.
+
 ## The web panel
 
 Three client-rendered pages: `/register`, `/login`, and `/cabinet` — the account page, where the link state, the link code, and the linked accounts live. Deep links work because the server hands back the built `index.html` for any path that is not a real file. A path that *does* name a file keeps its `404`, so a stale page pointing at a chunk that no longer exists fails loudly instead of returning HTML where JavaScript was expected.
 
-The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Global Statistics, Settings, and an independent player app for each linked Minecraft nickname, containing Statistics, Inventory and Skin pages. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
+The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Global Statistics, Minigames, Settings, and an independent player app for each linked Minecraft nickname, containing Statistics, Inventory and Skin pages. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
 
 Account contains the existing registration, login and cabinet routes. The cabinet puts link status first, with linking beside account details when its window has enough room. Authentication pairs a sourced-icon welcome sidebar with the form; narrower windows hide the sidebar. The user-selected Asadal wallpaper sits lower behind the desktop and appears once. It is decorative artwork, never an image of the real server. Light uses that Asadal scene; Dark switches to the user-supplied night park. Both have provenance sidecars.
 
@@ -309,7 +343,7 @@ See `frontend/src/assets/ARTWORK.md` for artwork provenance and the archive’s 
 Its checks are `npm run build` (`tsc -b && vite build`), `npm run lint`, and
 `npm test` (Node 24's built-in test runner). The image build runs the build check;
 run lint and tests separately in the Node container used by the Dockerfile.
-The 31 frontend tests cover successful logout, server errors, connection failures, theme preference parsing and storage fallback, System resolution, early-boot theme parity, window geometry/bounds, and player-sounds settings. Pointer, keyboard, focus and responsive window behavior also require browser verification.
+The 50 frontend tests cover successful logout, server errors, connection failures, theme preference parsing and storage fallback, System resolution, early-boot theme parity, window geometry/bounds, player-sounds settings, and the minigames window's pure helpers — stake clamping, the payer choice, paytable labels, server-status messages, and that a spin sends a stake and an id rather than an outcome. Pointer, keyboard, focus and responsive window behavior also require browser verification.
 
 ## Minecraft server
 

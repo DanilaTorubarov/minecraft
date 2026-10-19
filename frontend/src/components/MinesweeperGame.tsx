@@ -1,285 +1,203 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import tntImg from '../assets/items/tnt.png'
 import ironImg from '../assets/items/iron_ingot.png'
 import goldImg from '../assets/items/gold_ingot.png'
 import diamondImg from '../assets/items/diamond.png'
 import minesIcon from '../assets/icons/game-minesweeper.png'
-import coinIcon from '../assets/icons/coin.png'
+import PayerSelect from './PayerSelect'
+import { ApiError, cashOutMines, getMinigameState, revealMines, startMines } from '../lib/api'
+import { invalidateServerData } from '../lib/serverData'
+import { useStakedBalance } from '../lib/useMinigames'
 import { playSound } from '../lib/sounds'
-import { useAuth } from '../lib/auth-context'
-import { useStatistics } from '../lib/useStatistics'
-
-export type OreType = 'iron' | 'gold' | 'diamond'
-export type CellContent = 'tnt' | OreType
-
-export type CellState = {
-  id: number
-  content: CellContent
-  isRevealed: boolean
-  isTriggeredTnt?: boolean
-  multiplierBoost: number
-}
+import {
+  canAfford,
+  clampBet,
+  formatBoost,
+  formatCoins,
+  formatMultiplier,
+  formatReturn,
+  minigameFailure,
+  revealedCells,
+  safeCellsOpened,
+  type MinigameRules,
+  type MinesPresetRules,
+  type MinesRound,
+  type OreContent,
+  type Payer,
+} from '../lib/minigames'
 
 type Props = {
   onBack: () => void
+  payer: Payer
+  accounts: Payer[]
+  onChoosePayer: (uuid: string) => void
+  rules: MinigameRules
 }
-
-type GameStatus = 'idle' | 'playing' | 'cashed_out' | 'exploded'
-
-type GameHistory = {
-  bet: number
-  payout: number
-  multiplier: number
-  minesCount: number
-  oresFound: OreType[]
-  status: 'win' | 'loss'
-}
-
-// Multiplier boosts based on TNT count
-type DifficultyPreset = {
-  mines: number
-  labelRu: string
-  minSafe: number
-  winChanceStr: string
-  boostIron: number
-  boostGold: number
-  boostDiamond: number
-}
-
-const DIFFICULTY_PRESETS: DifficultyPreset[] = [
-  { mines: 8, labelRu: '8 TNT (Баланс)', minSafe: 2, winChanceStr: '45%', boostIron: 0.35, boostGold: 0.75, boostDiamond: 2.20 },
-  { mines: 10, labelRu: '10 TNT (Опасно)', minSafe: 2, winChanceStr: '35%', boostIron: 0.55, boostGold: 1.25, boostDiamond: 3.50 },
-  { mines: 13, labelRu: '13 TNT (Хардкор)', minSafe: 2, winChanceStr: '22%', boostIron: 0.95, boostGold: 2.20, boostDiamond: 6.50 },
-  { mines: 16, labelRu: '16 TNT (Безумие)', minSafe: 2, winChanceStr: '12%', boostIron: 1.80, boostGold: 4.00, boostDiamond: 12.00 },
-]
 
 const PRESET_BETS = [10, 50, 100, 250, 500]
 
-function generateBoard(minesCount: number, preset: DifficultyPreset): CellState[] {
-  const totalCells = 25
-  const safeCount = totalCells - minesCount
-
-  // Balanced ore rarity: exactly 1 diamond (rare jackpot), ~18% gold, ~78% iron
-  const diamondCount = 1
-  const goldCount = Math.max(2, Math.round(safeCount * 0.18))
-  const ironCount = safeCount - diamondCount - goldCount
-
-  const safePool: CellContent[] = [
-    ...Array(ironCount).fill('iron'),
-    ...Array(goldCount).fill('gold'),
-    ...Array(diamondCount).fill('diamond'),
-  ]
-
-  // Shuffle safe pool
-  for (let i = safePool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    const temp = safePool[i]
-    safePool[i] = safePool[j]
-    safePool[j] = temp
-  }
-
-  // Create full content list (mines + safe)
-  const fullContent: CellContent[] = [
-    ...Array(minesCount).fill('tnt'),
-    ...safePool,
-  ]
-
-  // Shuffle full list (Fisher-Yates)
-  for (let i = fullContent.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    const temp = fullContent[i]
-    fullContent[i] = fullContent[j]
-    fullContent[j] = temp
-  }
-
-  return fullContent.map((content, idx) => {
-    let boost = 0
-    if (content === 'iron') boost = preset.boostIron
-    else if (content === 'gold') boost = preset.boostGold
-    else if (content === 'diamond') boost = preset.boostDiamond
-
-    return {
-      id: idx,
-      content,
-      isRevealed: false,
-      multiplierBoost: boost,
-    }
-  })
+/** Names for the difficulty chips; the multipliers themselves come from the server. */
+const PRESET_LABELS: Record<number, string> = {
+  8: 'Баланс',
+  10: 'Опасно',
+  13: 'Хардкор',
+  16: 'Безумие',
 }
 
-export default function MinesweeperGame({ onBack }: Props) {
-  const { user } = useAuth()
-  const { stats } = useStatistics(user?.id)
+const ORE_ICONS: Record<Exclude<OreContent, 'tnt'>, string> = {
+  iron: ironImg,
+  gold: goldImg,
+  diamond: diamondImg,
+}
 
-  const hasLinkedAccount = (stats?.accounts?.length ?? 0) > 0
-  const serverCoins = stats?.summary?.coins
+const ORE_NAMES: Record<Exclude<OreContent, 'tnt'>, string> = {
+  iron: 'Железо',
+  gold: 'Золото',
+  diamond: 'Алмаз',
+}
 
-  const [balance, setBalance] = useState<number>(() => {
-    if (typeof serverCoins === 'number') {
-      return serverCoins
-    }
-    try {
-      const stored = localStorage.getItem('chest_game_balance')
-      if (stored !== null) {
-        const val = parseInt(stored, 10)
-        if (!isNaN(val) && val >= 0) return val
-      }
-    } catch {}
-    return 1000
-  })
+type HistoryEntry = {
+  bet: number
+  payout: number
+  multiplier_x100: number
+  status: 'win' | 'loss'
+}
 
-  // Synchronize when server stats load or update
-  const initialSyncedRef = useRef(false)
+export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer, rules }: Props) {
+  const { balance, applySettled } = useStakedBalance(payer.uuid, payer.coins)
+  const presets = rules.mines.presets
+  const [bet, setBet] = useState(() => clampBet(50, rules.min_bet, rules.max_bet, payer.coins))
+  const [selectedMines, setSelectedMines] = useState(presets[0]?.mines ?? 8)
+  const [round, setRound] = useState<MinesRound | null>(null)
+  const [restoring, setRestoring] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [showPaytable, setShowPaytable] = useState(false)
+
+  const preset: MinesPresetRules = presets.find((value) => value.mines === selectedMines) ?? presets[0]
+  const playing = round !== null && round.status === 'active'
+  const cells = round !== null ? revealedCells(round) : new Map<number, OreContent>()
+  const opened = round !== null ? safeCellsOpened(round) : 0
+  // Checked, not rewritten: a stake the payer cannot cover is refused out loud.
+  const validBet = bet >= rules.min_bet && bet <= rules.max_bet && canAfford(bet, balance)
+
+  // A field is already paid for; a reload must not hide it and invite a second stake.
   useEffect(() => {
-    if (hasLinkedAccount && typeof serverCoins === 'number') {
-      if (!initialSyncedRef.current) {
-        initialSyncedRef.current = true
-        setBalance(serverCoins)
-        try {
-          localStorage.setItem('chest_game_balance', serverCoins.toString())
-        } catch {}
-      }
+    let active = true
+    getMinigameState()
+      .then((restored) => {
+        if (!active || restored === null) return
+        setRound(restored)
+        setBet(restored.bet)
+        setSelectedMines(restored.mines)
+        applySettled(restored.balance)
+      })
+      .catch((failure: unknown) => {
+        if (active) setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message)
+      })
+      .finally(() => {
+        if (active) setRestoring(false)
+      })
+    return () => {
+      active = false
     }
-  }, [hasLinkedAccount, serverCoins])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('chest_game_balance', balance.toString())
-    } catch {}
-  }, [balance])
-
-  const [bet, setBet] = useState<number>(50)
-  const [selectedMines, setSelectedMines] = useState<number>(8)
-  const [status, setStatus] = useState<GameStatus>('idle')
-  const [board, setBoard] = useState<CellState[]>(() =>
-    generateBoard(8, DIFFICULTY_PRESETS[0])
-  )
-  const [currentMultiplier, setCurrentMultiplier] = useState<number>(1.0)
-  const [oresFound, setOresFound] = useState<OreType[]>([])
-  const [history, setHistory] = useState<GameHistory[]>([])
-  const [showPaytable, setShowPaytable] = useState<boolean>(false)
-
-  const currentPreset =
-    DIFFICULTY_PRESETS.find((p) => p.mines === selectedMines) ?? DIFFICULTY_PRESETS[0]
-
-  const revealedSafeCount = board.filter((c) => c.isRevealed && c.content !== 'tnt').length
-  const currentPayout = Math.floor(bet * currentMultiplier)
+    // Restoring once on mount is the point: later ledger reads come from the round itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleBetChange = (value: number) => {
-    if (status === 'playing') return
-    const clamped = Math.max(10, Math.min(Math.max(10, balance), value))
-    setBet(clamped)
+    if (playing) return
+    setBet(Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
   }
 
-  // Start a new game round
-  const handleStartGame = () => {
-    if (status === 'playing') return
-    if (bet > balance) {
+  const settleHistory = (settled: MinesRound) => {
+    setHistory((previous) => [
+      {
+        bet: settled.bet,
+        payout: settled.payout,
+        multiplier_x100: settled.multiplier_x100,
+        status: settled.payout > 0 ? 'win' : 'loss',
+      },
+      ...previous.slice(0, 4),
+    ])
+    invalidateServerData('stats')
+  }
+
+  /** Applies a server reply to the board, and announces a round that just ended. */
+  const applyRound = (next: MinesRound, wasPlaying: boolean) => {
+    setRound(next)
+    applySettled(next.balance)
+    if (next.status === 'settled' && wasPlaying) {
+      playSound(next.payout > 0 ? 'done' : 'close')
+      settleHistory(next)
+    } else if (next.status === 'active') {
+      playSound('click')
+    }
+  }
+
+  /** One ore's contribution to the running multiplier for the chosen difficulty. */
+  const boostFor = (content: Exclude<OreContent, 'tnt'>): number => {
+    if (content === 'iron') return preset.boost_iron
+    if (content === 'gold') return preset.boost_gold
+    return preset.boost_diamond
+  }
+
+  const handleStart = async () => {
+    if (busy || playing || !validBet) {
       playSound('click')
       return
     }
-
-    // Deduct bet
-    setBalance((prev) => prev - bet)
-    const newBoard = generateBoard(selectedMines, currentPreset)
-    setBoard(newBoard)
-    setCurrentMultiplier(1.0)
-    setOresFound([])
-    setStatus('playing')
-    playSound('open')
-  }
-
-  // Click on a cell in the 5x5 grid
-  const handleCellClick = (index: number) => {
-    if (status !== 'playing') return
-    const cell = board[index]
-    if (cell.isRevealed) return
-
-    if (cell.content === 'tnt') {
-      // BOOM! Exploded!
-      playSound('close')
-      const updatedBoard = board.map((c, i) => {
-        if (i === index) {
-          return { ...c, isRevealed: true, isTriggeredTnt: true }
-        }
-        return { ...c, isRevealed: true }
-      })
-      setBoard(updatedBoard)
-      setStatus('exploded')
-
-      setHistory((prev) => [
-        {
-          bet,
-          payout: 0,
-          multiplier: currentMultiplier,
-          minesCount: selectedMines,
-          oresFound,
-          status: 'loss',
-        },
-        ...prev.slice(0, 4),
-      ])
-    } else {
-      // Safe Ore uncovered!
-      playSound('click')
-      const newMult = Math.round((currentMultiplier + cell.multiplierBoost) * 100) / 100
-      const updatedOres = [...oresFound, cell.content as OreType]
-
-      const updatedBoard = board.map((c, i) =>
-        i === index ? { ...c, isRevealed: true } : c
-      )
-
-      setBoard(updatedBoard)
-      setCurrentMultiplier(newMult)
-      setOresFound(updatedOres)
-
-      // Check if all safe cells are uncovered (complete victory)
-      const totalSafe = 25 - selectedMines
-      if (updatedOres.length >= totalSafe) {
-        // Automatic full win
-        const finalPayout = Math.floor(bet * newMult)
-        setBalance((prev) => prev + finalPayout)
-        setStatus('cashed_out')
-        playSound('done')
-
-        setHistory((prev) => [
-          {
-            bet,
-            payout: finalPayout,
-            multiplier: newMult,
-            minesCount: selectedMines,
-            oresFound: updatedOres,
-            status: 'win',
-          },
-          ...prev.slice(0, 4),
-        ])
-      }
+    setError('')
+    setBusy(true)
+    try {
+      const started = await startMines({ uuid: payer.uuid, bet, mines: selectedMines })
+      setRound(started)
+      setBet(started.bet)
+      applySettled(started.balance)
+      playSound('open')
+    } catch (failure) {
+      setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message)
+      invalidateServerData('stats')
+    } finally {
+      setBusy(false)
     }
   }
 
-  // Cash out current accumulated winnings
-  const handleCashOut = () => {
-    if (status !== 'playing' || revealedSafeCount < currentPreset.minSafe) return
-
-    const payout = Math.floor(bet * currentMultiplier)
-    setBalance((prev) => prev + payout)
-    setStatus('cashed_out')
-    playSound('done')
-
-    // Reveal rest of board so player sees where TNT and diamonds were
-    setBoard((prev) => prev.map((c) => ({ ...c, isRevealed: true })))
-
-    setHistory((prev) => [
-      {
-        bet,
-        payout,
-        multiplier: currentMultiplier,
-        minesCount: selectedMines,
-        oresFound,
-        status: 'win',
-      },
-      ...prev.slice(0, 4),
-    ])
+  const handleReveal = async (cell: number) => {
+    if (round === null || !playing || busy || cells.has(cell)) return
+    setError('')
+    setBusy(true)
+    try {
+      applyRound(await revealMines(round.round_id, cell), true)
+    } catch (failure) {
+      setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message)
+      invalidateServerData('stats')
+    } finally {
+      setBusy(false)
+    }
   }
+
+  const handleCashOut = async () => {
+    if (round === null || !playing || busy || opened < round.min_safe) return
+    setError('')
+    setBusy(true)
+    try {
+      applyRound(await cashOutMines(round.round_id), true)
+    } catch (failure) {
+      setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message)
+      invalidateServerData('stats')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (restoring) {
+    return <p className="loading">Проверяем незакрытый раунд…</p>
+  }
+
+  const settled = round !== null && round.status === 'settled'
+  const totalCells = rules.mines.cells
 
   return (
     <div className="mines-game">
@@ -289,27 +207,36 @@ export default function MinesweeperGame({ onBack }: Props) {
           type="button"
           className="btn btn-quiet chest-back-btn"
           onClick={onBack}
-          disabled={status === 'playing'}
+          // Leaving mid-round would abandon a stake that is already taken.
+          disabled={playing}
+          title={playing ? 'Завершите раунд, чтобы выйти' : undefined}
           data-ui-sound="close"
         >
           ← Все мини-игры
         </button>
 
-        <div className="chest-balance-pill">
-          <img src={coinIcon} alt="" className="chest-coin-icon" />
-          <span className="chest-balance-num">{balance.toLocaleString()}</span>
-          <span className="chest-balance-label">монет</span>
-        </div>
+        <PayerSelect
+          payer={{ ...payer, coins: balance }}
+          accounts={accounts.map((account) => (account.uuid === payer.uuid ? { ...account, coins: balance } : account))}
+          onChoose={onChoosePayer}
+          disabled={playing || busy}
+        />
 
         <button
           type="button"
           className="btn btn-quiet chest-payout-btn"
-          onClick={() => setShowPaytable((v) => !v)}
+          onClick={() => setShowPaytable((value) => !value)}
           aria-expanded={showPaytable}
         >
           {showPaytable ? 'Скрыть множители' : 'Коэффициенты руд'}
         </button>
       </div>
+
+      {error !== '' && (
+        <div className="casino-error" role="alert">
+          {error}
+        </div>
+      )}
 
       {/* Main Game Stage Layout */}
       <div className="mines-stage-layout">
@@ -320,49 +247,59 @@ export default function MinesweeperGame({ onBack }: Props) {
             <div>
               <h2>Сапёр: Шахтёрское поле</h2>
               <p>
-                Ищите драгоценные руды Minecraft и умножайте ставку. Берегитесь скрытого динамита и вовремя забирайте выигрыш!
+                Поле раскладывает сервер: клетки, руды и TNT неизвестны браузеру до открытия. Выигрыш зачисляется на
+                баланс Minecraft (<span className="chest-inline-cmd">/bal</span>).
               </p>
             </div>
           </div>
 
           {/* Current Score / Status Banner */}
           <div className="mines-banner-wrap" aria-live="polite">
-            {status === 'idle' && (
+            {round === null && (
               <div className="mines-banner-idle">
-                <span>Выберите ставку и начните раунд (для кэшаута найдите минимум {currentPreset.minSafe} руды, шанс {currentPreset.winChanceStr})</span>
-              </div>
-            )}
-            {status === 'playing' && revealedSafeCount === 0 && (
-              <div className="mines-banner-playing">
-                <span>Откройте 1-ю клетку (для кэшаута нужно открыть минимум {currentPreset.minSafe} руды)</span>
-              </div>
-            )}
-            {status === 'playing' && revealedSafeCount === 1 && (
-              <div className="mines-banner-playing">
-                <span>Найдена 1 руда! Откройте 2-ю клетку, чтобы забрать выигрыш (шанс {currentPreset.winChanceStr})</span>
-              </div>
-            )}
-            {status === 'playing' && revealedSafeCount >= currentPreset.minSafe && (
-              <div className="mines-banner-active">
-                <span className="mines-active-label">Текущий выигрыш:</span>
-                <strong className="mines-active-val">
-                  +{currentPayout.toLocaleString()} монет
-                </strong>
-                <span className="mines-active-mult">(x{currentMultiplier.toFixed(2)})</span>
-              </div>
-            )}
-            {status === 'cashed_out' && (
-              <div className="mines-banner-win">
-                <strong>ВЫИГРЫШ ЗАБРАН!</strong>
                 <span>
-                  +{currentPayout.toLocaleString()} монет (x{currentMultiplier.toFixed(2)})
+                  Выберите ставку и начните раунд (для кэшаута найдите минимум {rules.mines.min_safe} руды, возврат{' '}
+                  {formatReturn(preset.rtp_x10000)})
                 </span>
               </div>
             )}
-            {status === 'exploded' && (
+            {playing && opened === 0 && (
+              <div className="mines-banner-playing">
+                <span>
+                  Откройте 1-ю клетку (для кэшаута нужно открыть минимум {round.min_safe} руды)
+                </span>
+              </div>
+            )}
+            {playing && opened === 1 && (
+              <div className="mines-banner-playing">
+                <span>Найдена 1 руда! Откройте 2-ю клетку, чтобы забрать выигрыш</span>
+              </div>
+            )}
+            {playing && opened >= (round?.min_safe ?? rules.mines.min_safe) && (
+              <div className="mines-banner-active">
+                <span className="mines-active-label">Текущий выигрыш:</span>
+                <strong className="mines-active-val">
+                  +{formatCoins(round.cashout)} монет
+                </strong>
+                <span className="mines-active-mult">({formatMultiplier(round.multiplier_x100)})</span>
+              </div>
+            )}
+            {settled && round.payout > 0 && (
+              <div className="mines-banner-win">
+                <strong>ВЫИГРЫШ ЗАБРАН!</strong>
+                <span>
+                  +{formatCoins(round.payout)} монет ({formatMultiplier(round.multiplier_x100)})
+                </span>
+              </div>
+            )}
+            {settled && round.payout === 0 && (
               <div className="mines-banner-loss">
-                <strong>ВЗРЫВ ДИНАМИТА!</strong>
-                <span>Вы наткнулись на TNT. Ставка {bet} монет сгорела.</span>
+                <strong>{round.outcome === 'expired' ? 'РАУНД СГОРЕЛ' : 'ВЗРЫВ ДИНАМИТА!'}</strong>
+                <span>
+                  {round.outcome === 'expired'
+                    ? 'Раунд был заброшен, ставка не возвращается.'
+                    : `Ставка ${formatCoins(round.bet)} монет сгорела.`}
+                </span>
               </div>
             )}
           </div>
@@ -370,84 +307,66 @@ export default function MinesweeperGame({ onBack }: Props) {
           {/* 5x5 Grid Field */}
           <div className="mines-grid-container">
             <div
-              className={`mines-grid-field ${status === 'playing' ? 'in-play' : ''}`}
+              className={`mines-grid-field ${playing ? 'in-play' : ''}`}
               role="grid"
               aria-label="Минное поле 5 на 5"
             >
-              {board.map((cell, idx) => {
-                const isTnt = cell.content === 'tnt'
-                const isTriggered = cell.isTriggeredTnt
-                const isUncoveredSafe = cell.isRevealed && !isTnt
+              {Array.from({ length: totalCells }, (_, index) => {
+                const content = cells.get(index)
+                const isRevealed = content !== undefined
+                const isTnt = content === 'tnt'
+                const isUncoveredSafe = isRevealed && !isTnt
 
                 let cellClass = 'mines-cell'
-                if (!cell.isRevealed) {
+                if (!isRevealed) {
                   cellClass += ' covered'
-                  if (status === 'playing') cellClass += ' clickable'
+                  if (playing) cellClass += ' clickable'
                 } else {
                   cellClass += ' revealed'
                   if (isTnt) {
-                    cellClass += isTriggered ? ' tnt-triggered' : ' tnt-hidden'
+                    cellClass += ' tnt-triggered'
                   } else {
-                    cellClass += ` ore-${cell.content}`
+                    cellClass += ` ore-${content}`
                   }
                 }
 
                 return (
                   <button
-                    key={idx}
+                    key={index}
                     type="button"
                     className={cellClass}
-                    onClick={() => handleCellClick(idx)}
-                    disabled={status !== 'playing' || cell.isRevealed}
+                    onClick={() => handleReveal(index)}
+                    disabled={!playing || isRevealed || busy}
                     aria-label={
-                      cell.isRevealed
+                      isRevealed
                         ? isTnt
                           ? 'Динамит'
-                          : `Найдено ${cell.content}`
-                        : `Клетка ${idx + 1}`
+                          : `Найдено ${ORE_NAMES[content]}`
+                        : `Клетка ${index + 1}`
                     }
                   >
-                    {!cell.isRevealed && (
+                    {!isRevealed && (
                       <div className="mines-cell-face closed">
                         <span className="mines-cell-gem" aria-hidden="true" />
                       </div>
                     )}
 
-                    {cell.isRevealed && isTnt && (
+                    {isRevealed && isTnt && (
                       <div className="mines-cell-face open tnt">
-                        <img
-                          src={tntImg}
-                          alt="Динамит"
-                          className="mines-item-img tnt-img"
-                          draggable={false}
-                        />
-                        {isTriggered && <span className="mines-blast-glow" aria-hidden="true" />}
+                        <img src={tntImg} alt="Динамит" className="mines-item-img tnt-img" draggable={false} />
+                        <span className="mines-blast-glow" aria-hidden="true" />
                       </div>
                     )}
 
                     {isUncoveredSafe && (
-                      <div className={`mines-cell-face open ${cell.content}`}>
+                      <div className={`mines-cell-face open ${content}`}>
                         <img
-                          src={
-                            cell.content === 'diamond'
-                              ? diamondImg
-                              : cell.content === 'gold'
-                              ? goldImg
-                              : ironImg
-                          }
-                          alt={
-                            cell.content === 'diamond'
-                              ? 'Алмаз'
-                              : cell.content === 'gold'
-                              ? 'Золото'
-                              : 'Железо'
-                          }
+                          src={ORE_ICONS[content]}
+                          alt={ORE_NAMES[content]}
                           className="mines-item-img ore-img"
                           draggable={false}
                         />
-                        <span className="mines-boost-tag">
-                          +{cell.multiplierBoost.toFixed(2)}x
-                        </span>
+                        <span className="mines-boost-tag">{formatBoost(boostFor(content))}</span>
                       </div>
                     )}
                   </button>
@@ -458,33 +377,39 @@ export default function MinesweeperGame({ onBack }: Props) {
 
           {/* Action Button: Start or Cash Out */}
           <div className="mines-action-bar">
-            {status !== 'playing' ? (
+            {!playing ? (
               <button
                 type="button"
                 className="btn chest-spin-btn mines-start-btn"
-                onClick={handleStartGame}
-                disabled={balance < 10 || bet > balance}
+                onClick={handleStart}
+                disabled={busy || !validBet}
                 data-ui-sound="open"
               >
                 <span className="chest-btn-text">
-                  {status === 'idle' ? 'Начать раунд' : 'Играть снова'}
+                  {bet < rules.min_bet
+                    ? `Минимум ${rules.min_bet} монет`
+                    : !canAfford(bet, balance)
+                      ? 'Недостаточно монет'
+                      : round === null
+                        ? 'Начать раунд'
+                        : 'Играть снова'}
                 </span>
               </button>
             ) : (
               <button
                 type="button"
                 className={`btn chest-spin-btn mines-cashout-btn ${
-                  revealedSafeCount >= currentPreset.minSafe ? 'active' : 'waiting'
+                  opened >= round.min_safe ? 'active' : 'waiting'
                 }`}
                 onClick={handleCashOut}
-                disabled={revealedSafeCount < currentPreset.minSafe}
+                disabled={busy || opened < round.min_safe}
                 data-ui-sound="done"
               >
                 <span className="chest-btn-text">
-                  {revealedSafeCount >= currentPreset.minSafe
-                    ? `Забрать ${currentPayout.toLocaleString()} монет (x${currentMultiplier.toFixed(2)})`
-                    : `Откройте ещё ${currentPreset.minSafe - revealedSafeCount} ${
-                        currentPreset.minSafe - revealedSafeCount === 1 ? 'клетку' : 'клетки'
+                  {opened >= round.min_safe
+                    ? `Забрать ${formatCoins(round.cashout)} монет (${formatMultiplier(round.multiplier_x100)})`
+                    : `Откройте ещё ${round.min_safe - opened} ${
+                        round.min_safe - opened === 1 ? 'клетку' : 'клетки'
                       } для выигрыша`}
                 </span>
               </button>
@@ -497,17 +422,16 @@ export default function MinesweeperGame({ onBack }: Props) {
             <div className="mines-selector-group">
               <span className="chest-bet-label">Количество динамита:</span>
               <div className="mines-preset-chips">
-                {DIFFICULTY_PRESETS.map((preset) => (
+                {presets.map((value) => (
                   <button
-                    key={preset.mines}
+                    key={value.mines}
                     type="button"
-                    className={`btn btn-quiet chest-preset-chip ${
-                      selectedMines === preset.mines ? 'active' : ''
-                    }`}
-                    onClick={() => setSelectedMines(preset.mines)}
-                    disabled={status === 'playing'}
+                    className={`btn btn-quiet chest-preset-chip ${selectedMines === value.mines ? 'active' : ''}`}
+                    onClick={() => setSelectedMines(value.mines)}
+                    disabled={playing || busy}
+                    title={`Возврат ${formatReturn(value.rtp_x10000)}`}
                   >
-                    {preset.mines} TNT
+                    {value.mines} TNT ({PRESET_LABELS[value.mines] ?? 'Своё'})
                   </button>
                 ))}
               </div>
@@ -522,12 +446,12 @@ export default function MinesweeperGame({ onBack }: Props) {
                 <input
                   id="mines-bet-input"
                   type="number"
-                  min={10}
-                  max={Math.max(10, balance)}
+                  min={rules.min_bet}
+                  max={Math.max(rules.min_bet, Math.min(rules.max_bet, balance))}
                   step={10}
                   value={bet}
-                  onChange={(e) => handleBetChange(parseInt(e.target.value, 10) || 10)}
-                  disabled={status === 'playing'}
+                  onChange={(event) => handleBetChange(parseInt(event.target.value, 10) || rules.min_bet)}
+                  disabled={playing || busy}
                   className="chest-bet-input"
                 />
                 <span className="chest-input-currency">монет</span>
@@ -536,22 +460,22 @@ export default function MinesweeperGame({ onBack }: Props) {
 
             {/* Bet presets */}
             <div className="chest-presets-row">
-              {PRESET_BETS.map((amt) => (
+              {PRESET_BETS.filter((amount) => amount >= rules.min_bet && amount <= rules.max_bet).map((amount) => (
                 <button
-                  key={amt}
+                  key={amount}
                   type="button"
-                  className={`btn btn-quiet chest-preset-chip ${bet === amt ? 'active' : ''}`}
-                  onClick={() => handleBetChange(amt)}
-                  disabled={status === 'playing' || amt > balance}
+                  className={`btn btn-quiet chest-preset-chip ${bet === amount ? 'active' : ''}`}
+                  onClick={() => handleBetChange(amount)}
+                  disabled={playing || busy || amount > balance}
                 >
-                  {amt}
+                  {amount}
                 </button>
               ))}
               <button
                 type="button"
                 className="btn btn-quiet chest-preset-chip"
                 onClick={() => handleBetChange(Math.floor(bet / 2))}
-                disabled={status === 'playing' || bet <= 10}
+                disabled={playing || busy || bet <= rules.min_bet}
               >
                 /2
               </button>
@@ -559,15 +483,15 @@ export default function MinesweeperGame({ onBack }: Props) {
                 type="button"
                 className="btn btn-quiet chest-preset-chip"
                 onClick={() => handleBetChange(bet * 2)}
-                disabled={status === 'playing' || bet * 2 > balance}
+                disabled={playing || busy || bet * 2 > balance || bet * 2 > rules.max_bet}
               >
                 x2
               </button>
               <button
                 type="button"
                 className="btn btn-quiet chest-preset-chip"
-                onClick={() => handleBetChange(balance)}
-                disabled={status === 'playing' || balance <= 0}
+                onClick={() => handleBetChange(clampBet(balance, rules.min_bet, rules.max_bet, balance))}
+                disabled={playing || busy || balance <= 0}
               >
                 MAX
               </button>
@@ -579,48 +503,28 @@ export default function MinesweeperGame({ onBack }: Props) {
         {showPaytable && (
           <aside className="chest-table-card mines-table-card" aria-label="Множители руд">
             <div className="chest-table-header">
-              <h3>Коэффициенты ({currentPreset.mines} TNT • Шанс {currentPreset.winChanceStr})</h3>
-              <span className="chest-table-hint">Мин. {currentPreset.minSafe} руды для кэшаута</span>
+              <h3>
+                Коэффициенты ({preset.mines} TNT • Возврат {formatReturn(preset.rtp_x10000)})
+              </h3>
+              <span className="chest-table-hint">Мин. {rules.mines.min_safe} руды для кэшаута</span>
             </div>
             <div className="chest-table-list">
-              <div className="chest-table-row">
-                <div className="inv-bubble chest-table-bubble">
-                  <img src={ironImg} alt="" className="chest-table-img" />
+              {(['iron', 'gold', 'diamond'] as const).map((ore) => (
+                <div key={ore} className={`chest-table-row ${ore === 'diamond' ? 'jackpot-row' : ''}`}>
+                  <div className="inv-bubble chest-table-bubble">
+                    <img src={ORE_ICONS[ore]} alt="" className="chest-table-img" />
+                  </div>
+                  <div className="chest-table-info">
+                    <strong>{ORE_NAMES[ore]}</strong>
+                    <span className="chest-table-en">
+                      {ore === 'iron' ? 'Iron Ingot' : ore === 'gold' ? 'Gold Ingot' : 'Diamond'}
+                    </span>
+                  </div>
+                  <div className="chest-table-mults">
+                    <strong>{formatMultiplier(boostFor(ore))}</strong>
+                  </div>
                 </div>
-                <div className="chest-table-info">
-                  <strong>Железный слиток</strong>
-                  <span className="chest-table-en">Iron Ingot • Частая руда</span>
-                </div>
-                <div className="chest-table-mults">
-                  <strong>+{currentPreset.boostIron.toFixed(2)}x</strong>
-                </div>
-              </div>
-
-              <div className="chest-table-row">
-                <div className="inv-bubble chest-table-bubble">
-                  <img src={goldImg} alt="" className="chest-table-img" />
-                </div>
-                <div className="chest-table-info">
-                  <strong>Золотой слиток</strong>
-                  <span className="chest-table-en">Gold Ingot • Редкая руда</span>
-                </div>
-                <div className="chest-table-mults">
-                  <strong>+{currentPreset.boostGold.toFixed(2)}x</strong>
-                </div>
-              </div>
-
-              <div className="chest-table-row jackpot-row">
-                <div className="inv-bubble chest-table-bubble">
-                  <img src={diamondImg} alt="" className="chest-table-img" />
-                </div>
-                <div className="chest-table-info">
-                  <strong>Алмаз</strong>
-                  <span className="chest-table-en">Diamond • Легендарная руда</span>
-                </div>
-                <div className="chest-table-mults">
-                  <strong className="mult-diamond">+{currentPreset.boostDiamond.toFixed(2)}x</strong>
-                </div>
-              </div>
+              ))}
 
               <div className="chest-table-row tnt-info-row">
                 <div className="inv-bubble chest-table-bubble">
@@ -628,7 +532,7 @@ export default function MinesweeperGame({ onBack }: Props) {
                 </div>
                 <div className="chest-table-info">
                   <strong>Динамит (TNT)</strong>
-                  <span className="chest-table-en">{currentPreset.mines} мин на поле • Взрыв</span>
+                  <span className="chest-table-en">{preset.mines} мин на поле • Взрыв</span>
                 </div>
                 <div className="chest-table-mults">
                   <span className="tnt-loss-tag">Потеря ставки</span>
@@ -644,25 +548,12 @@ export default function MinesweeperGame({ onBack }: Props) {
         <div className="chest-history-section">
           <h4>История последних раундов:</h4>
           <div className="chest-history-pills">
-            {history.map((h, i) => (
-              <div key={i} className={`chest-hist-pill ${h.status === 'win' ? 'win' : 'loss'}`}>
-                <div className="chest-hist-icons">
-                  {h.oresFound.slice(0, 5).map((ore, idx) => (
-                    <img
-                      key={idx}
-                      src={ore === 'diamond' ? diamondImg : ore === 'gold' ? goldImg : ironImg}
-                      alt={ore}
-                      className="chest-hist-icon"
-                    />
-                  ))}
-                  {h.status === 'loss' && (
-                    <img src={tntImg} alt="TNT" className="chest-hist-icon" />
-                  )}
-                </div>
+            {history.map((entry, index) => (
+              <div key={index} className={`chest-hist-pill ${entry.status === 'win' ? 'win' : 'loss'}`}>
                 <span className="chest-hist-val">
-                  {h.status === 'win'
-                    ? `+${h.payout} (x${h.multiplier.toFixed(2)})`
-                    : `-${h.bet}`}
+                  {entry.status === 'win'
+                    ? `+${formatCoins(entry.payout)} (${formatMultiplier(entry.multiplier_x100)})`
+                    : `-${formatCoins(entry.bet)}`}
                 </span>
               </div>
             ))}
@@ -672,4 +563,3 @@ export default function MinesweeperGame({ onBack }: Props) {
     </div>
   )
 }
-

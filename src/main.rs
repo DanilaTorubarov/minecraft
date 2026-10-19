@@ -65,6 +65,12 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/link/start", post(start_link))
         .route("/api/link/{uuid}", delete(unlink_account))
         .route("/api/stats", get(stats_for_user))
+        .route("/api/minigames/config", get(minigame_config))
+        .route("/api/minigames/state", get(minigame_state))
+        .route("/api/minigames/chest/spin", post(spin_lucky_chest))
+        .route("/api/minigames/mines/start", post(start_mines))
+        .route("/api/minigames/mines/reveal", post(reveal_mines))
+        .route("/api/minigames/mines/cashout", post(cash_out_mines))
         .route("/api/players/{uuid}/skin", get(player_skin).post(upload_player_skin)
             .layer(axum::extract::DefaultBodyLimit::max(300 * 1024)))
         .route("/api/players/{uuid}/inventory", get(player_inventory))
@@ -1902,6 +1908,880 @@ async fn stats_for_user(
         accounts.push(StatsAccount { coins, uuid, username, linked_at, stats, skin_hash: row.try_get("skin_hash").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? });
     }
     Ok(Json(StatsView { accounts, summary }))
+}
+
+// --- Minigames -------------------------------------------------------------
+//
+// The browser never decides an outcome. A round is created, charged and — for
+// Minesweeper — dealt on the server; the client only names the cell it wants to
+// open or asks to cash out. Every coin change is one SQL statement against
+// `player_stats.coins`, the same balance the game server reports into and `/bal`
+// reads, so a minigame win or loss is visible in game immediately.
+//
+// The tables below are the whole economy. `chest_rtp_x10000` and
+// `mines_rtp_x10000` are computed from them, so the return the window shows can
+// never drift from the return that is actually paid.
+
+const MINIGAME_MIN_BET: i64 = 10;
+const MINIGAME_MAX_BET: i64 = 100_000;
+/// An abandoned round forfeits its stake after this long. A reload restores the
+/// round, so only a tab that is really gone ever reaches this.
+const MINIGAME_ROUND_TTL_SECONDS: i64 = 900;
+const MINES_CELLS: usize = 25;
+const MINES_MIN_SAFE: i64 = 2;
+const MINES_START_X100: i64 = 100;
+
+/// Money is never a float: multipliers are hundredths of the stake.
+struct ChestSymbol {
+    id: &'static str,
+    triple_x100: i64,
+    pair_x100: i64,
+    /// Share of three-of-a-kind rolls, out of 100.
+    triple_weight: u64,
+}
+
+// 91.8% return. Reels are the marine treasures the window draws, and the paytable
+// stays close to its shape: three of a kind is rare, a pair is the ordinary win.
+const CHEST_SYMBOLS: [ChestSymbol; 8] = [
+    ChestSymbol { id: "diamond", triple_x100: 4000, pair_x100: 400, triple_weight: 8 },
+    ChestSymbol { id: "heart_of_the_sea", triple_x100: 2000, pair_x100: 250, triple_weight: 12 },
+    ChestSymbol { id: "trident", triple_x100: 1200, pair_x100: 200, triple_weight: 14 },
+    ChestSymbol { id: "nautilus_shell", triple_x100: 800, pair_x100: 160, triple_weight: 16 },
+    ChestSymbol { id: "prismarine_crystals", triple_x100: 600, pair_x100: 140, triple_weight: 16 },
+    ChestSymbol { id: "prismarine_shard", triple_x100: 400, pair_x100: 120, triple_weight: 14 },
+    ChestSymbol { id: "pufferfish", triple_x100: 300, pair_x100: 110, triple_weight: 12 },
+    ChestSymbol { id: "tropical_fish", triple_x100: 250, pair_x100: 100, triple_weight: 8 },
+];
+
+/// Out of 10 000 spins: 5% three of a kind, 16% a pair, 6% a lone diamond, 73% nothing.
+const CHEST_ROLLS: u64 = 10_000;
+const CHEST_TRIPLE_ROLLS: u64 = 500;
+const CHEST_PAIR_ROLLS: u64 = 1_600;
+const CHEST_SINGLE_DIAMOND_ROLLS: u64 = 600;
+const CHEST_SINGLE_DIAMOND_X100: i64 = 150;
+
+/// Expected return per coin staked, in ten-thousandths (9180 = 91.8%).
+fn chest_rtp_x10000() -> i64 {
+    // The weights sum to 100, so the weighted sum of `triple_x100` is already the
+    // per-roll expectation scaled by 10 000.
+    let triple_worth: i64 = CHEST_SYMBOLS
+        .iter()
+        .map(|symbol| symbol.triple_weight as i64 * symbol.triple_x100)
+        .sum();
+    let pair_worth: i64 = CHEST_SYMBOLS.iter().map(|symbol| symbol.pair_x100).sum();
+    let total = CHEST_TRIPLE_ROLLS as i64 * triple_worth
+        + CHEST_PAIR_ROLLS as i64 * (pair_worth * 100 / CHEST_SYMBOLS.len() as i64)
+        + CHEST_SINGLE_DIAMOND_ROLLS as i64 * CHEST_SINGLE_DIAMOND_X100 * 100;
+    total / CHEST_ROLLS as i64
+}
+
+struct MinesPreset {
+    mines: usize,
+    /// Reward for opening one cell of each ore, in hundredths of the stake.
+    boost_iron: i64,
+    boost_gold: i64,
+    boost_diamond: i64,
+}
+
+// More TNT has to pay more per safe cell, or the harder presets would be a worse
+// bet instead of a wilder one. Each preset returns 92.6-92.8% at its first
+// cash-out; `minigame_house_margin` proves that no deeper cash-out beats it.
+const MINES_PRESETS: [MinesPreset; 4] = [
+    MinesPreset { mines: 8, boost_iron: 35, boost_gold: 75, boost_diamond: 210 },
+    MinesPreset { mines: 10, boost_iron: 55, boost_gold: 110, boost_diamond: 300 },
+    MinesPreset { mines: 13, boost_iron: 104, boost_gold: 208, boost_diamond: 575 },
+    MinesPreset { mines: 16, boost_iron: 195, boost_gold: 390, boost_diamond: 1080 },
+];
+
+fn mines_preset(mines: i64) -> Option<&'static MinesPreset> {
+    MINES_PRESETS.iter().find(|preset| preset.mines as i64 == mines)
+}
+
+fn mines_safe_cells(mines: usize) -> usize {
+    MINES_CELLS - mines
+}
+
+/// How the safe cells are filled: one diamond, roughly 18% gold, the rest iron.
+fn mines_ores(mines: usize) -> (usize, usize, usize) {
+    let safe = mines_safe_cells(mines);
+    let gold = std::cmp::max(2, (safe * 18 + 50) / 100);
+    (safe - 1 - gold, gold, 1)
+}
+
+fn mines_boost(preset: &MinesPreset, content: &str) -> i64 {
+    match content {
+        "iron" => preset.boost_iron,
+        "gold" => preset.boost_gold,
+        "diamond" => preset.boost_diamond,
+        _ => 0,
+    }
+}
+
+/// Return of cashing out at the earliest allowed moment, in ten-thousandths.
+/// That is the best a player can do: see `minigame_house_margin`.
+fn mines_rtp_x10000(preset: &MinesPreset) -> i64 {
+    let safe = mines_safe_cells(preset.mines) as i64;
+    let (iron, gold, _diamond) = mines_ores(preset.mines);
+    let boost_sum = iron as i64 * preset.boost_iron
+        + gold as i64 * preset.boost_gold
+        + preset.boost_diamond;
+    // Surviving the two reveals: safe/25 then (safe-1)/24. The multiplier is
+    // 100 + two average boosts, so multiplying by `safe` keeps it integral.
+    let survive = safe * (safe - 1);
+    let multiplier = MINES_START_X100 * safe + 2 * boost_sum;
+    10_000 * survive * multiplier / (MINES_CELLS as i64 * 24 * 100 * safe)
+}
+
+/// 8 bytes of OS randomness. The browser must not be able to predict a reel.
+fn random_u64() -> Result<u64, StatusCode> {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+/// Uniform in `0..bound`, by rejection: the accepted range is a whole number of
+/// `bound`-sized spans, so no value is more likely than another.
+fn random_below(bound: u64) -> Result<u64, StatusCode> {
+    if bound == 0 {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let accepted = u64::MAX - (u64::MAX % bound);
+    loop {
+        let value = random_u64()?;
+        if value < accepted {
+            return Ok(value % bound);
+        }
+    }
+}
+
+/// A round id the browser can never choose for a spin it did not buy.
+fn new_round_id() -> Result<String, StatusCode> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = hex::encode(bytes);
+    Ok(format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32]))
+}
+
+struct ChestSpin {
+    reels: [&'static str; 3],
+    mult_x100: i64,
+}
+
+fn spin_chest() -> Result<ChestSpin, StatusCode> {
+    let symbols = CHEST_SYMBOLS.len() as u64;
+    let roll = random_below(CHEST_ROLLS)?;
+    let triple_end = CHEST_TRIPLE_ROLLS;
+    let pair_end = triple_end + CHEST_PAIR_ROLLS;
+    let diamond_end = pair_end + CHEST_SINGLE_DIAMOND_ROLLS;
+    if roll < triple_end {
+        let mut pick = random_below(100)? as i64;
+        let mut chosen = 0usize;
+        for (index, symbol) in CHEST_SYMBOLS.iter().enumerate() {
+            pick -= symbol.triple_weight as i64;
+            if pick < 0 {
+                chosen = index;
+                break;
+            }
+        }
+        let id = CHEST_SYMBOLS[chosen].id;
+        return Ok(ChestSpin { reels: [id, id, id], mult_x100: CHEST_SYMBOLS[chosen].triple_x100 });
+    }
+    if roll < pair_end {
+        let pair = random_below(symbols)? as usize;
+        // The third reel must differ, or this would be three of a kind.
+        let mut other = random_below(symbols - 1)? as usize;
+        if other >= pair {
+            other += 1;
+        }
+        let (pair_id, other_id) = (CHEST_SYMBOLS[pair].id, CHEST_SYMBOLS[other].id);
+        let reels = match random_below(3)? {
+            0 => [pair_id, pair_id, other_id],
+            1 => [pair_id, other_id, pair_id],
+            _ => [other_id, pair_id, pair_id],
+        };
+        return Ok(ChestSpin { reels, mult_x100: CHEST_SYMBOLS[pair].pair_x100 });
+    }
+    let non_diamond = |offset: u64| CHEST_SYMBOLS[1 + offset as usize].id;
+    if roll < diamond_end {
+        // One diamond beside two different treasures: a flat bonus.
+        let first = random_below(symbols - 1)?;
+        let mut second = random_below(symbols - 1)?;
+        while second == first {
+            second = random_below(symbols - 1)?;
+        }
+        let (a, b) = (non_diamond(first), non_diamond(second));
+        let diamond = CHEST_SYMBOLS[0].id;
+        let reels = match random_below(3)? {
+            0 => [diamond, a, b],
+            1 => [a, diamond, b],
+            _ => [a, b, diamond],
+        };
+        return Ok(ChestSpin { reels, mult_x100: CHEST_SINGLE_DIAMOND_X100 });
+    }
+    // No win: three different treasures and no diamond.
+    let first = random_below(symbols - 1)?;
+    let mut second = random_below(symbols - 1)?;
+    while second == first {
+        second = random_below(symbols - 1)?;
+    }
+    let mut third = random_below(symbols - 1)?;
+    while third == first || third == second {
+        third = random_below(symbols - 1)?;
+    }
+    Ok(ChestSpin {
+        reels: [non_diamond(first), non_diamond(second), non_diamond(third)],
+        mult_x100: 0,
+    })
+}
+
+/// The deal for one Minesweeper round. `board` is the secret: only revealed
+/// cells and, once the round is over, the whole field ever leave this table.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MinesState {
+    mines: i64,
+    board: Vec<String>,
+    revealed: Vec<usize>,
+    mult_x100: i64,
+}
+
+fn new_mines_state(preset: &MinesPreset) -> Result<MinesState, StatusCode> {
+    let (iron, gold, diamond) = mines_ores(preset.mines);
+    let mut board = Vec::with_capacity(MINES_CELLS);
+    board.extend(std::iter::repeat_n("tnt".to_owned(), preset.mines));
+    board.extend(std::iter::repeat_n("iron".to_owned(), iron));
+    board.extend(std::iter::repeat_n("gold".to_owned(), gold));
+    board.extend(std::iter::repeat_n("diamond".to_owned(), diamond));
+    // Fisher-Yates, or the layout would follow the order above.
+    for index in (1..board.len()).rev() {
+        let swap = random_below(index as u64 + 1)? as usize;
+        board.swap(index, swap);
+    }
+    Ok(MinesState { mines: preset.mines as i64, board, revealed: Vec::new(), mult_x100: MINES_START_X100 })
+}
+
+#[derive(serde::Serialize)]
+struct MinigameConfigView {
+    min_bet: i64,
+    max_bet: i64,
+    chest: ChestRulesView,
+    mines: MinesRulesView,
+}
+
+#[derive(serde::Serialize)]
+struct ChestSymbolView {
+    id: &'static str,
+    triple_x100: i64,
+    pair_x100: i64,
+}
+
+#[derive(serde::Serialize)]
+struct ChestRulesView {
+    symbols: Vec<ChestSymbolView>,
+    single_diamond_x100: i64,
+    triple_chance_x10000: i64,
+    pair_chance_x10000: i64,
+    single_diamond_chance_x10000: i64,
+    rtp_x10000: i64,
+}
+
+#[derive(serde::Serialize)]
+struct MinesPresetView {
+    mines: i64,
+    min_safe: i64,
+    boost_iron: i64,
+    boost_gold: i64,
+    boost_diamond: i64,
+    rtp_x10000: i64,
+}
+
+#[derive(serde::Serialize)]
+struct MinesRulesView {
+    cells: usize,
+    min_safe: i64,
+    starting_x100: i64,
+    presets: Vec<MinesPresetView>,
+}
+
+/// Static rules, so the window renders the very numbers the server pays. Public:
+/// it is a paytable, not anybody's data.
+async fn minigame_config() -> Json<MinigameConfigView> {
+    let chance = |rolls: u64| (rolls * 10_000 / CHEST_ROLLS) as i64;
+    Json(MinigameConfigView {
+        min_bet: MINIGAME_MIN_BET,
+        max_bet: MINIGAME_MAX_BET,
+        chest: ChestRulesView {
+            symbols: CHEST_SYMBOLS
+                .iter()
+                .map(|symbol| ChestSymbolView {
+                    id: symbol.id,
+                    triple_x100: symbol.triple_x100,
+                    pair_x100: symbol.pair_x100,
+                })
+                .collect(),
+            single_diamond_x100: CHEST_SINGLE_DIAMOND_X100,
+            triple_chance_x10000: chance(CHEST_TRIPLE_ROLLS),
+            pair_chance_x10000: chance(CHEST_PAIR_ROLLS),
+            single_diamond_chance_x10000: chance(CHEST_SINGLE_DIAMOND_ROLLS),
+            rtp_x10000: chest_rtp_x10000(),
+        },
+        mines: MinesRulesView {
+            cells: MINES_CELLS,
+            min_safe: MINES_MIN_SAFE,
+            starting_x100: MINES_START_X100,
+            presets: MINES_PRESETS
+                .iter()
+                .map(|preset| MinesPresetView {
+                    mines: preset.mines as i64,
+                    min_safe: MINES_MIN_SAFE,
+                    boost_iron: preset.boost_iron,
+                    boost_gold: preset.boost_gold,
+                    boost_diamond: preset.boost_diamond,
+                    rtp_x10000: mines_rtp_x10000(preset),
+                })
+                .collect(),
+        },
+    })
+}
+
+#[derive(serde::Serialize)]
+struct ChestSpinView {
+    round_id: String,
+    bet: i64,
+    reels: Vec<String>,
+    multiplier_x100: i64,
+    payout: i64,
+    balance: i64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChestState {
+    reels: Vec<String>,
+    mult_x100: i64,
+}
+
+#[derive(serde::Serialize)]
+struct MinesCellView {
+    cell: i64,
+    content: String,
+}
+
+#[derive(serde::Serialize)]
+struct MinesRoundView {
+    round_id: String,
+    bet: i64,
+    mines: i64,
+    min_safe: i64,
+    multiplier_x100: i64,
+    cashout: i64,
+    status: String,
+    outcome: Option<String>,
+    payout: i64,
+    balance: i64,
+    /// Only cells the player has already opened, plus the whole field once settled.
+    revealed: Vec<MinesCellView>,
+}
+
+#[derive(serde::Serialize)]
+struct MinigameStateView {
+    active: Option<MinesRoundView>,
+}
+
+#[derive(serde::Deserialize)]
+struct ChestSpinRequest {
+    uuid: String,
+    bet: i64,
+    /// The browser's own id for this spin, reused when it retries. Never the round id.
+    client_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct MinesStartRequest {
+    uuid: String,
+    bet: i64,
+    mines: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct MinesRevealRequest {
+    round_id: String,
+    cell: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct MinesCashoutRequest {
+    round_id: String,
+}
+
+fn validate_bet(bet: i64) -> Result<i64, StatusCode> {
+    if (MINIGAME_MIN_BET..=MINIGAME_MAX_BET).contains(&bet) {
+        Ok(bet)
+    } else {
+        Err(StatusCode::BAD_REQUEST)
+    }
+}
+
+/// Take a stake out of one player's balance. The `coins >=` guard and the
+/// `CHECK (coins >= 0)` on the column mean a balance can never go negative, even
+/// with two requests racing; `None` is "not enough coins", never "went negative".
+async fn debit_coins(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    uuid: &str,
+    amount: i64,
+) -> Result<i64, StatusCode> {
+    let balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE player_stats SET coins = coins - $1 WHERE uuid = $2 AND coins >= $1 RETURNING coins",
+    )
+    .bind(amount)
+    .bind(uuid)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    balance.ok_or(StatusCode::CONFLICT)
+}
+
+async fn credit_coins(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    uuid: &str,
+    amount: i64,
+) -> Result<i64, StatusCode> {
+    sqlx::query_scalar("UPDATE player_stats SET coins = coins + $1 WHERE uuid = $2 RETURNING coins")
+        .bind(amount)
+        .bind(uuid)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn payer_balance(pool: &sqlx::PgPool, uuid: &str) -> Result<i64, StatusCode> {
+    let balance: Option<i64> = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1")
+        .bind(uuid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(balance.unwrap_or(0))
+}
+
+/// The Minesweeper round this user already paid for, if any.
+async fn active_mines_round(pool: &sqlx::PgPool, user_id: i64) -> Result<Option<StoredRound>, StatusCode> {
+    let row = sqlx::query(
+        "SELECT id::text AS id, uuid, bet, status, payout, outcome, state::text AS state
+           FROM minigame_rounds
+          WHERE user_id = $1 AND game = 'minesweeper' AND status = 'active'",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match row {
+        Some(row) => Ok(Some(stored_round(&row)?)),
+        None => Ok(None),
+    }
+}
+
+/// Rounds whose player walked away keep their stake; this settles them so the
+/// player can start again. Run before anything that starts a round.
+async fn expire_stale_rounds(pool: &sqlx::PgPool, user_id: i64) -> Result<(), StatusCode> {
+    sqlx::query(
+        "UPDATE minigame_rounds SET status = 'settled', outcome = 'expired', settled_at = now()
+         WHERE user_id = $1 AND status = 'active'
+           AND created_at < now() - make_interval(secs => $2)",
+    )
+    .bind(user_id)
+    .bind(MINIGAME_ROUND_TTL_SECONDS as f64)
+    .execute(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
+}
+
+struct StoredRound {
+    id: String,
+    uuid: String,
+    bet: i64,
+    status: String,
+    payout: i64,
+    outcome: Option<String>,
+    state: String,
+}
+
+impl StoredRound {
+    fn mines_state(&self) -> Result<MinesState, StatusCode> {
+        serde_json::from_str(&self.state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
+
+fn stored_round(row: &sqlx::postgres::PgRow) -> Result<StoredRound, StatusCode> {
+    Ok(StoredRound {
+        id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        uuid: row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        bet: row.try_get("bet").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        status: row.try_get("status").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        payout: row.try_get("payout").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        outcome: row.try_get("outcome").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        state: row.try_get("state").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    })
+}
+
+fn mines_view(round: &StoredRound, state: &MinesState, balance: i64) -> MinesRoundView {
+    // A finished round shows the whole field: there is no secret left to keep and
+    // the player should see where the TNT was.
+    let settled = round.status == "settled";
+    let cells: Vec<usize> = if settled {
+        (0..state.board.len()).collect()
+    } else {
+        state.revealed.clone()
+    };
+    let revealed = cells
+        .into_iter()
+        .filter_map(|cell| {
+            state
+                .board
+                .get(cell)
+                .map(|content| MinesCellView { cell: cell as i64, content: content.clone() })
+        })
+        .collect();
+    MinesRoundView {
+        round_id: round.id.clone(),
+        bet: round.bet,
+        mines: state.mines,
+        min_safe: MINES_MIN_SAFE,
+        multiplier_x100: state.mult_x100,
+        cashout: round.bet * state.mult_x100 / 100,
+        status: round.status.clone(),
+        outcome: round.outcome.clone(),
+        payout: round.payout,
+        balance,
+        revealed,
+    }
+}
+
+/// Lock the caller's own round, or answer 404 for anything else — including a
+/// round that belongs to another account, which this must not reveal.
+async fn lock_mines_round(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: i64,
+    round_id: &str,
+) -> Result<StoredRound, StatusCode> {
+    let row = sqlx::query(
+        "SELECT id::text AS id, uuid, bet, status, payout, outcome, state::text AS state
+           FROM minigame_rounds
+          WHERE id = $1::uuid AND user_id = $2 AND game = 'minesweeper' FOR UPDATE",
+    )
+    .bind(round_id)
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    stored_round(&row)
+}
+
+async fn settle_round(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    round_id: &str,
+    outcome: &str,
+    payout: i64,
+    state: &MinesState,
+) -> Result<(), StatusCode> {
+    let state = serde_json::to_string(state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query(
+        "UPDATE minigame_rounds
+            SET status = 'settled', outcome = $2, payout = $3, settled_at = now(), state = $4::jsonb
+          WHERE id = $1::uuid",
+    )
+    .bind(round_id)
+    .bind(outcome)
+    .bind(payout)
+    .bind(&state)
+    .execute(&mut **tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
+}
+
+async fn return_chest_spin(
+    pool: &sqlx::PgPool,
+    user_id: i64,
+    client_id: &str,
+) -> Result<Option<ChestSpinView>, StatusCode> {
+    let row = sqlx::query(
+        "SELECT r.id::text AS id, r.bet, r.payout, r.state::text AS state,
+                COALESCE(ps.coins, 0) AS balance
+           FROM minigame_rounds r
+           LEFT JOIN player_stats ps ON ps.uuid = r.uuid
+          WHERE r.user_id = $1 AND r.client_id = $2::uuid AND r.game = 'lucky_chest'",
+    )
+    .bind(user_id)
+    .bind(client_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else { return Ok(None) };
+    let state: String = row.try_get("state").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let state: ChestState =
+        serde_json::from_str(&state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Some(ChestSpinView {
+        round_id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        bet: row.try_get("bet").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        reels: state.reels,
+        multiplier_x100: state.mult_x100,
+        payout: row.try_get("payout").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        balance: row.try_get("balance").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    }))
+}
+
+/// One spin, one transaction: the stake leaves the balance, the result is rolled
+/// from OS randomness and any win is credited before the client hears about it.
+async fn spin_lucky_chest(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<ChestSpinRequest>,
+) -> Result<Json<ChestSpinView>, StatusCode> {
+    let uuid = input.uuid.trim().to_lowercase();
+    // 400 for a malformed UUID, 404 when it is not this user's linked account.
+    owns_player(&pool, user_id, &uuid).await?;
+    let bet = validate_bet(input.bet)?;
+    let client_id = input.client_id.trim().to_lowercase();
+    if !is_uuid(&client_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    // A retry after a lost response buys nothing: it returns the spin already paid for.
+    if let Some(view) = return_chest_spin(&pool, user_id, &client_id).await? {
+        return Ok(Json(view));
+    }
+
+    let spin = spin_chest()?;
+    let payout = bet * spin.mult_x100 / 100;
+    let round_id = new_round_id()?;
+    let state = serde_json::to_string(&ChestState {
+        reels: spin.reels.iter().map(|reel| (*reel).to_owned()).collect(),
+        mult_x100: spin.mult_x100,
+    })
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut balance = debit_coins(&mut tx, &uuid, bet).await?;
+    if payout > 0 {
+        balance = credit_coins(&mut tx, &uuid, payout).await?;
+    }
+    let outcome = if payout > 0 { "paid" } else { "lost" };
+    // `ON CONFLICT DO NOTHING` keeps a simultaneous duplicate from aborting the
+    // transaction, so the rollback below is all that undoes its charge.
+    let inserted = sqlx::query(
+        "INSERT INTO minigame_rounds
+            (id, client_id, user_id, uuid, game, bet, status, payout, outcome, state, settled_at)
+         VALUES ($1::uuid, $2::uuid, $3, $4, 'lucky_chest', $5, 'settled', $6, $7, $8::jsonb, now())
+         ON CONFLICT (user_id, client_id) DO NOTHING
+         RETURNING id",
+    )
+    .bind(&round_id)
+    .bind(&client_id)
+    .bind(user_id)
+    .bind(&uuid)
+    .bind(bet)
+    .bind(payout)
+    .bind(outcome)
+    .bind(&state)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if inserted.is_none() {
+        // The same spin is already being recorded by this user's other request.
+        // Nothing was charged here, and `ON CONFLICT DO NOTHING` waited for that
+        // request to commit, so the recorded spin is there to return: two tabs
+        // pressing once each must not look like a missing balance.
+        tx.rollback().await.ok();
+        return return_chest_spin(&pool, user_id, &client_id)
+            .await?
+            .map(Json)
+            .ok_or(StatusCode::CONFLICT);
+    }
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ChestSpinView {
+        round_id,
+        bet,
+        reels: spin.reels.iter().map(|reel| (*reel).to_owned()).collect(),
+        multiplier_x100: spin.mult_x100,
+        payout,
+        balance,
+    }))
+}
+
+/// Deals a field and takes the stake in one transaction. The board stays in the
+/// database: the response says how many TNT there are, never where.
+async fn start_mines(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<MinesStartRequest>,
+) -> Result<Json<MinesRoundView>, StatusCode> {
+    let uuid = input.uuid.trim().to_lowercase();
+    owns_player(&pool, user_id, &uuid).await?;
+    let bet = validate_bet(input.bet)?;
+    let preset = mines_preset(input.mines).ok_or(StatusCode::BAD_REQUEST)?;
+    expire_stale_rounds(&pool, user_id).await?;
+    // Starting twice is a resume, not a second stake: the field already paid for
+    // is the one the player gets back.
+    if let Some(round) = active_mines_round(&pool, user_id).await? {
+        let state = round.mines_state()?;
+        let balance = payer_balance(&pool, &round.uuid).await?;
+        return Ok(Json(mines_view(&round, &state, balance)));
+    }
+    let state = new_mines_state(preset)?;
+    let round_id = new_round_id()?;
+    let stored = serde_json::to_string(&state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let balance = debit_coins(&mut tx, &uuid, bet).await?;
+    // The partial unique index allows one live round per game, so a second tab
+    // resolves to the same round instead of staking money twice.
+    let inserted = sqlx::query(
+        "INSERT INTO minigame_rounds (id, user_id, uuid, game, bet, state)
+         VALUES ($1::uuid, $2, $3, 'minesweeper', $4, $5::jsonb)
+         ON CONFLICT DO NOTHING
+         RETURNING id",
+    )
+    .bind(&round_id)
+    .bind(user_id)
+    .bind(&uuid)
+    .bind(bet)
+    .bind(&stored)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if inserted.is_none() {
+        tx.rollback().await.ok();
+        let round = active_mines_round(&pool, user_id)
+            .await?
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        let state = round.mines_state()?;
+        let balance = payer_balance(&pool, &round.uuid).await?;
+        return Ok(Json(mines_view(&round, &state, balance)));
+    }
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let round = StoredRound {
+        id: round_id,
+        uuid,
+        bet,
+        status: "active".to_owned(),
+        payout: 0,
+        outcome: None,
+        state: stored,
+    };
+    Ok(Json(mines_view(&round, &state, balance)))
+}
+
+/// Opens one cell. A TNT ends the round, clearing the field pays the whole
+/// multiplier, and anything else just raises it.
+async fn reveal_mines(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<MinesRevealRequest>,
+) -> Result<Json<MinesRoundView>, StatusCode> {
+    let round_id = input.round_id.trim().to_lowercase();
+    if !is_uuid(&round_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !(0..MINES_CELLS as i64).contains(&input.cell) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let cell = input.cell as usize;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut round = lock_mines_round(&mut tx, user_id, &round_id).await?;
+    let mut state = round.mines_state()?;
+    if round.status == "settled" || state.revealed.contains(&cell) {
+        // A retried reveal is not a second reveal, and a settled round cannot change.
+        tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let balance = payer_balance(&pool, &round.uuid).await?;
+        return Ok(Json(mines_view(&round, &state, balance)));
+    }
+
+    let content = state.board.get(cell).cloned().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    state.revealed.push(cell);
+    let balance = if content == "tnt" {
+        round.status = "settled".to_owned();
+        round.outcome = Some("lost".to_owned());
+        round.payout = 0;
+        // Nothing is credited: the stake was taken when the round started.
+        settle_round(&mut tx, &round_id, "lost", 0, &state).await?;
+        payer_balance(&pool, &round.uuid).await?
+    } else {
+        let preset = mines_preset(state.mines).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        state.mult_x100 += mines_boost(preset, &content);
+        if state.revealed.len() >= mines_safe_cells(state.mines as usize) {
+            // Nothing left to find: the round pays out rather than waiting for a click.
+            let payout = round.bet * state.mult_x100 / 100;
+            round.status = "settled".to_owned();
+            round.outcome = Some("paid".to_owned());
+            round.payout = payout;
+            let balance = credit_coins(&mut tx, &round.uuid, payout).await?;
+            settle_round(&mut tx, &round_id, "paid", payout, &state).await?;
+            balance
+        } else {
+            let stored =
+                serde_json::to_string(&state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            sqlx::query("UPDATE minigame_rounds SET state = $2::jsonb WHERE id = $1::uuid")
+                .bind(&round_id)
+                .bind(&stored)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            payer_balance(&pool, &round.uuid).await?
+        }
+    };
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(mines_view(&round, &state, balance)))
+}
+
+/// Takes the accumulated multiplier. Repeating it after a success returns the
+/// same settled round and never pays twice.
+async fn cash_out_mines(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<MinesCashoutRequest>,
+) -> Result<Json<MinesRoundView>, StatusCode> {
+    let round_id = input.round_id.trim().to_lowercase();
+    if !is_uuid(&round_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut round = lock_mines_round(&mut tx, user_id, &round_id).await?;
+    let state = round.mines_state()?;
+    if round.status == "settled" {
+        tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let balance = payer_balance(&pool, &round.uuid).await?;
+        return Ok(Json(mines_view(&round, &state, balance)));
+    }
+    if (state.revealed.len() as i64) < MINES_MIN_SAFE {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let payout = round.bet * state.mult_x100 / 100;
+    round.status = "settled".to_owned();
+    round.outcome = Some("paid".to_owned());
+    round.payout = payout;
+    let balance = credit_coins(&mut tx, &round.uuid, payout).await?;
+    settle_round(&mut tx, &round_id, "paid", payout, &state).await?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(mines_view(&round, &state, balance)))
+}
+
+/// The live round, so a reload resumes the field it was already charged for.
+async fn minigame_state(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<MinigameStateView>, StatusCode> {
+    expire_stale_rounds(&pool, user_id).await?;
+    let Some(round) = active_mines_round(&pool, user_id).await? else {
+        return Ok(Json(MinigameStateView { active: None }));
+    };
+    let state = round.mines_state()?;
+    let balance = payer_balance(&pool, &round.uuid).await?;
+    Ok(Json(MinigameStateView { active: Some(mines_view(&round, &state, balance)) }))
 }
 
 // --- Player skins ----------------------------------------------------------
@@ -5036,6 +5916,624 @@ mod test {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(found["slots"][0]["icon"], format!("data:image/png;base64,{INVENTORY_ICON_PNG}"));
         assert_eq!(found["slots"][36]["icon"], format!("data:image/png;base64,{INVENTORY_ICON_PNG}"));
+        Ok(())
+    }
+
+    // --- Minigames -------------------------------------------------------------
+
+    // A logged-in user with one linked account that already holds `coins` coins.
+    // The coins arrive the way the game server sends them — a reported block-break
+    // count — so a test never invents a balance the panel could not have had.
+    // Cleanup is the caller's: rounds cascade with the user, `player_stats` cannot.
+    async fn paid_player(
+        pool: &sqlx::PgPool,
+        coins: i64
+    ) -> Result<(String, String, String), Box<dyn std::error::Error>> {
+        let (email, cookie) = fresh_user(pool).await?;
+        let uuid = test_uuid(&email);
+        let code = start_code(pool, &cookie).await?;
+        claim(pool, &code, &uuid, "Miner").await?;
+        report_stats(
+            pool,
+            Some(&test_service_token()),
+            vec![stats_player_with(&uuid, "Miner", 300, 0, coins, serde_json::json!({}))]
+        ).await?;
+        Ok((email, cookie, uuid))
+    }
+
+    async fn post_session(
+        pool: &sqlx::PgPool,
+        uri: &str,
+        cookie: &str,
+        body: serde_json::Value
+    ) -> Result<axum::response::Response, Box<dyn std::error::Error>> {
+        send(pool, "POST", uri, Some(cookie), Some(body)).await
+    }
+
+    async fn coins_of(pool: &sqlx::PgPool, uuid: &str) -> Result<i64, Box<dyn std::error::Error>> {
+        Ok(
+            sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1")
+                .bind(uuid)
+                .fetch_one(pool).await?
+        )
+    }
+
+    // The stored round row: status, stake, payout and why it settled.
+    async fn round_row(
+        pool: &sqlx::PgPool,
+        round_id: &str
+    ) -> Result<(String, i64, i64, Option<String>), Box<dyn std::error::Error>> {
+        Ok(
+            sqlx::query_as(
+                "SELECT status, bet, payout, outcome FROM minigame_rounds WHERE id = $1::uuid"
+            )
+                .bind(round_id)
+                .fetch_one(pool).await?
+        )
+    }
+
+    // The secret field. A test may read it; the API never names a cell before the
+    // player opens it. This is how a loss gets tested without weakening the rules.
+    async fn mines_board(
+        pool: &sqlx::PgPool,
+        round_id: &str
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let raw: String = sqlx
+            ::query_scalar("SELECT state::text FROM minigame_rounds WHERE id = $1::uuid")
+            .bind(round_id)
+            .fetch_one(pool).await?;
+        let state: serde_json::Value = serde_json::from_str(&raw)?;
+        Ok(
+            state["board"]
+                .as_array()
+                .ok_or("state has no board")?
+                .iter()
+                .map(|value| value.as_str().unwrap_or_default().to_owned())
+                .collect()
+        )
+    }
+
+    fn cell_of(board: &[String], content: &str) -> usize {
+        board
+            .iter()
+            .position(|value| value == content)
+            .unwrap_or_else(|| panic!("the field must hold {content}"))
+    }
+
+    /// Return of cashing out after exactly `k` safe cells, in ten-thousandths and
+    /// as an exact fraction: (survival chance) × (multiplier). Integers only, so
+    /// two cash-out depths compare exactly.
+    fn mines_cashout_return_x10000(preset: &MinesPreset, k: usize) -> i128 {
+        let safe = mines_safe_cells(preset.mines);
+        let (iron, gold, _diamond) = mines_ores(preset.mines);
+        let boost_sum =
+            iron as i128 * preset.boost_iron as i128 +
+            gold as i128 * preset.boost_gold as i128 +
+            preset.boost_diamond as i128;
+        let mut numerator: i128 = 1;
+        let mut denominator: i128 = 1;
+        for step in 0..k {
+            numerator *= (safe - step) as i128;
+            denominator *= (MINES_CELLS - step) as i128;
+        }
+        // E[multiplier] after k safe cells is 100 + k·boost_sum/safe hundredths.
+        let multiplier = 100 * safe as i128 + k as i128 * boost_sum;
+        10_000 * numerator * multiplier / (denominator * safe as i128 * 100)
+    }
+
+    #[tokio::test]
+    async fn chest_spin_moves_real_coins_and_a_retry_never_charges_twice() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie, uuid) = paid_player(&pool, 1_000).await?;
+        let client_id = test_uuid(&random_ip());
+        let spin = post_session(
+            &pool,
+            "/api/minigames/chest/spin",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 50, "client_id": client_id })
+        ).await?;
+        let spin_status = spin.status();
+        let spin = body_json(spin).await?;
+        let round_id = spin["round_id"].as_str().unwrap_or_default().to_owned();
+        let payout = spin["payout"].as_i64().unwrap_or(-1);
+        let multiplier = spin["multiplier_x100"].as_i64().unwrap_or(-1);
+        let reported = spin["balance"].as_i64().unwrap_or(-1);
+        let reels = spin["reels"].as_array().cloned().unwrap_or_default();
+        let after_spin = coins_of(&pool, &uuid).await?;
+        let row = round_row(&pool, &round_id).await?;
+
+        // The same client id is the same spin: a retry must not buy a second one.
+        let retry = post_session(
+            &pool,
+            "/api/minigames/chest/spin",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 50, "client_id": client_id })
+        ).await?;
+        let retry_status = retry.status();
+        let retry = body_json(retry).await?;
+        let after_retry = coins_of(&pool, &uuid).await?;
+        delete_player_stats(&pool, &uuid).await?;
+        delete_user(&pool, &email).await?;
+
+        assert_eq!(spin_status, StatusCode::OK);
+        assert_eq!(retry_status, StatusCode::OK);
+        assert_eq!(reels.len(), 3, "a spin lands three reels");
+        // The payout comes from the server's own roll, and the balance follows it.
+        assert_eq!(payout, 50 * multiplier / 100, "the payout matches the multiplier");
+        assert_eq!(after_spin, 1_000 - 50 + payout, "stake out, winnings in");
+        assert_eq!(reported, after_spin, "the reported balance is the stored balance");
+        assert_eq!(row.0, "settled");
+        assert_eq!(row.1, 50, "the round records the stake");
+        assert_eq!(row.2, payout);
+        assert_eq!(row.3.as_deref(), Some(if payout > 0 { "paid" } else { "lost" }));
+        assert_eq!(retry["round_id"], serde_json::json!(round_id), "the retry is the same spin");
+        assert_eq!(retry["payout"], serde_json::json!(payout));
+        assert_eq!(after_retry, after_spin, "a retry is never charged");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn chest_spin_refuses_another_users_account_and_a_stake_it_cannot_cover() -> TestResult {
+        let pool = connect().await?;
+        let (owner_email, _, owner_uuid) = paid_player(&pool, 1_000).await?;
+        let (stranger_email, stranger_cookie, stranger_uuid) = paid_player(&pool, 1_000).await?;
+        let client_id = test_uuid(&random_ip());
+
+        // Someone else's linked account is simply not there.
+        let foreign = post_session(
+            &pool,
+            "/api/minigames/chest/spin",
+            &stranger_cookie,
+            serde_json::json!({ "uuid": owner_uuid, "bet": 50, "client_id": client_id })
+        ).await?.status();
+        let anonymous = post_json(
+            &pool,
+            "/api/minigames/chest/spin",
+            serde_json::json!({ "uuid": owner_uuid, "bet": 50, "client_id": client_id })
+        ).await?;
+        // A stake below the minimum, above the maximum, or with no usable id.
+        let under = post_session(
+            &pool,
+            "/api/minigames/chest/spin",
+            &stranger_cookie,
+            serde_json::json!({ "uuid": stranger_uuid, "bet": 1, "client_id": client_id })
+        ).await?.status();
+        let over = post_session(
+            &pool,
+            "/api/minigames/chest/spin",
+            &stranger_cookie,
+            serde_json::json!({ "uuid": stranger_uuid, "bet": 10_000_000, "client_id": client_id })
+        ).await?.status();
+        let malformed = post_session(
+            &pool,
+            "/api/minigames/chest/spin",
+            &stranger_cookie,
+            serde_json::json!({ "uuid": stranger_uuid, "bet": 50, "client_id": "not-a-uuid" })
+        ).await?.status();
+
+        // A balance that cannot cover the stake: refused, and nothing is taken.
+        let (broke_email, broke_cookie, broke_uuid) = paid_player(&pool, 20).await?;
+        let refused = post_session(
+            &pool,
+            "/api/minigames/chest/spin",
+            &broke_cookie,
+            serde_json::json!({ "uuid": broke_uuid, "bet": 50, "client_id": client_id })
+        ).await?.status();
+        let untouched = coins_of(&pool, &broke_uuid).await?;
+
+        delete_player_stats(&pool, &owner_uuid).await?;
+        delete_user(&pool, &owner_email).await?;
+        delete_player_stats(&pool, &stranger_uuid).await?;
+        delete_user(&pool, &stranger_email).await?;
+        delete_player_stats(&pool, &broke_uuid).await?;
+        delete_user(&pool, &broke_email).await?;
+
+        assert_eq!(foreign, StatusCode::NOT_FOUND, "a UUID that is not yours is not found");
+        assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+        assert_eq!(under, StatusCode::BAD_REQUEST);
+        assert_eq!(over, StatusCode::BAD_REQUEST);
+        assert_eq!(malformed, StatusCode::BAD_REQUEST);
+        assert_eq!(refused, StatusCode::CONFLICT, "an unaffordable stake is a conflict");
+        assert_eq!(untouched, 20, "a refused stake leaves the balance alone");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mines_round_names_only_opened_cells_and_pays_out_once() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie, uuid) = paid_player(&pool, 1_000).await?;
+        let started = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 8 })
+        ).await?;
+        let started_status = started.status();
+        let started = body_json(started).await?;
+        let round_id = started["round_id"].as_str().unwrap_or_default().to_owned();
+        let charged = coins_of(&pool, &uuid).await?;
+        let board = mines_board(&pool, &round_id).await?;
+        let iron_cells: Vec<i64> = board
+            .iter()
+            .enumerate()
+            .filter(|(_, content)| content.as_str() == "iron")
+            .take(2)
+            .map(|(index, _)| index as i64)
+            .collect();
+
+        let first = post_session(
+            &pool,
+            "/api/minigames/mines/reveal",
+            &cookie,
+            serde_json::json!({ "round_id": round_id, "cell": iron_cells[0] })
+        ).await?;
+        let first = body_json(first).await?;
+        // Opening the same cell again is not an error: it is the same round.
+        let repeat = post_session(
+            &pool,
+            "/api/minigames/mines/reveal",
+            &cookie,
+            serde_json::json!({ "round_id": round_id, "cell": iron_cells[0] })
+        ).await?;
+        let repeat = body_json(repeat).await?;
+        let second = post_session(
+            &pool,
+            "/api/minigames/mines/reveal",
+            &cookie,
+            serde_json::json!({ "round_id": round_id, "cell": iron_cells[1] })
+        ).await?;
+        let second = body_json(second).await?;
+        let cashout = post_session(
+            &pool,
+            "/api/minigames/mines/cashout",
+            &cookie,
+            serde_json::json!({ "round_id": round_id })
+        ).await?;
+        let cashout_status = cashout.status();
+        let cashout = body_json(cashout).await?;
+        let payout = cashout["payout"].as_i64().unwrap_or(-1);
+        let after_cashout = coins_of(&pool, &uuid).await?;
+        // Repeating a successful cash-out returns the settled round and pays nothing.
+        let again = post_session(
+            &pool,
+            "/api/minigames/mines/cashout",
+            &cookie,
+            serde_json::json!({ "round_id": round_id })
+        ).await?;
+        let again_status = again.status();
+        let again = body_json(again).await?;
+        let after_again = coins_of(&pool, &uuid).await?;
+        let row = round_row(&pool, &round_id).await?;
+        delete_player_stats(&pool, &uuid).await?;
+        delete_user(&pool, &email).await?;
+
+        assert_eq!(started_status, StatusCode::OK);
+        assert_eq!(started["bet"], serde_json::json!(100));
+        assert_eq!(started["mines"], serde_json::json!(8));
+        assert_eq!(started["multiplier_x100"], serde_json::json!(100), "a fresh field starts at x1");
+        assert_eq!(started["revealed"].as_array().map(Vec::len), Some(0), "the field arrives hidden");
+        assert_eq!(charged, 900, "the stake leaves the balance when the round starts");
+        assert_eq!(board.len(), MINES_CELLS);
+        assert_eq!(first["status"], serde_json::json!("active"));
+        assert_eq!(first["multiplier_x100"], serde_json::json!(135), "one iron ingot pays +0.35");
+        assert_eq!(repeat["multiplier_x100"], first["multiplier_x100"], "a repeat reveals nothing");
+        assert_eq!(second["multiplier_x100"], serde_json::json!(170));
+        assert_eq!(second["cashout"], serde_json::json!(170));
+        assert_eq!(cashout_status, StatusCode::OK);
+        assert_eq!(cashout["status"], serde_json::json!("settled"));
+        assert_eq!(cashout["outcome"], serde_json::json!("paid"));
+        assert_eq!(
+            cashout["revealed"].as_array().map(Vec::len),
+            Some(MINES_CELLS),
+            "a settled round shows the whole field"
+        );
+        assert_eq!(payout, 170, "two iron ingots on a stake of 100");
+        assert_eq!(after_cashout, 900 + payout);
+        assert_eq!(again_status, StatusCode::OK);
+        assert_eq!(again["payout"], serde_json::json!(payout));
+        assert_eq!(after_again, after_cashout, "a repeated cash-out never pays twice");
+        assert_eq!(row.0, "settled");
+        assert_eq!(row.2, payout);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mines_explosion_forfeits_the_stake_and_the_next_round_starts_clean() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie, uuid) = paid_player(&pool, 1_000).await?;
+        let started = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 8 })
+        ).await?;
+        let started = body_json(started).await?;
+        let round_id = started["round_id"].as_str().unwrap_or_default().to_owned();
+        let board = mines_board(&pool, &round_id).await?;
+        let tnt = cell_of(&board, "tnt") as i64;
+        let exploded = post_session(
+            &pool,
+            "/api/minigames/mines/reveal",
+            &cookie,
+            serde_json::json!({ "round_id": round_id, "cell": tnt })
+        ).await?;
+        let exploded_status = exploded.status();
+        let exploded = body_json(exploded).await?;
+        let after = coins_of(&pool, &uuid).await?;
+        let row = round_row(&pool, &round_id).await?;
+        // The settled round no longer blocks the next one.
+        let next = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 8 })
+        ).await?;
+        let next_status = next.status();
+        let next = body_json(next).await?;
+        let after_next = coins_of(&pool, &uuid).await?;
+        delete_player_stats(&pool, &uuid).await?;
+        delete_user(&pool, &email).await?;
+
+        assert_eq!(exploded_status, StatusCode::OK);
+        assert_eq!(exploded["status"], serde_json::json!("settled"));
+        assert_eq!(exploded["outcome"], serde_json::json!("lost"));
+        assert_eq!(exploded["payout"], serde_json::json!(0));
+        assert_eq!(
+            exploded["revealed"].as_array().map(Vec::len),
+            Some(MINES_CELLS),
+            "the TNT is shown once the round is over"
+        );
+        assert_eq!(after, 900, "the stake was taken at the start and is not returned");
+        assert_eq!(row.0, "settled");
+        assert_eq!(row.3.as_deref(), Some("lost"));
+        assert_eq!(next_status, StatusCode::OK);
+        assert_ne!(next["round_id"], serde_json::json!(round_id), "a fresh field, not the dead one");
+        assert_eq!(after_next, 800);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mines_start_resumes_a_live_round_and_refuses_the_impossible() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie, uuid) = paid_player(&pool, 1_000).await?;
+        let started = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 8 })
+        ).await?;
+        let started = body_json(started).await?;
+        let round_id = started["round_id"].as_str().unwrap_or_default().to_owned();
+
+        // Starting again is the same field and the same single stake, whatever the
+        // second request asked for.
+        let resumed = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 500, "mines": 16 })
+        ).await?;
+        let resumed_status = resumed.status();
+        let resumed = body_json(resumed).await?;
+        let charged_once = coins_of(&pool, &uuid).await?;
+
+        let early_cashout = post_session(
+            &pool,
+            "/api/minigames/mines/cashout",
+            &cookie,
+            serde_json::json!({ "round_id": round_id })
+        ).await?.status();
+        let bad_cell = post_session(
+            &pool,
+            "/api/minigames/mines/reveal",
+            &cookie,
+            serde_json::json!({ "round_id": round_id, "cell": 25 })
+        ).await?.status();
+        let bad_round = post_session(
+            &pool,
+            "/api/minigames/mines/reveal",
+            &cookie,
+            serde_json::json!({ "round_id": "bad", "cell": 0 })
+        ).await?.status();
+        let unknown_round = post_session(
+            &pool,
+            "/api/minigames/mines/reveal",
+            &cookie,
+            serde_json::json!({ "round_id": test_uuid(&random_ip()), "cell": 0 })
+        ).await?.status();
+        // A table that does not exist is refused before anything else happens.
+        let wrong_mines = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 9 })
+        ).await?.status();
+        let state = get_with_cookie(&pool, "/api/minigames/state", Some(&cookie)).await?;
+        let state = body_json(state).await?;
+
+        // Another user cannot see or settle this round, not even to lose it.
+        let (stranger_email, stranger_cookie) = fresh_user(&pool).await?;
+        let no_round = post_session(
+            &pool,
+            "/api/minigames/mines/cashout",
+            &stranger_cookie,
+            serde_json::json!({ "round_id": round_id })
+        ).await?.status();
+
+        delete_player_stats(&pool, &uuid).await?;
+        delete_user(&pool, &email).await?;
+        delete_user(&pool, &stranger_email).await?;
+
+        assert_eq!(resumed_status, StatusCode::OK);
+        assert_eq!(resumed["round_id"], serde_json::json!(round_id), "starting twice resumes");
+        assert_eq!(resumed["bet"], serde_json::json!(100), "the live stake is the one that stands");
+        assert_eq!(resumed["mines"], serde_json::json!(8));
+        assert_eq!(charged_once, 900, "a resume never stakes again");
+        assert_eq!(early_cashout, StatusCode::BAD_REQUEST, "two ores are the minimum to cash out");
+        assert_eq!(bad_cell, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_round, StatusCode::BAD_REQUEST);
+        assert_eq!(unknown_round, StatusCode::NOT_FOUND);
+        assert_eq!(wrong_mines, StatusCode::BAD_REQUEST, "9 TNT is not a table");
+        assert_eq!(state["active"]["round_id"], serde_json::json!(round_id));
+        assert_eq!(no_round, StatusCode::NOT_FOUND, "another user's round does not exist for you");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_mines_round_forfeits_its_stake_once() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie, uuid) = paid_player(&pool, 1_000).await?;
+        let started = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 8 })
+        ).await?;
+        let started = body_json(started).await?;
+        let round_id = started["round_id"].as_str().unwrap_or_default().to_owned();
+        // A tab that was really gone: past the abandonment deadline.
+        sqlx::query(
+            "UPDATE minigame_rounds SET created_at = now() - make_interval(secs => $2)
+              WHERE id = $1::uuid"
+        )
+            .bind(&round_id)
+            .bind((MINIGAME_ROUND_TTL_SECONDS + 60) as f64)
+            .execute(&pool).await?;
+        let state = get_with_cookie(&pool, "/api/minigames/state", Some(&cookie)).await?;
+        let state = body_json(state).await?;
+        let row = round_row(&pool, &round_id).await?;
+        let after = coins_of(&pool, &uuid).await?;
+        let restarted = post_session(
+            &pool,
+            "/api/minigames/mines/start",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 8 })
+        ).await?;
+        let restarted = body_json(restarted).await?;
+        let after_restart = coins_of(&pool, &uuid).await?;
+        delete_player_stats(&pool, &uuid).await?;
+        delete_user(&pool, &email).await?;
+
+        assert_eq!(state["active"], serde_json::Value::Null, "the abandoned round is closed");
+        assert_eq!(row.0, "settled");
+        assert_eq!(row.3.as_deref(), Some("expired"));
+        assert_eq!(row.2, 0, "an abandoned stake is not returned");
+        assert_eq!(after, 900);
+        assert_ne!(restarted["round_id"], serde_json::json!(round_id));
+        assert_eq!(after_restart, 800);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn every_minigame_route_that_spends_or_owns_requires_a_session() -> TestResult {
+        let pool = connect().await?;
+        let uuid = test_uuid(&random_ip());
+        let round_id = test_uuid(&random_ip());
+        let state = get_with_cookie(&pool, "/api/minigames/state", None).await?.status();
+        // The paytable is public: it says what is paid, not who holds what.
+        let config = get_with_cookie(&pool, "/api/minigames/config", None).await?.status();
+        let spin = post_json(
+            &pool,
+            "/api/minigames/chest/spin",
+            serde_json::json!({ "uuid": uuid, "bet": 50, "client_id": test_uuid(&random_ip()) })
+        ).await?;
+        let start = post_json(
+            &pool,
+            "/api/minigames/mines/start",
+            serde_json::json!({ "uuid": uuid, "bet": 50, "mines": 8 })
+        ).await?;
+        let reveal = post_json(
+            &pool,
+            "/api/minigames/mines/reveal",
+            serde_json::json!({ "round_id": round_id, "cell": 0 })
+        ).await?;
+        let cashout = post_json(
+            &pool,
+            "/api/minigames/mines/cashout",
+            serde_json::json!({ "round_id": round_id })
+        ).await?;
+        let unknown = get_with_cookie(&pool, "/api/minigames/nope", None).await?.status();
+        assert_eq!(config, StatusCode::OK);
+        assert_eq!(state, StatusCode::UNAUTHORIZED);
+        assert_eq!(spin, StatusCode::UNAUTHORIZED);
+        assert_eq!(start, StatusCode::UNAUTHORIZED);
+        assert_eq!(reveal, StatusCode::UNAUTHORIZED);
+        assert_eq!(cashout, StatusCode::UNAUTHORIZED);
+        assert_eq!(unknown, StatusCode::NOT_FOUND);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_published_paytable_matches_the_tables_the_server_pays_from() -> TestResult {
+        let pool = connect().await?;
+        let response = get_with_cookie(&pool, "/api/minigames/config", None).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let config = body_json(response).await?;
+        assert_eq!(config["min_bet"], serde_json::json!(MINIGAME_MIN_BET));
+        assert_eq!(config["max_bet"], serde_json::json!(MINIGAME_MAX_BET));
+        assert_eq!(config["chest"]["rtp_x10000"], serde_json::json!(chest_rtp_x10000()));
+        assert_eq!(config["chest"]["symbols"].as_array().map(Vec::len), Some(CHEST_SYMBOLS.len()));
+        assert_eq!(config["mines"]["cells"], serde_json::json!(MINES_CELLS));
+        let presets = config["mines"]["presets"].as_array().ok_or("no presets")?;
+        assert_eq!(presets.len(), MINES_PRESETS.len());
+        for (index, preset) in MINES_PRESETS.iter().enumerate() {
+            assert_eq!(presets[index]["mines"], serde_json::json!(preset.mines as i64));
+            assert_eq!(presets[index]["rtp_x10000"], serde_json::json!(mines_rtp_x10000(preset)));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_minigame_tables_keep_a_house_margin_at_the_best_cash_out() -> TestResult {
+        // The chest: a pair must be a real win, a triple must beat its own pair, and
+        // the whole table must return less than it takes.
+        let weight_sum: u64 = CHEST_SYMBOLS.iter().map(|symbol| symbol.triple_weight).sum();
+        assert_eq!(weight_sum, 100, "the three-of-a-kind weights are a distribution");
+        for symbol in CHEST_SYMBOLS.iter() {
+            assert!(
+                symbol.triple_x100 > symbol.pair_x100,
+                "{} must pay more for three than for two",
+                symbol.id
+            );
+            assert!(symbol.pair_x100 >= 100, "{} must not pay a pair below the stake", symbol.id);
+        }
+        assert!(
+            CHEST_TRIPLE_ROLLS + CHEST_PAIR_ROLLS + CHEST_SINGLE_DIAMOND_ROLLS < CHEST_ROLLS,
+            "a spin must be able to pay nothing"
+        );
+        let chest = chest_rtp_x10000();
+        assert!(
+            (9_000..=9_500).contains(&chest),
+            "the chest returns {chest}/10000, which is not a house margin"
+        );
+
+        // Minesweeper: cashing out at the minimum must be the best a player can do,
+        // or a deeper round would be a defined way to beat the house.
+        for preset in MINES_PRESETS.iter() {
+            let safe = mines_safe_cells(preset.mines);
+            let (iron, gold, diamond) = mines_ores(preset.mines);
+            assert_eq!(iron + gold + diamond, safe, "the field is fully accounted for");
+            assert_eq!(diamond, 1, "exactly one diamond");
+            assert!(gold >= 2, "at least two gold");
+            assert!(preset.boost_diamond > preset.boost_gold);
+            assert!(preset.boost_gold > preset.boost_iron);
+            let first = mines_cashout_return_x10000(preset, MINES_MIN_SAFE as usize);
+            let best = (MINES_MIN_SAFE as usize..=safe)
+                .map(|k| mines_cashout_return_x10000(preset, k))
+                .max()
+                .unwrap_or_default();
+            assert_eq!(
+                first,
+                mines_rtp_x10000(preset) as i128,
+                "the reported return is the earliest cash-out"
+            );
+            assert_eq!(best, first, "{} TNT pays best at the earliest cash-out", preset.mines);
+            assert!(
+                (9_000..=9_500).contains(&first),
+                "{} TNT returns {first}/10000, which is not a house margin",
+                preset.mines
+            );
+        }
         Ok(())
     }
 

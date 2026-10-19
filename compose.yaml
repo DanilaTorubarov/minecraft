@@ -23,12 +23,17 @@ services:
         condition: service_healthy
 
   db:
-    image: postgres:17
+    image: postgres:18
     environment:
       POSTGRES_DB: project_db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # The volume holds a PostgreSQL 18 cluster at <volume>/18/data, created by the
+      # hardened image main uses. That is not this image's default PGDATA
+      # (/var/lib/postgresql/18/docker), so it is spelled out; without it the
+      # entrypoint finds an empty directory, runs initdb, and fails.
+      PGDATA: /var/lib/postgresql/18/data
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-d", "project_db"]
       interval: 5s

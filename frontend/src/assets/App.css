@@ -439,6 +439,35 @@
 .casino-title-row { display: flex; align-items: center; gap: 16px; min-width: 0; flex: 1; }
 .casino-header-icon { width: 56px; height: 56px; flex: none; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.18)); }
 
+/* The account whose coins are being staked. Coins live on one Minecraft UUID, so
+   the number beside the name is that account's balance, never a sum of several. */
+.casino-payer-pill { flex: none; }
+.casino-payer-name {
+  font-size: 12px; font-weight: 700; color: var(--text);
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.casino-payer-select {
+  margin-left: 2px; padding: 3px 8px; max-width: 160px;
+  font: inherit; font-size: 12px; font-weight: 700; color: var(--text);
+  background: var(--field); border: 1px solid var(--line); border-radius: 14px; cursor: pointer;
+}
+.casino-payer-select:disabled { cursor: default; opacity: 0.7; }
+.casino-payer-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* A refused stake. The reason is always a sentence the player can act on. */
+.casino-error {
+  margin-bottom: 14px; padding: 10px 14px; border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--danger);
+  background: var(--danger-bg); border: 1px solid var(--danger);
+}
+
+/* An in-game command, shown so it can be copied: text, not a button. */
+.chest-inline-cmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.94em; padding: 1px 6px; border-radius: 5px; white-space: nowrap;
+  background: var(--surface-soft); border: 1px solid var(--line);
+}
+
 /* Synchronized Minecraft Balance Card */
 .casino-balance-card {
   min-width: 280px; max-width: 360px; flex: 1;

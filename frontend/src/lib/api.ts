@@ -1,3 +1,5 @@
+import type { ChestSpin, MinesRound, MinigameRules } from './minigames'
+
 export type Me = {
   id: number
   displayed_nickname: string
@@ -318,4 +320,56 @@ export async function uploadPlayerSkin(uuid: string, file: File, model: 'classic
   try { response = await fetch(`/api/players/${encodeURIComponent(uuid)}/skin`, { method: 'POST', credentials: 'same-origin', headers: { 'X-Player-Skin': 'upload' }, body: data }) }
   catch { throw new ApiError(0) }
   if (!response.ok) throw new ApiError(response.status)
+}
+
+// --- Minigames -------------------------------------------------------------
+//
+// Every one of these speaks in the same coins as the game server and `/bal`. The
+// browser never sends an outcome: it names the payer, the stake, the cell it
+// wants open, or that it wants to cash out.
+
+/** The server's paytable and stake limits. Public, and the same numbers it pays. */
+export async function getMinigameRules(): Promise<MinigameRules> {
+  const response = await send('GET', '/api/minigames/config')
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as MinigameRules
+}
+
+/** The Minesweeper round this user already paid for, so a reload resumes it. */
+export async function getMinigameState(): Promise<MinesRound | null> {
+  const response = await send('GET', '/api/minigames/state')
+  if (!response.ok) throw new ApiError(response.status)
+  const body = await response.json() as { active: MinesRound | null }
+  return body.active
+}
+
+/**
+ * Charges the stake and rolls the reels in one server-side transaction.
+ * `client_id` identifies the spin rather than the round: sending it again after a
+ * lost response returns the same spin and never charges twice.
+ */
+export async function spinChest(input: { uuid: string; bet: number; client_id: string }): Promise<ChestSpin> {
+  const response = await send('POST', '/api/minigames/chest/spin', input)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as ChestSpin
+}
+
+export async function startMines(input: { uuid: string; bet: number; mines: number }): Promise<MinesRound> {
+  const response = await send('POST', '/api/minigames/mines/start', input)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as MinesRound
+}
+
+/** Opening the same cell twice is not an error: the round comes back unchanged. */
+export async function revealMines(roundId: string, cell: number): Promise<MinesRound> {
+  const response = await send('POST', '/api/minigames/mines/reveal', { round_id: roundId, cell })
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as MinesRound
+}
+
+/** Repeating a successful cash-out returns the settled round and pays nothing more. */
+export async function cashOutMines(roundId: string): Promise<MinesRound> {
+  const response = await send('POST', '/api/minigames/mines/cashout', { round_id: roundId })
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as MinesRound
 }

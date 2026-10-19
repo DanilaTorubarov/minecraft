@@ -33,6 +33,7 @@ The panel never sees or stores a Minecraft password. In-game authentication stay
 Confirmed:
 - Each Minecraft UUID owns a coin balance shared between the game and website. Each uncancelled block broken after AuthMe login earns 1 coin. `/bal` and `/balance` show the player's own balance; Statistics shows each linked account and their combined total. New balances start at zero; historical activity is not retroactively rewarded. Balances survive unlinking.
 - Register with a six-digit email confirmation code valid for 15 minutes, log in, log out, and a session that lasts 24 hours, absolute. The account is created only after mailbox confirmation; code resends and attempts are limited. Existing accounts retain login access.
+- The **Minigames** window spends and returns the very same coin balance `/bal` reports, in two games: Lucky Chest (three reels) and Minesweeper (a 5×5 field with TNT and ores). Coins live on one UUID, so one linked account pays, chosen by the player when several are linked. Every round is created, charged and resolved on the server — the browser sends a stake or a cell and is told the outcome — and every coin change is one guarded update to the balance the game server reports into. The house keeps about 8% (Lucky Chest 91.8%, each Minesweeper table 92.6–92.8% at the earliest cash-out), one round per game is live at a time, and a round nobody returns to forfeits its stake after fifteen minutes. With no linked account there is no play and no simulated one.
 - One website account may own one or more linked Minecraft accounts, and can unlink them.
 - After in-game authentication, `/website email` privately reminds the player of their linked website email using a masked address. It does not verify the email or reset a password.
 - A link code is single-use, valid for five minutes, and only the newest one per account works.
@@ -46,7 +47,7 @@ Confirmed:
 - The corner music player plays only sourced, attributed audio (Creative Commons tracks credited on-screen, plus the archive's own ambience loop); it starts paused, keeps its own quiet volume, and the interface-sound toggle in Settings is persisted per browser. No audio or artwork is generated; everything carries a provenance sidecar.
 
 Planned, not implemented:
-- A server map and player trading are user-confirmed future directions. Their data sources, mechanics, and interface are not implemented; do not show a map, market, or related navigation as available today. Coins currently support earning and balance checks only.
+- A server map and player trading are user-confirmed future directions. Their data sources, mechanics, and interface are not implemented; do not show a map, market, or related navigation as available today. Coins are earned in game and staked in the two minigames; there is still no trading between players.
 
 Deliberately undecided:
 - The server's name. The panel's copy stays neutral until there is one.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import diamondImg from '../assets/items/diamond.png'
 import heartImg from '../assets/items/heart_of_the_sea.png'
 import tridentImg from '../assets/items/trident.png'
@@ -8,244 +8,65 @@ import shardImg from '../assets/items/prismarine_shard.png'
 import pufferImg from '../assets/items/pufferfish.png'
 import fishImg from '../assets/items/tropical_fish.png'
 import chestIcon from '../assets/icons/game-lucky-chest.png'
-import coinIcon from '../assets/icons/coin.png'
+import PayerSelect from './PayerSelect'
+import { ApiError, spinChest } from '../lib/api'
+import { invalidateServerData } from '../lib/serverData'
+import { useStakedBalance } from '../lib/useMinigames'
 import { playSound } from '../lib/sounds'
-import { useAuth } from '../lib/auth-context'
-import { useStatistics } from '../lib/useStatistics'
+import {
+  CHEST_LABELS,
+  canAfford,
+  clampBet,
+  formatCoins,
+  formatMultiplier,
+  formatReturn,
+  minigameFailure,
+  newClientId,
+  wait,
+  type ChestSpin,
+  type MinigameRules,
+  type Payer,
+} from '../lib/minigames'
 
-export type MarineItem = {
-  id: string
-  nameRu: string
-  nameEn: string
-  icon: string
-  mult3: number
-  mult2?: number
-  mult1?: number
-}
-
-export const MARINE_ITEMS: MarineItem[] = [
-  {
-    id: 'diamond',
-    nameRu: 'Алмаз',
-    nameEn: 'Diamond',
-    icon: diamondImg,
-    mult3: 50,
-    mult2: 5,
-    mult1: 1.5,
-  },
-  {
-    id: 'heart_of_the_sea',
-    nameRu: 'Сердце моря',
-    nameEn: 'Heart of the Sea',
-    icon: heartImg,
-    mult3: 25,
-    mult2: 3,
-  },
-  {
-    id: 'trident',
-    nameRu: 'Трезубец',
-    nameEn: 'Trident',
-    icon: tridentImg,
-    mult3: 15,
-    mult2: 2.5,
-  },
-  {
-    id: 'nautilus_shell',
-    nameRu: 'Раковина наутилуса',
-    nameEn: 'Nautilus Shell',
-    icon: nautilusImg,
-    mult3: 10,
-    mult2: 2,
-  },
-  {
-    id: 'prismarine_crystals',
-    nameRu: 'Кристалл призмарина',
-    nameEn: 'Prismarine Crystals',
-    icon: crystalsImg,
-    mult3: 7,
-    mult2: 1.8,
-  },
-  {
-    id: 'prismarine_shard',
-    nameRu: 'Осколок призмарина',
-    nameEn: 'Prismarine Shard',
-    icon: shardImg,
-    mult3: 5,
-    mult2: 1.5,
-  },
-  {
-    id: 'pufferfish',
-    nameRu: 'Иглобрюх',
-    nameEn: 'Pufferfish',
-    icon: pufferImg,
-    mult3: 3,
-    mult2: 1.3,
-  },
-  {
-    id: 'tropical_fish',
-    nameRu: 'Тропическая рыба',
-    nameEn: 'Tropical Fish',
-    icon: fishImg,
-    mult3: 2,
-    mult2: 1.2,
-  },
-]
-
-function getRandomItem(): MarineItem {
-  const index = Math.floor(Math.random() * MARINE_ITEMS.length)
-  return MARINE_ITEMS[index]
-}
-
-// Generates spin results where chance to win (46%) is slightly less than chance to lose (54%)
-function generateBalancedOutcome(): [MarineItem, MarineItem, MarineItem] {
-  const roll = Math.random()
-
-  // 1. 8% chance: 3 of a kind (Triple win / Jackpot)
-  if (roll < 0.08) {
-    const tripleRoll = Math.random()
-    let chosen: MarineItem
-    if (tripleRoll < 0.10) chosen = MARINE_ITEMS[0] // Diamond (Jackpot x50)
-    else if (tripleRoll < 0.25) chosen = MARINE_ITEMS[1] // Heart (x25)
-    else if (tripleRoll < 0.40) chosen = MARINE_ITEMS[2] // Trident (x15)
-    else if (tripleRoll < 0.55) chosen = MARINE_ITEMS[3] // Nautilus (x10)
-    else if (tripleRoll < 0.70) chosen = MARINE_ITEMS[4] // Crystals (x7)
-    else if (tripleRoll < 0.82) chosen = MARINE_ITEMS[5] // Shard (x5)
-    else if (tripleRoll < 0.92) chosen = MARINE_ITEMS[6] // Puffer (x3)
-    else chosen = MARINE_ITEMS[7] // Fish (x2)
-    return [chosen, chosen, chosen]
-  }
-
-  // 2. 28% chance: 2 of a kind (Pair match)
-  if (roll < 0.36) {
-    const pairItem = getRandomItem()
-    let otherItem = getRandomItem()
-    while (otherItem.id === pairItem.id) {
-      otherItem = getRandomItem()
-    }
-    const pattern = Math.floor(Math.random() * 3)
-    if (pattern === 0) return [pairItem, pairItem, otherItem]
-    if (pattern === 1) return [pairItem, otherItem, pairItem]
-    return [otherItem, pairItem, pairItem]
-  }
-
-  // 3. 10% chance: Single Diamond bonus (x1.5)
-  if (roll < 0.46) {
-    const diamond = MARINE_ITEMS[0]
-    const nonDiamonds = MARINE_ITEMS.filter((it) => it.id !== 'diamond')
-    const b = nonDiamonds[Math.floor(Math.random() * nonDiamonds.length)]
-    let c = nonDiamonds[Math.floor(Math.random() * nonDiamonds.length)]
-    while (c.id === b.id) {
-      c = nonDiamonds[Math.floor(Math.random() * nonDiamonds.length)]
-    }
-    const pos = Math.floor(Math.random() * 3)
-    if (pos === 0) return [diamond, b, c]
-    if (pos === 1) return [b, diamond, c]
-    return [b, c, diamond]
-  }
-
-  // 4. 54% chance: Lose (no match, no diamond)
-  const nonDiamonds = MARINE_ITEMS.filter((it) => it.id !== 'diamond')
-  const idxA = Math.floor(Math.random() * nonDiamonds.length)
-  let idxB = Math.floor(Math.random() * nonDiamonds.length)
-  while (idxB === idxA) {
-    idxB = Math.floor(Math.random() * nonDiamonds.length)
-  }
-  let idxC = Math.floor(Math.random() * nonDiamonds.length)
-  while (idxC === idxA || idxC === idxB) {
-    idxC = Math.floor(Math.random() * nonDiamonds.length)
-  }
-  return [nonDiamonds[idxA], nonDiamonds[idxB], nonDiamonds[idxC]]
-}
-
-type SpinResult = {
-  items: [MarineItem, MarineItem, MarineItem]
-  multiplier: number
-  payout: number
-  winType: 'jackpot' | 'big' | 'regular' | 'none'
-  matchedItem: MarineItem | null
-}
-
-function calculatePayout(reels: [MarineItem, MarineItem, MarineItem], bet: number): SpinResult {
-  const [a, b, c] = reels
-
-  // 3 of a kind
-  if (a.id === b.id && b.id === c.id) {
-    const mult = a.mult3
-    const winType = a.id === 'diamond' ? 'jackpot' : mult >= 15 ? 'big' : 'regular'
-    return {
-      items: reels,
-      multiplier: mult,
-      payout: Math.floor(bet * mult),
-      winType,
-      matchedItem: a,
-    }
-  }
-
-  // 2 of a kind
-  if (a.id === b.id && a.mult2) {
-    return {
-      items: reels,
-      multiplier: a.mult2,
-      payout: Math.floor(bet * a.mult2),
-      winType: a.mult2 >= 3 ? 'big' : 'regular',
-      matchedItem: a,
-    }
-  }
-  if (b.id === c.id && b.mult2) {
-    return {
-      items: reels,
-      multiplier: b.mult2,
-      payout: Math.floor(bet * b.mult2),
-      winType: b.mult2 >= 3 ? 'big' : 'regular',
-      matchedItem: b,
-    }
-  }
-  if (a.id === c.id && a.mult2) {
-    return {
-      items: reels,
-      multiplier: a.mult2,
-      payout: Math.floor(bet * a.mult2),
-      winType: a.mult2 >= 3 ? 'big' : 'regular',
-      matchedItem: a,
-    }
-  }
-
-  // 1 Diamond bonus
-  if (a.id === 'diamond' || b.id === 'diamond' || c.id === 'diamond') {
-    const diamond = MARINE_ITEMS[0]
-    const mult = diamond.mult1 ?? 1.5
-    return {
-      items: reels,
-      multiplier: mult,
-      payout: Math.floor(bet * mult),
-      winType: 'regular',
-      matchedItem: diamond,
-    }
-  }
-
-  return {
-    items: reels,
-    multiplier: 0,
-    payout: 0,
-    winType: 'none',
-    matchedItem: null,
-  }
-}
-
-type Props = {
-  onBack: () => void
+/** Every symbol the server can land, drawn from the official item textures. */
+const SYMBOL_ICONS: Record<string, string> = {
+  diamond: diamondImg,
+  heart_of_the_sea: heartImg,
+  trident: tridentImg,
+  nautilus_shell: nautilusImg,
+  prismarine_crystals: crystalsImg,
+  prismarine_shard: shardImg,
+  pufferfish: pufferImg,
+  tropical_fish: fishImg,
 }
 
 const PRESET_BETS = [10, 50, 100, 250, 500]
 
-// Single Slot Bubble where the bubble sphere itself rotates together with the spinning items
+type Props = {
+  onBack: () => void
+  payer: Payer
+  accounts: Payer[]
+  onChoosePayer: (uuid: string) => void
+  rules: MinigameRules
+}
+
+function winType(spin: ChestSpin): 'jackpot' | 'big' | 'regular' {
+  const [first, second, third] = spin.reels
+  if (first === second && second === third) {
+    return first === 'diamond' ? 'jackpot' : 'big'
+  }
+  return 'regular'
+}
+
+// One slot bubble. While the server is answering, the reel is already turning; the
+// symbols it settles on are the ones the server paid for.
 function BubbleSlot({
-  targetItem,
+  symbol,
   isSpinning,
   isSettling,
   isWinning,
 }: {
-  targetItem: MarineItem
+  symbol: string
   isSpinning: boolean
   isSettling: boolean
   isWinning: boolean
@@ -259,43 +80,27 @@ function BubbleSlot({
   ]
     .filter(Boolean)
     .join(' ')
-
+  const label = CHEST_LABELS[symbol]?.ru ?? symbol
+  const icon = SYMBOL_ICONS[symbol] ?? diamondImg
   return (
-    <div
-      className={bubbleClasses}
-      role="img"
-      aria-label={`Слот: ${targetItem.nameRu}`}
-    >
+    <div className={bubbleClasses} role="img" aria-label={`Слот: ${label}`}>
       <div className="chest-reel-viewport">
         {isSpinning ? (
           <div className="chest-reel-strip spinning" aria-hidden="true">
-            {MARINE_ITEMS.slice(0, 4).map((it, idx) => (
-              <img
-                key={idx}
-                src={it.icon}
-                alt=""
-                className="chest-item-img"
-                draggable={false}
-              />
-            ))}
-            {MARINE_ITEMS.slice(0, 4).map((it, idx) => (
-              <img
-                key={`dup-${idx}`}
-                src={it.icon}
-                alt=""
-                className="chest-item-img"
-                draggable={false}
-              />
-            ))}
+            {Object.entries(SYMBOL_ICONS)
+              .slice(0, 4)
+              .map(([id, src]) => (
+                <img key={id} src={src} alt="" className="chest-item-img" draggable={false} />
+              ))}
+            {Object.entries(SYMBOL_ICONS)
+              .slice(0, 4)
+              .map(([id, src]) => (
+                <img key={`dup-${id}`} src={src} alt="" className="chest-item-img" draggable={false} />
+              ))}
           </div>
         ) : (
           <div className={`chest-reel-strip ${isSettling ? 'settled' : ''}`}>
-            <img
-              src={targetItem.icon}
-              alt={targetItem.nameRu}
-              className="chest-item-img"
-              draggable={false}
-            />
+            <img src={icon} alt={label} className="chest-item-img" draggable={false} />
           </div>
         )}
       </div>
@@ -303,124 +108,93 @@ function BubbleSlot({
   )
 }
 
-export default function LuckyChestGame({ onBack }: Props) {
-  const { user } = useAuth()
-  const { stats } = useStatistics(user?.id)
-
-  const hasLinkedAccount = (stats?.accounts?.length ?? 0) > 0
-  const serverCoins = stats?.summary?.coins
-
-  const [balance, setBalance] = useState<number>(() => {
-    if (typeof serverCoins === 'number') {
-      return serverCoins
-    }
-    try {
-      const stored = localStorage.getItem('chest_game_balance')
-      if (stored !== null) {
-        const val = parseInt(stored, 10)
-        if (!isNaN(val) && val >= 0) return val
-      }
-    } catch {}
-    return 1000
-  })
-
-  // Synchronize when server stats load or update
-  const initialSyncedRef = useRef(false)
-  useEffect(() => {
-    if (hasLinkedAccount && typeof serverCoins === 'number') {
-      if (!initialSyncedRef.current) {
-        initialSyncedRef.current = true
-        setBalance(serverCoins)
-        try {
-          localStorage.setItem('chest_game_balance', serverCoins.toString())
-        } catch {}
-      }
-    }
-  }, [hasLinkedAccount, serverCoins])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('chest_game_balance', balance.toString())
-    } catch {}
-  }, [balance])
-
-  const [bet, setBet] = useState<number>(50)
-  const [isSpinning, setIsSpinning] = useState<boolean>(false)
-  const [reels, setReels] = useState<[MarineItem, MarineItem, MarineItem]>([
-    MARINE_ITEMS[0], // Diamond
-    MARINE_ITEMS[1], // Heart of the Sea
-    MARINE_ITEMS[2], // Trident
-  ])
+export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer, rules }: Props) {
+  const { balance, applySettled } = useStakedBalance(payer.uuid, payer.coins)
+  const [bet, setBet] = useState(() => clampBet(50, rules.min_bet, rules.max_bet, payer.coins))
+  const [isSpinning, setIsSpinning] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [symbols, setSymbols] = useState<[string, string, string]>(['diamond', 'heart_of_the_sea', 'trident'])
   const [reelSpinning, setReelSpinning] = useState<[boolean, boolean, boolean]>([false, false, false])
   const [reelSettling, setReelSettling] = useState<[boolean, boolean, boolean]>([false, false, false])
-  const [lastResult, setLastResult] = useState<SpinResult | null>(null)
-  const [history, setHistory] = useState<SpinResult[]>([])
-  const [showTable, setShowTable] = useState<boolean>(false)
+  const [lastResult, setLastResult] = useState<ChestSpin | null>(null)
+  const [history, setHistory] = useState<ChestSpin[]>([])
+  const [showTable, setShowTable] = useState(false)
+  const mounted = useRef(true)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  // A stake the payer cannot cover is never sent, and never silently rewritten:
+  // the window says so and disables play instead.
+  const validBet = bet >= rules.min_bet && bet <= rules.max_bet && canAfford(bet, balance)
+  const canSpin = !busy && !isSpinning && validBet
 
   const handleBetChange = (value: number) => {
     if (isSpinning) return
-    const clamped = Math.max(10, Math.min(Math.max(10, balance), value))
-    setBet(clamped)
+    setBet(Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
   }
 
-  const handleSpin = () => {
-    if (isSpinning) return
-    if (bet > balance) {
+  const handleSpin = async () => {
+    if (isSpinning || !canSpin) {
       playSound('click')
       return
     }
-
-    // Deduct bet immediately
-    setBalance((prev) => prev - bet)
+    setError('')
+    setBusy(true)
     setIsSpinning(true)
     setLastResult(null)
     setReelSpinning([true, true, true])
     setReelSettling([false, false, false])
     playSound('open')
-
-    // Determine target items using the balanced model (54% win, 46% loss)
-    const targetReels = generateBalancedOutcome()
-
-    // Sequential stop for authentic slot machine feel
-    // Reel 1 stops at 900ms
-    setTimeout(() => {
-      setReels((prev) => [targetReels[0], prev[1], prev[2]])
+    try {
+      // The whole round — stake, roll and payout — is settled by this one request.
+      const result = await spinChest({ uuid: payer.uuid, bet, client_id: newClientId() })
+      applySettled(result.balance)
+      // The reels only catch up to an outcome that is already final.
+      await wait(900)
+      if (!mounted.current) return
+      setSymbols((previous) => [result.reels[0], previous[1], previous[2]])
       setReelSpinning([false, true, true])
       setReelSettling([true, false, false])
       playSound('click')
-    }, 900)
-
-    // Reel 2 stops at 1400ms
-    setTimeout(() => {
-      setReels((prev) => [targetReels[0], targetReels[1], prev[2]])
+      await wait(500)
+      if (!mounted.current) return
+      setSymbols((previous) => [result.reels[0], result.reels[1], previous[2]])
       setReelSpinning([false, false, true])
       setReelSettling([true, true, false])
       playSound('click')
-    }, 1400)
-
-    // Reel 3 stops at 1900ms
-    setTimeout(() => {
-      setReels(targetReels)
+      await wait(500)
+      if (!mounted.current) return
+      setSymbols([result.reels[0], result.reels[1], result.reels[2]])
       setReelSpinning([false, false, false])
       setReelSettling([true, true, true])
       setIsSpinning(false)
-
-      const result = calculatePayout(targetReels, bet)
       setLastResult(result)
-      setHistory((prev) => [result, ...prev.slice(0, 4)])
-
-      if (result.payout > 0) {
-        setBalance((prev) => prev + result.payout)
-        playSound('done')
-      } else {
-        playSound('click')
-      }
-
-      setTimeout(() => {
-        setReelSettling([false, false, false])
-      }, 450)
-    }, 1900)
+      setHistory((previous) => [result, ...previous.slice(0, 4)])
+      playSound(result.payout > 0 ? 'done' : 'click')
+      invalidateServerData('stats')
+      await wait(450)
+      if (!mounted.current) return
+      setReelSettling([false, false, false])
+    } catch (failure) {
+      if (!mounted.current) return
+      setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message)
+      setIsSpinning(false)
+      setReelSpinning([false, false, false])
+      setReelSettling([false, false, false])
+      // A response can be lost after the spin was charged, so re-read the real balance.
+      invalidateServerData('stats')
+    } finally {
+      if (mounted.current) setBusy(false)
+    }
   }
+
+  const chest = rules.chest
 
   return (
     <div className="lucky-chest-game">
@@ -436,21 +210,28 @@ export default function LuckyChestGame({ onBack }: Props) {
           ← Все мини-игры
         </button>
 
-        <div className="chest-balance-pill">
-          <img src={coinIcon} alt="" className="chest-coin-icon" />
-          <span className="chest-balance-num">{balance.toLocaleString()}</span>
-          <span className="chest-balance-label">монет</span>
-        </div>
+        <PayerSelect
+          payer={{ ...payer, coins: balance }}
+          accounts={accounts.map((account) => (account.uuid === payer.uuid ? { ...account, coins: balance } : account))}
+          onChoose={onChoosePayer}
+          disabled={isSpinning}
+        />
 
         <button
           type="button"
           className="btn btn-quiet chest-payout-btn"
-          onClick={() => setShowTable((v) => !v)}
+          onClick={() => setShowTable((value) => !value)}
           aria-expanded={showTable}
         >
           {showTable ? 'Скрыть таблицу' : 'Таблица выплат'}
         </button>
       </div>
+
+      {error !== '' && (
+        <div className="casino-error" role="alert">
+          {error}
+        </div>
+      )}
 
       {/* Main Game Stage */}
       <div className="chest-stage-layout">
@@ -459,26 +240,28 @@ export default function LuckyChestGame({ onBack }: Props) {
             <img src={chestIcon} alt="" className="chest-machine-logo" />
             <div>
               <h2>Сундук удачи</h2>
-              <p>Морские сокровища Minecraft. Выбивайте комбинации в водных пузырьках и ловите алмазный джекпот!</p>
+              <p>
+                Морские сокровища Minecraft. Комбинация и выплата считаются на сервере, а монеты — тот же баланс,
+                что и в игре (<span className="chest-inline-cmd">/bal</span>).
+              </p>
             </div>
           </div>
 
           {/* 3 Bubble Slots */}
           <div className="chest-bubbles-row">
-            {reels.map((item, idx) => {
-              const isWinReel =
+            {symbols.map((symbol, index) => {
+              const isWinning =
                 lastResult !== null &&
                 lastResult.payout > 0 &&
-                (lastResult.items.filter((it) => it.id === item.id).length >= 2 ||
-                  (item.id === 'diamond' && lastResult.multiplier > 0))
-
+                (lastResult.reels.filter((reel) => reel === symbol).length >= 2 ||
+                  (symbol === 'diamond' && lastResult.multiplier_x100 > 0))
               return (
-                <div key={idx} className="chest-slot-column">
+                <div key={index} className="chest-slot-column">
                   <BubbleSlot
-                    targetItem={item}
-                    isSpinning={reelSpinning[idx]}
-                    isSettling={reelSettling[idx]}
-                    isWinning={isWinReel}
+                    symbol={symbol}
+                    isSpinning={reelSpinning[index]}
+                    isSettling={reelSettling[index]}
+                    isWinning={isWinning}
                   />
                 </div>
               )
@@ -487,20 +270,18 @@ export default function LuckyChestGame({ onBack }: Props) {
 
           {/* Outcome Announcement */}
           <div className="chest-outcome-banner" aria-live="polite">
-            {isSpinning && (
-              <span className="chest-outcome-status spinning">Сундук открывается...</span>
-            )}
+            {isSpinning && <span className="chest-outcome-status spinning">Сундук открывается...</span>}
             {!isSpinning && lastResult && lastResult.payout > 0 && (
-              <div className={`chest-win-notice ${lastResult.winType}`}>
+              <div className={`chest-win-notice ${winType(lastResult)}`}>
                 <strong>
-                  {lastResult.winType === 'jackpot'
+                  {winType(lastResult) === 'jackpot'
                     ? 'АЛМАЗНЫЙ ДЖЕКПОТ!'
-                    : lastResult.winType === 'big'
-                    ? 'КРУПНЫЙ ВЫИГРЫШ!'
-                    : 'ВЫИГРЫШ!'}
+                    : winType(lastResult) === 'big'
+                      ? 'КРУПНЫЙ ВЫИГРЫШ!'
+                      : 'ВЫИГРЫШ!'}
                 </strong>{' '}
                 <span>
-                  +{lastResult.payout.toLocaleString()} монет (x{lastResult.multiplier})
+                  +{formatCoins(lastResult.payout)} монет ({formatMultiplier(lastResult.multiplier_x100)})
                 </span>
               </div>
             )}
@@ -522,11 +303,11 @@ export default function LuckyChestGame({ onBack }: Props) {
                 <input
                   id="chest-bet-input"
                   type="number"
-                  min={10}
-                  max={Math.max(10, balance)}
+                  min={rules.min_bet}
+                  max={Math.max(rules.min_bet, Math.min(rules.max_bet, balance))}
                   step={10}
                   value={bet}
-                  onChange={(e) => handleBetChange(parseInt(e.target.value, 10) || 10)}
+                  onChange={(event) => handleBetChange(parseInt(event.target.value, 10) || rules.min_bet)}
                   disabled={isSpinning}
                   className="chest-bet-input"
                 />
@@ -536,22 +317,22 @@ export default function LuckyChestGame({ onBack }: Props) {
 
             {/* Quick Bet Buttons */}
             <div className="chest-presets-row">
-              {PRESET_BETS.map((amt) => (
+              {PRESET_BETS.filter((amount) => amount >= rules.min_bet && amount <= rules.max_bet).map((amount) => (
                 <button
-                  key={amt}
+                  key={amount}
                   type="button"
-                  className={`btn btn-quiet chest-preset-chip ${bet === amt ? 'active' : ''}`}
-                  onClick={() => handleBetChange(amt)}
-                  disabled={isSpinning || amt > balance}
+                  className={`btn btn-quiet chest-preset-chip ${bet === amount ? 'active' : ''}`}
+                  onClick={() => handleBetChange(amount)}
+                  disabled={isSpinning || amount > balance}
                 >
-                  {amt}
+                  {amount}
                 </button>
               ))}
               <button
                 type="button"
                 className="btn btn-quiet chest-preset-chip"
                 onClick={() => handleBetChange(Math.floor(bet / 2))}
-                disabled={isSpinning || bet <= 10}
+                disabled={isSpinning || bet <= rules.min_bet}
               >
                 /2
               </button>
@@ -559,14 +340,14 @@ export default function LuckyChestGame({ onBack }: Props) {
                 type="button"
                 className="btn btn-quiet chest-preset-chip"
                 onClick={() => handleBetChange(bet * 2)}
-                disabled={isSpinning || bet * 2 > balance}
+                disabled={isSpinning || bet * 2 > balance || bet * 2 > rules.max_bet}
               >
                 x2
               </button>
               <button
                 type="button"
                 className="btn btn-quiet chest-preset-chip"
-                onClick={() => handleBetChange(balance)}
+                onClick={() => handleBetChange(clampBet(balance, rules.min_bet, rules.max_bet, balance))}
                 disabled={isSpinning || balance <= 0}
               >
                 MAX
@@ -578,12 +359,18 @@ export default function LuckyChestGame({ onBack }: Props) {
               type="button"
               className="btn chest-spin-btn"
               onClick={handleSpin}
-              disabled={isSpinning || balance < 10 || bet > balance}
+              disabled={!canSpin}
               data-ui-sound="open"
             >
               <span className="chest-btn-glow" aria-hidden="true" />
               <span className="chest-btn-text">
-                {isSpinning ? 'Крутим...' : 'Открыть сундук'}
+                {isSpinning
+                  ? 'Крутим...'
+                  : bet < rules.min_bet
+                    ? `Минимум ${rules.min_bet} монет`
+                    : !canAfford(bet, balance)
+                      ? 'Недостаточно монет'
+                      : 'Открыть сундук'}
               </span>
             </button>
           </div>
@@ -594,32 +381,48 @@ export default function LuckyChestGame({ onBack }: Props) {
           <aside className="chest-table-card" aria-label="Таблица выплат">
             <div className="chest-table-header">
               <h3>Коэффициенты выплат</h3>
-              <span className="chest-table-hint">3 в ряд / 2 в ряд</span>
+              <span className="chest-table-hint">
+                3 в ряд / 2 в ряд · тройка {formatReturn(chest.triple_chance_x10000)} · возврат{' '}
+                {formatReturn(chest.rtp_x10000)}
+              </span>
             </div>
             <div className="chest-table-list">
-              {MARINE_ITEMS.map((item) => (
+              {chest.symbols.map((symbol) => (
                 <div
-                  key={item.id}
-                  className={`chest-table-row ${item.id === 'diamond' ? 'jackpot-row' : ''}`}
+                  key={symbol.id}
+                  className={`chest-table-row ${symbol.id === 'diamond' ? 'jackpot-row' : ''}`}
                 >
                   <div className="inv-bubble chest-table-bubble">
-                    <img src={item.icon} alt="" className="chest-table-img" />
+                    <img src={SYMBOL_ICONS[symbol.id] ?? diamondImg} alt="" className="chest-table-img" />
                   </div>
                   <div className="chest-table-info">
-                    <strong>{item.nameRu}</strong>
-                    <span className="chest-table-en">{item.nameEn}</span>
+                    <strong>{CHEST_LABELS[symbol.id]?.ru ?? symbol.id}</strong>
+                    <span className="chest-table-en">{CHEST_LABELS[symbol.id]?.en ?? symbol.id}</span>
                   </div>
                   <div className="chest-table-mults">
-                    <span className="mult-3">3x = <strong>x{item.mult3}</strong></span>
-                    {item.mult2 && (
-                      <span className="mult-2">2x = <strong>x{item.mult2}</strong></span>
-                    )}
-                    {item.mult1 && (
-                      <span className="mult-1">1x = <strong>x{item.mult1}</strong></span>
-                    )}
+                    <span className="mult-3">
+                      3x = <strong>{formatMultiplier(symbol.triple_x100)}</strong>
+                    </span>
+                    <span className="mult-2">
+                      2x = <strong>{formatMultiplier(symbol.pair_x100)}</strong>
+                    </span>
                   </div>
                 </div>
               ))}
+              <div className="chest-table-row">
+                <div className="inv-bubble chest-table-bubble">
+                  <img src={diamondImg} alt="" className="chest-table-img" />
+                </div>
+                <div className="chest-table-info">
+                  <strong>Один алмаз</strong>
+                  <span className="chest-table-en">Lone Diamond</span>
+                </div>
+                <div className="chest-table-mults">
+                  <span className="mult-1">
+                    1x = <strong>{formatMultiplier(chest.single_diamond_x100)}</strong>
+                  </span>
+                </div>
+              </div>
             </div>
           </aside>
         )}
@@ -630,15 +433,20 @@ export default function LuckyChestGame({ onBack }: Props) {
         <div className="chest-history-section">
           <h4>История последних открытий:</h4>
           <div className="chest-history-pills">
-            {history.map((h, i) => (
-              <div key={i} className={`chest-hist-pill ${h.payout > 0 ? 'win' : 'loss'}`}>
+            {history.map((spin) => (
+              <div key={spin.round_id} className={`chest-hist-pill ${spin.payout > 0 ? 'win' : 'loss'}`}>
                 <div className="chest-hist-icons">
-                  {h.items.map((it, idx) => (
-                    <img key={idx} src={it.icon} alt={it.nameRu} className="chest-hist-icon" />
+                  {spin.reels.map((symbol, index) => (
+                    <img
+                      key={index}
+                      src={SYMBOL_ICONS[symbol] ?? diamondImg}
+                      alt={CHEST_LABELS[symbol]?.ru ?? symbol}
+                      className="chest-hist-icon"
+                    />
                   ))}
                 </div>
                 <span className="chest-hist-val">
-                  {h.payout > 0 ? `+${h.payout}` : `-${bet}`}
+                  {spin.payout > 0 ? `+${formatCoins(spin.payout)}` : `-${formatCoins(spin.bet)}`}
                 </span>
               </div>
             ))}
