@@ -87,8 +87,10 @@ Resend key and production database secrets only in the server's `.env.docker`.
 Commit and push the workflow, `scripts/deploy.sh`, and documentation to `main`.
 Follow **Actions → Test and deploy**. The deployment updates a clean server
 checkout with `git merge --ff-only`; it refuses local tracked changes or a
-checkout ahead of the tested revision. Do not edit tracked files directly on the
-server. Both builds complete before running services are changed. The workflow
+checkout ahead of the tested revision. An untracked file that the tested commit
+starts tracking is moved to `.git/deploy-untracked-<timestamp>/` before the
+merge, so a stale local copy can neither block a deployment nor be overwritten.
+Do not edit tracked files directly on the server. Both builds complete before running services are changed. The workflow
 does not copy its test environment file to production.
 
 Deployments restart Purpur to load LinkBridge and can briefly disconnect players.

@@ -55,7 +55,7 @@ docker run --rm \
   -v "$root:/w" -w /w/plugin \
   -e GRADLE_USER_HOME=/w/.plugin-build/gradle-home \
   "$GRADLE_IMAGE" \
-  gradle --no-daemon --console=plain -PpluginVersion="$version" jar
+  gradle --no-daemon --console=plain -PpluginVersion="$version" inventoryNbtTest jar
 
 built="$root/plugin/build/libs/LinkBridge-$version.jar"
 if [ ! -s "$built" ]; then

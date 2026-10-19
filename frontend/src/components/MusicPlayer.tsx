@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { formatTime, readPlayerSettings, TRACKS, writePlayerSettings, type PlayerSettings } from '../lib/player'
 import { TRACK_SOURCES } from '../lib/playerSources'
 
-// A fixed-height transport beside the dock. All controls remain visible.
+// Desktop transport; mobile keeps the controls behind a compact toggle.
 export default function MusicPlayer() {
   const [settings, setSettings] = useState<PlayerSettings>(readPlayerSettings)
   const [playing, setPlaying] = useState(false)
@@ -10,10 +10,12 @@ export default function MusicPlayer() {
   const [time, setTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [creditsOpen, setCreditsOpen] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [pageVisible, setPageVisible] = useState(() => !document.hidden)
   const audioRef = useRef<HTMLAudioElement>(null)
   const playerRef = useRef<HTMLElement>(null)
   const creditsRef = useRef<HTMLButtonElement>(null)
+  const toggleRef = useRef<HTMLButtonElement>(null)
   const wantsPlayback = useRef(false)
 
   const track = TRACKS[settings.track]
@@ -42,6 +44,18 @@ export default function MusicPlayer() {
     document.addEventListener('visibilitychange', sync)
     return () => document.removeEventListener('visibilitychange', sync)
   }, [])
+
+  useEffect(() => {
+    if (!mobileOpen) return
+    const keyboard = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape' && !creditsOpen && window.matchMedia('(max-width: 760px)').matches) {
+        setMobileOpen(false)
+        toggleRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', keyboard)
+    return () => document.removeEventListener('keydown', keyboard)
+  }, [mobileOpen, creditsOpen])
 
   useEffect(() => {
     if (!creditsOpen) return
@@ -93,7 +107,13 @@ export default function MusicPlayer() {
   }
 
   return (
-    <aside ref={playerRef} className="music-player" data-playing={playing} data-visible={pageVisible} aria-label="Music player">
+    <>
+    <button ref={toggleRef} type="button" className="btn music-mobile-toggle"
+      aria-controls="music-player" aria-expanded={mobileOpen}
+      onClick={() => { setMobileOpen((value) => !value); setCreditsOpen(false) }}>
+      {mobileOpen ? 'Hide music' : 'Music'}
+    </button>
+    <aside id="music-player" ref={playerRef} className="music-player" data-mobile-open={mobileOpen} data-playing={playing} data-visible={pageVisible} aria-label="Music player">
       <audio
         ref={audioRef}
         src={trackSrc}
@@ -172,5 +192,6 @@ export default function MusicPlayer() {
         </div>
       )}
     </aside>
+    </>
   )
 }

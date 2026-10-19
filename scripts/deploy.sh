@@ -25,6 +25,26 @@ fi
 # Never deploy a moving branch head in place of the commit that passed CI.
 git fetch origin main
 git merge-base --is-ancestor "$commit" origin/main
+
+# An untracked file that the tested commit begins to track would abort the
+# fast-forward. Move exactly those collisions into .git (nothing else needs
+# them, and .git is never deployed) instead of overwriting or deleting them.
+conflicts=.git/oasis-untracked-conflicts
+git ls-tree -r --name-only "$commit" | while IFS= read -r path; do
+  if [[ -e "$path" && -z "$(git ls-files -- "$path")" ]]; then
+    printf '%s\n' "$path"
+  fi
+done > "$conflicts"
+if [[ -s "$conflicts" ]]; then
+  backup=".git/deploy-untracked-$(date -u +%Y%m%dT%H%M%SZ)"
+  while IFS= read -r path; do
+    mkdir -p "$backup/$(dirname -- "$path")"
+    mv -- "$path" "$backup/$path"
+    printf 'Preserved untracked %s at %s\n' "$path" "$backup/$path"
+  done < "$conflicts"
+fi
+rm -f "$conflicts"
+
 git switch main
 git merge --ff-only "$commit"
 if [[ "$(git rev-parse HEAD)" != "$commit" ]]; then

@@ -4,11 +4,16 @@ import StatisticsPage from '../pages/StatisticsPage'
 import InventoryPage from '../pages/InventoryPage'
 import SkinPage from '../pages/SkinPage'
 
-type Props = { account: StatsAccount; stats: StatsView | null; loadError: string; onRetry: () => void; onSelectAccount: (uuid: string) => void; onGoToAccount: () => void; open: boolean }
-export default function PlayerApp({ account, stats, loadError, onRetry, onSelectAccount, onGoToAccount, open }: Props) {
-  const [page, setPage] = useState<'statistics' | 'inventory' | 'skin'>('statistics')
-  const [inventoryVisited, setInventoryVisited] = useState(false)
+type Props = { account: StatsAccount; stats: StatsView | null; loadError: string; onRetry: () => void; onSelectAccount: (uuid: string) => void; onGoToAccount: () => void; open: boolean; inventoryLaunch?: number }
+export default function PlayerApp({ account, stats, loadError, onRetry, onSelectAccount, onGoToAccount, open, inventoryLaunch = 0 }: Props) {
+  const [seenLaunch, setSeenLaunch] = useState(inventoryLaunch)
+  const [page, setPage] = useState<'statistics' | 'inventory' | 'skin'>(inventoryLaunch > 0 ? 'inventory' : 'statistics')
+  const [inventoryVisited, setInventoryVisited] = useState(inventoryLaunch > 0)
   const [skinVisited, setSkinVisited] = useState(false)
+  if (inventoryLaunch !== seenLaunch) {
+    setSeenLaunch(inventoryLaunch)
+    if (inventoryLaunch > 0) { setPage('inventory'); setInventoryVisited(true) }
+  }
   return <>
     <div className="account-toolbar player-toolbar"><span>{account.username}</span><nav className="nav" aria-label={`${account.username} pages`}>
       <button className="btn btn-quiet" aria-current={page === 'statistics' ? 'page' : undefined} onClick={() => setPage('statistics')}>Statistics</button>

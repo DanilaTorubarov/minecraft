@@ -277,6 +277,7 @@ export type SkinView = {
 
 /** One inventory slot as the game holds it; null means the slot is empty. */
 export type InventorySlot = {
+  fingerprint: string | null
   /** registry key, e.g. `minecraft:diamond_sword` */
   key: string
   amount: number
@@ -296,10 +297,49 @@ export type InventorySlot = {
  * armor (helmet, chest, legs, boots) 36-39, off hand 40.
  */
 export type InventoryView = {
+  marketplace: { id: string; status: 'pending' | 'active' | 'conflict' | 'closed' } | null
+  deletion: { request_id: string; slot: number; status: 'pending' | 'deleted' | 'conflict' } | null
   username: string | null
   /** when the game server last reported this snapshot, or null when never */
   updated_at: string | null
   slots: InventorySlot[] | null
+}
+
+export type MarketListingInput = { slot: number; fingerprint: string; quantity: number; unit_price: number | null; lot_price: number | null }
+export type MarketListing = {
+  id: string; seller: string; mine: boolean; item: NonNullable<InventorySlot>;
+  quantity: number; remaining: number; unit_price: number | null; lot_price: number | null;
+  status: 'pending' | 'active' | 'conflict' | 'closed'
+}
+export type MarketView = {
+  next_cursor: string | null;
+  listings: MarketListing[];
+  deliveries: { id: string; username: string; quantity: number; status: 'pending' | 'done'; item: NonNullable<InventorySlot> }[]
+}
+export type MarketPurchase = { request_id: string; buyer_uuid: string; quantity: number; pricing: 'unit' | 'lot'; expected_total: number; expected_remaining: number }
+async function marketWrite(path: string, body: unknown): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(path, { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Marketplace': 'trade' }, body: JSON.stringify(body) })
+  } catch { throw new ApiError(0) }
+  if (!response.ok) throw new ApiError(response.status)
+}
+export async function sendInventoryToMarket(uuid: string, body: MarketListingInput): Promise<void> {
+  await marketWrite(`/api/players/${encodeURIComponent(uuid)}/inventory/marketplace`, body)
+}
+export async function getMarketplace(options: { mine?: boolean; q?: string; cursor?: string } = {}): Promise<MarketView> {
+  const query = new URLSearchParams({ mine: String(options.mine ?? false), q: options.q ?? '' })
+  if (options.cursor) query.set('cursor', options.cursor)
+  const response = await send('GET', `/api/marketplace?${query}`)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as MarketView
+}
+export async function buyMarketListing(id: string, body: MarketPurchase): Promise<void> {
+  await marketWrite(`/api/marketplace/${encodeURIComponent(id)}/buy`, body)
+}
+export async function cancelMarketListing(id: string): Promise<void> {
+  await marketWrite(`/api/marketplace/${encodeURIComponent(id)}/cancel`, {})
 }
 
 export async function getPlayerInventory(uuid: string): Promise<InventoryView> {

@@ -123,7 +123,13 @@ body::before {
 }
 :is(.wallpaper-bubble, .inv-bubble)::before {
   content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-  background: conic-gradient(from 190deg, #a1f4ed, #92d6ff 15%, #d2bbf5 29%, #f6d9bf 40%, #fff 52%, #a0dfee 70%, #b5f1da 88%, #a1f4ed);
+  /* Radial color patches avoid the axis seams of composited conic gradients
+     when pointer ripples update the WebGL backdrop beneath moving bubbles. */
+  background:
+    radial-gradient(ellipse at 12% 24%, #a1f4ed, transparent 58%),
+    radial-gradient(ellipse at 88% 28%, #d2bbf5, transparent 56%),
+    radial-gradient(ellipse at 80% 85%, #f6d9bf, transparent 54%),
+    radial-gradient(ellipse at 22% 88%, #92d6ff, transparent 58%);
   mask-image: radial-gradient(circle, transparent 59%, rgb(0 0 0 / 12%) 67%, rgb(0 0 0 / 65%) 91%, transparent 100%);
   opacity: .65;
 }

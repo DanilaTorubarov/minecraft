@@ -4,6 +4,15 @@ import fr.xephi.authme.api.v3.AuthMeApi;
 import fr.xephi.authme.events.LoginEvent;
 import fr.xephi.authme.events.RegisterEvent;
 import java.io.InputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.security.MessageDigest;
+import java.util.TreeMap;
+import java.util.HexFormat;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -12,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -136,10 +146,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private String statusUrl = "";
     private String emailUrl = "";
     private String statsUrl = "";
+    private String marketplaceUrl = "";
     private String balanceUrl = "";
     private String skinsSyncUrl = "";
     private String skinsReportUrl = "";
     private String inventoryUrl = "";
+    private String inventoryDeletesUrl = "";
+    private final java.util.concurrent.atomic.AtomicBoolean inventoryFlushRunning = new java.util.concurrent.atomic.AtomicBoolean();
     private String iconsUrl = "";
     private final java.util.concurrent.atomic.AtomicBoolean skinSyncRunning = new java.util.concurrent.atomic.AtomicBoolean();
     private String pendingBody;
@@ -251,10 +264,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         statusUrl = base + "/internal/link/status";
         emailUrl = base + "/internal/link/email";
         statsUrl = base + "/internal/stats/report";
+        marketplaceUrl = base + "/internal/marketplace";
         balanceUrl = base + "/internal/balance";
         skinsSyncUrl = base + "/internal/skins/sync";
         skinsReportUrl = base + "/internal/skins/report";
         inventoryUrl = base + "/internal/inventory/report";
+        inventoryDeletesUrl = base + "/internal/inventory/deletions";
         iconsUrl = base + "/internal/items/icons";
 
         String panel = getConfig().getString("panel-url", "");
@@ -1028,7 +1043,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (item == null || item.getType() == Material.AIR) {
             return "null";
         }
-        StringBuilder slot = new StringBuilder("{\"key\":\"")
+        String fingerprint;
+        try { fingerprint = InventoryNbt.fingerprint(item.serializeAsBytes()); }
+        catch (Exception error) { throw new IllegalStateException("Cannot fingerprint inventory item", error); }
+        StringBuilder slot = new StringBuilder("{\"fingerprint\":\"").append(fingerprint).append("\",\"key\":\"")
             .append(jsonEscape(item.getType().key().asString()))
             .append("\",\"amount\":").append(item.getAmount());
         if (item instanceof Damageable damageable) {
@@ -1092,6 +1110,216 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
      * a slow panel keeps the pass short instead of starving the main loop.
      */
     private void flushInventories() {
+        if (!inventoryFlushRunning.compareAndSet(false, true)) return;
+        try {
+            syncInventoryDeletions();
+            syncMarketplace();
+            sendInventories();
+        } finally { inventoryFlushRunning.set(false); }
+    }
+
+    /** HTTP stays off-thread; live and offline changes run on the server thread,
+     * so login/logout and disk changes cannot overlap one another. */
+    private void syncInventoryDeletions() {
+        try {
+            var response = post(inventoryDeletesUrl, "{}", requestTimeout);
+            if(response == null || response.statusCode() != 200 || response.body().length() > 65536) return;
+            for(var element : com.google.gson.JsonParser.parseString(response.body()).getAsJsonArray()) {
+                try {
+                var task = element.getAsJsonObject();
+                var result = getServer().getScheduler().callSyncMethod(this, () -> applyInventoryDeletion(task)).get();
+                if(result != null) {
+                    boolean refresh = task.get("request_id").isJsonNull();
+                    var accepted = post(refresh ? inventoryUrl : inventoryDeletesUrl + "/report", result, requestTimeout);
+                    if(accepted == null || accepted.statusCode() != 200) break;
+                }
+                } catch(Exception error) {
+                    // One unsupported player file must not block the rest of the batch.
+                    getLogger().warning("Could not process an inventory task: " + error.getClass().getSimpleName());
+                }
+            }
+        } catch(Exception error) {
+            getLogger().warning("Inventory deletion synchronization unavailable: " + error.getClass().getSimpleName());
+        }
+    }
+
+    private String applyInventoryDeletion(com.google.gson.JsonObject task) throws Exception {
+        UUID uuid = UUID.fromString(task.get("uuid").getAsString());
+        boolean refresh = task.get("request_id").isJsonNull();
+        String id = refresh ? "" : task.get("request_id").getAsString();
+        int index = refresh ? -1 : task.get("slot").getAsInt();
+        String expected = refresh ? "" : task.get("fingerprint").getAsString();
+        if(!refresh && (index < 0 || index > 40 || !id.matches("[0-9a-f]{64}"))) throw new IOException("Invalid deletion task");
+        Player player = getServer().getPlayer(uuid);
+        boolean deleted;
+        String snapshot;
+        if(player != null) {
+            if(!player.isOnline() || !isAuthenticated(player)) return null;
+            var key = new NamespacedKey(this,"inventory_delete");
+            var data = player.getPersistentDataContainer();
+            String receipt = data.get(key,org.bukkit.persistence.PersistentDataType.STRING);
+            boolean replay = (id + ":deleted").equals(receipt) || (id + ":conflict").equals(receipt);
+            deleted = !refresh && (id + ":deleted").equals(receipt);
+            if(!refresh && !replay) {
+                ItemStack current = player.getInventory().getItem(index);
+                deleted = current != null && !current.isEmpty()
+                    && expected.equals(InventoryNbt.fingerprint(current.serializeAsBytes()));
+                if(deleted) player.getInventory().setItem(index,null);
+                data.set(key,org.bukkit.persistence.PersistentDataType.STRING,id + (deleted ? ":deleted" : ":conflict"));
+            }
+            // Item and receipt are saved together. A retry after a lost response
+            // sees the receipt and never removes a replacement stack.
+            if(!refresh) {
+                player.saveData();
+                // saveData logs some disk failures instead of throwing them.
+                // Verify the receipt on disk before telling the panel it saved.
+                Path saved = getServer().getLevelDirectory()
+                    .resolve("players/data").resolve(uuid + ".dat");
+                if(!(id + (deleted ? ":deleted" : ":conflict")).equals(InventoryNbt.read(Files.readAllBytes(saved)).receipt())) throw new IOException("Inventory was not saved");
+            }
+            snapshot = inventorySnapshot(player);
+        } else {
+            Path file = getServer().getLevelDirectory()
+                .resolve("players/data").resolve(uuid + ".dat");
+            if(!Files.isRegularFile(file)) return null;
+            var nbt = InventoryNbt.read(Files.readAllBytes(file));
+            // Decode the complete snapshot before writing, so unknown item
+            // formats fail closed without changing the player file.
+            var items = new java.util.TreeMap<Integer,ItemStack>();
+            for(var entry:nbt.slots().entrySet()) {
+                items.put(entry.getKey(),ItemStack.deserializeBytes(nbt.itemBytes(entry.getValue())));
+            }
+            boolean replay = (id + ":deleted").equals(nbt.receipt()) || (id + ":conflict").equals(nbt.receipt());
+            deleted = !refresh && nbt.delete(index,expected,id);
+            if(!refresh && !replay) nbt.save(file);
+            if(deleted && !replay) items.remove(index);
+            String[] slots = new String[41];
+            java.util.Arrays.fill(slots,"null");
+            for(var entry:items.entrySet()) slots[entry.getKey()] = slotJson(entry.getValue());
+            snapshot = "{\"slots\":[" + String.join(",",slots) + "]}";
+        }
+        // Discard an older queued sample before acknowledging this operation.
+        // The sender and deletion synchronizer share one serial HTTP pass.
+        inventoryPending.remove(uuid);
+        inventoryAccepted.remove(uuid);
+        inventoryAcceptedAt.remove(uuid);
+        var result = com.google.gson.JsonParser.parseString(snapshot).getAsJsonObject();
+        result.addProperty("uuid",uuid.toString()); result.addProperty("request_id",id);
+        result.addProperty("username",task.get("username").getAsString());
+        result.addProperty("status",deleted ? "deleted" : "conflict");
+        return result.toString();
+    }
+
+    /** Escrow and delivery use a saved receipt containing the withdrawn item.
+     * A lost HTTP acknowledgement therefore cannot remove or deliver it twice. */
+    private void syncMarketplace() {
+        try {
+            var response = post(marketplaceUrl + "/sync", "{}", requestTimeout);
+            if(response == null || response.statusCode()!=200 || response.body().length()>40_000_000) return;
+            for(var element:com.google.gson.JsonParser.parseString(response.body()).getAsJsonArray()) {
+                try {
+                    var result = getServer().getScheduler().callSyncMethod(this, () -> applyMarketTask(element.getAsJsonObject())).get();
+                    if(result != null) {
+                        var accepted = post(marketplaceUrl + "/report", result, requestTimeout);
+                        if(accepted == null || accepted.statusCode()!=200) break;
+                    }
+                } catch(Exception error) {
+                    getLogger().warning("Marketplace synchronization deferred: " + error.getClass().getSimpleName());
+                }
+            }
+        } catch(Exception error) {
+            getLogger().warning("Marketplace unavailable: " + error.getClass().getSimpleName());
+        }
+    }
+
+    private String applyMarketTask(com.google.gson.JsonObject task) throws Exception {
+        UUID uuid=UUID.fromString(task.get("uuid").getAsString());
+        String id=task.get("id").getAsString(), kind=task.get("kind").getAsString();
+        int quantity=task.get("quantity").getAsInt();
+        if(!id.matches("[0-9a-f]{64}") || quantity<1 || quantity>230 || !(kind.equals("withdraw") || kind.equals("deliver"))) throw new IOException("Invalid market task");
+        Player player=getServer().getPlayer(uuid);
+        if(player!=null && (!player.isOnline() || !isAuthenticated(player))) return null;
+        Path file=getServer().getLevelDirectory().resolve("players/data").resolve(uuid+".dat");
+        InventoryNbt nbt=null;
+        String receipt;
+        var key=new NamespacedKey(this,"marketplace");
+        if(player!=null) receipt=player.getPersistentDataContainer().getOrDefault(key,org.bukkit.persistence.PersistentDataType.STRING,"");
+        else {
+            if(!Files.isRegularFile(file)) return null;
+            nbt=InventoryNbt.read(Files.readAllBytes(file));
+            receipt=nbt.marketReceipt();
+        }
+        com.google.gson.JsonObject result;
+        if(!receipt.isEmpty() && com.google.gson.JsonParser.parseString(receipt).getAsJsonObject().get("id").getAsString().equals(id)) {
+            result=com.google.gson.JsonParser.parseString(receipt).getAsJsonObject();
+        } else {
+            result=new com.google.gson.JsonObject(); result.addProperty("id",id); result.addProperty("uuid",uuid.toString());
+            result.addProperty("status","done");
+            int slot;
+            ItemStack current;
+            if(kind.equals("withdraw")) {
+                slot=task.get("slot").getAsInt();
+                if(slot<0 || slot>40) throw new IOException("Invalid market slot");
+                current=player!=null ? player.getInventory().getItem(slot) : nbt.slots().containsKey(slot) ? ItemStack.deserializeBytes(nbt.itemBytes(nbt.slots().get(slot))) : null;
+                String expected=task.get("fingerprint").getAsString();
+                if(current==null || current.isEmpty() || current.getAmount()<quantity || !expected.equals(InventoryNbt.fingerprint(current.serializeAsBytes()))) {
+                    result.addProperty("status","conflict");
+                } else {
+                    ItemStack escrow=current.clone(); escrow.setAmount(quantity);
+                    String bytes=java.util.Base64.getEncoder().encodeToString(escrow.serializeAsBytes());
+                    // NBT strings have a 65535-byte encoding limit, including
+                    // our receipt. Fail before changing an oversized stack.
+                    if(bytes.length()>60000) result.addProperty("status","conflict");
+                    else {
+                        result.addProperty("item_bytes",bytes);
+                        ItemStack left=current.clone(); left.setAmount(current.getAmount()-quantity);
+                        if(player!=null) player.getInventory().setItem(slot,left.isEmpty()?null:left);
+                        else nbt.replaceMarketItem(slot,left.isEmpty()?null:InventoryNbt.read(left.serializeAsBytes()).root);
+                    }
+                }
+            } else {
+                String bytes=task.get("item_bytes").getAsString();
+                if(bytes.length()>60000) throw new IOException("Market item too large");
+                current=ItemStack.deserializeBytes(java.util.Base64.getDecoder().decode(bytes));
+                if(current.isEmpty() || current.getMaxStackSize()<1) throw new IOException("Invalid market stack");
+                var empty=new ArrayList<Integer>();
+                var offlineSlots=nbt==null?null:nbt.slots();
+                int needed=(quantity+current.getMaxStackSize()-1)/current.getMaxStackSize();
+                for(int i=0;i<36;i++) {
+                    ItemStack existing=player!=null ? player.getInventory().getItem(i) : null;
+                    if(player!=null ? existing==null || existing.isEmpty() : !offlineSlots.containsKey(i)) empty.add(i);
+                }
+                // Never drop or overwrite items. Reserve all needed storage
+                // slots before making the first change, then save one receipt.
+                if(empty.size()<needed) return null;
+                int left=quantity;
+                for(int i=0;i<needed;i++) {
+                    ItemStack part=current.clone(); part.setAmount(Math.min(left,current.getMaxStackSize()));
+                    left-=part.getAmount(); slot=empty.get(i);
+                    if(player!=null) player.getInventory().setItem(slot,part);
+                    else nbt.replaceMarketItem(slot,InventoryNbt.read(part.serializeAsBytes()).root);
+                }
+            }
+            if(player!=null) player.getPersistentDataContainer().set(key,org.bukkit.persistence.PersistentDataType.STRING,result.toString());
+            else { nbt.marketReceipt(result.toString()); nbt.save(file); }
+        }
+        String snapshot;
+        if(player!=null) {
+            player.saveData();
+            if(!result.toString().equals(InventoryNbt.read(Files.readAllBytes(file)).marketReceipt())) throw new IOException("Market receipt not saved");
+            snapshot=inventorySnapshot(player);
+        } else {
+            String[] slots=new String[41]; java.util.Arrays.fill(slots,"null");
+            // Build from the committed file, retaining every unrelated item.
+            for(var entry:nbt.slots().entrySet()) slots[entry.getKey()]=slotJson(ItemStack.deserializeBytes(nbt.itemBytes(entry.getValue())));
+            snapshot="{\"slots\":["+String.join(",",slots)+"]}";
+        }
+        inventoryPending.remove(uuid); inventoryAccepted.remove(uuid); inventoryAcceptedAt.remove(uuid);
+        result.add("slots",com.google.gson.JsonParser.parseString(snapshot).getAsJsonObject().get("slots"));
+        return result.toString();
+    }
+
+    private void sendInventories() {
         if (!inventoryUrl.isBlank()) {
             if (!iconsQueued.isEmpty()) {
                 sendIconBatch(new ArrayList<>(iconsQueued), requestTimeout);
@@ -1106,7 +1334,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             for (Map.Entry<UUID, String> entry : pending.entrySet()) {
                 HttpResponse<String> response = post(inventoryUrl, entry.getValue(), requestTimeout);
                 if (response != null && response.statusCode() == 200) {
-                    inventoryPending.remove(entry.getKey());
+                    inventoryPending.remove(entry.getKey(), entry.getValue());
                     inventoryAccepted.put(entry.getKey(), entry.getValue());
                     inventoryAcceptedAt.put(entry.getKey(), System.currentTimeMillis());
                 } else if (response == null) {
@@ -1257,6 +1485,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             case 401 -> "The panel refused this server's credentials. Tell an administrator.";
             case 404 -> "That code is unknown, already used, or expired. Codes are valid for 5 minutes.";
             case 409 -> "This Minecraft account is already linked to a panel account.";
+            case 422 -> "That website account already has four linked Minecraft accounts. Unlink one on the website, then retry.";
             case 503 -> "Linking is switched off on this server. Tell an administrator.";
             case -1 -> "Could not reach the panel. Try again in a moment.";
             default -> "Unexpected answer from the panel (" + status + ").";
@@ -1282,5 +1511,223 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     private static String jsonEscape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /** Bounded NBT codec. Keeps every player tag, and atomically replaces only the
+     * selected inventory entry plus a replay receipt in Bukkit's persistent data. */
+    static final class InventoryNbt {
+        static final String RECEIPT = "linkbridge:inventory_delete";
+        record Tag(int type, Object value) {}
+        record Tags(int type, List<Tag> values) {}
+        final Map<String, Tag> root;
+        private InventoryNbt(Map<String, Tag> root) { this.root = root; }
+        static Map<String, Tag> compound(Tag tag) throws IOException {
+            if (tag == null || tag.type != 10) throw new IOException("Expected compound");
+            @SuppressWarnings("unchecked") var map = (Map<String, Tag>) tag.value;
+            return map;
+        }
+        static InventoryNbt read(byte[] compressed) throws IOException {
+            try (var gzip = new GZIPInputStream(new ByteArrayInputStream(compressed))) {
+                byte[] bytes = gzip.readNBytes(16 * 1024 * 1024 + 1);
+                if (bytes.length > 16 * 1024 * 1024) throw new IOException("Player data too large");
+                var in = new DataInputStream(new ByteArrayInputStream(bytes));
+                if (in.readUnsignedByte() != 10) throw new IOException("Invalid NBT root");
+                in.readUTF();
+                var result = new InventoryNbt(compound(readTag(in, 10, 0)));
+                if (in.available() != 0) throw new IOException("Trailing NBT");
+                return result;
+            }
+        }
+        static int length(DataInputStream in) throws IOException {
+            int n = in.readInt();
+            if (n < 0 || n > 1048576) throw new IOException("Invalid NBT length");
+            return n;
+        }
+        private static Tag readTag(DataInputStream in, int type, int depth) throws IOException {
+            if (depth > 64) throw new IOException("NBT nesting limit");
+            Object value = switch (type) {
+                case 1 -> in.readByte(); case 2 -> in.readShort(); case 3 -> in.readInt();
+                case 4 -> in.readLong(); case 5 -> in.readFloat(); case 6 -> in.readDouble();
+                case 7 -> { byte[] a = new byte[length(in)]; in.readFully(a); yield a; }
+                case 8 -> in.readUTF();
+                case 9 -> {
+                    int child = in.readUnsignedByte(), count = length(in);
+                    if (child == 0 && count != 0) throw new IOException("Invalid list");
+                    var list = new ArrayList<Tag>();
+                    for (int i=0; i<count; i++) list.add(readTag(in, child, depth+1));
+                    yield new Tags(child, list);
+                }
+                case 10 -> {
+                    var map = new TreeMap<String, Tag>();
+                    int child;
+                    while ((child = in.readUnsignedByte()) != 0) {
+                        String name = in.readUTF();
+                        if (map.put(name, readTag(in, child, depth+1)) != null) throw new IOException("Duplicate tag");
+                    }
+                    yield map;
+                }
+                case 11 -> { int[] a = new int[length(in)]; for(int i=0;i<a.length;i++) a[i]=in.readInt(); yield a; }
+                case 12 -> { long[] a = new long[length(in)]; for(int i=0;i<a.length;i++) a[i]=in.readLong(); yield a; }
+                default -> throw new IOException("Unknown NBT type");
+            };
+            return new Tag(type, value);
+        }
+        private static void writeTag(DataOutputStream out, Tag tag) throws IOException {
+            switch(tag.type) {
+                case 1 -> out.writeByte((Byte)tag.value); case 2 -> out.writeShort((Short)tag.value);
+                case 3 -> out.writeInt((Integer)tag.value); case 4 -> out.writeLong((Long)tag.value);
+                case 5 -> out.writeFloat((Float)tag.value); case 6 -> out.writeDouble((Double)tag.value);
+                case 7 -> { var a=(byte[])tag.value; out.writeInt(a.length); out.write(a); }
+                case 8 -> out.writeUTF((String)tag.value);
+                case 9 -> { var a=(Tags)tag.value; out.writeByte(a.type); out.writeInt(a.values.size()); for(var t:a.values) writeTag(out,t); }
+                case 10 -> {
+                    for(var entry:new TreeMap<>(compound(tag)).entrySet()) {
+                        out.writeByte(entry.getValue().type); out.writeUTF(entry.getKey()); writeTag(out,entry.getValue());
+                    }
+                    out.writeByte(0);
+                }
+                case 11 -> { var a=(int[])tag.value; out.writeInt(a.length); for(int n:a) out.writeInt(n); }
+                case 12 -> { var a=(long[])tag.value; out.writeInt(a.length); for(long n:a) out.writeLong(n); }
+                default -> throw new IOException("Unknown NBT type");
+            }
+        }
+        byte[] bytes() throws IOException {
+            var buffer = new ByteArrayOutputStream();
+            try(var out=new DataOutputStream(new GZIPOutputStream(buffer))) {
+                out.writeByte(10); out.writeUTF(""); writeTag(out,new Tag(10,root));
+            }
+            return buffer.toByteArray();
+        }
+        static String fingerprint(byte[] item) throws Exception { return fingerprint(read(item).root); }
+        static String fingerprint(Map<String, Tag> item) throws Exception {
+            var normalized = new TreeMap<>(item);
+            normalized.remove("DataVersion"); normalized.remove("Slot"); normalized.remove("slot");
+            var buffer = new ByteArrayOutputStream();
+            writeTag(new DataOutputStream(buffer), new Tag(10,normalized));
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(buffer.toByteArray()));
+        }
+        Tags inventory() throws IOException {
+            Tag tag = root.get("Inventory");
+            if(tag == null) tag = root.get("inventory");
+            if(tag == null) return new Tags(10,new ArrayList<>());
+            if(tag.type != 9) throw new IOException("Unsupported inventory format");
+            Tags tags = (Tags)tag.value;
+            if(tags.type != 10 && !(tags.type == 0 && tags.values.isEmpty())) throw new IOException("Unsupported inventory entries");
+            return tags;
+        }
+        static int slot(Map<String, Tag> entry) throws IOException {
+            Tag tag = entry.getOrDefault("Slot",entry.get("slot"));
+            if(tag == null || !(tag.value instanceof Number n)) throw new IOException("Unsupported slot format");
+            int raw = n.intValue() & 255;
+            if(raw <= 35) return raw;
+            if(raw >= 100 && raw <= 103) return raw - 64;
+            if(raw == 150) return 40;
+            throw new IOException("Unsupported inventory slot");
+        }
+        static Map<String, Tag> item(Map<String, Tag> entry) throws IOException {
+            return entry.containsKey("item") ? compound(entry.get("item")) : entry;
+        }
+        // Since 1.21.5, armor and off hand are in the equipment compound,
+        // while storage remains in Inventory. Never treat those as empty storage.
+        static final String[] EQUIPMENT = {"feet", "legs", "chest", "head", "offhand"};
+        Map<Integer, Map<String,Tag>> slots() throws IOException {
+            var result = new TreeMap<Integer,Map<String,Tag>>();
+            for(var tag:inventory().values) {
+                var entry = compound(tag);
+                if(result.put(slot(entry),item(entry)) != null) throw new IOException("Duplicate slot");
+            }
+            if(root.containsKey("equipment")) {
+                var equipment = compound(root.get("equipment"));
+                for(int i=0;i<EQUIPMENT.length;i++) {
+                    var entry = equipment.get(EQUIPMENT[i]);
+                    if(entry != null && result.put(i+36,compound(entry)) != null) throw new IOException("Duplicate equipment");
+                }
+            }
+            return result;
+        }
+        boolean delete(int index, String expected, String id) throws Exception {
+            if((id + ":deleted").equals(receipt())) return true;
+            if((id + ":conflict").equals(receipt())) return false;
+            var current = slots().get(index);
+            if(current == null || !expected.equals(fingerprint(current))) {
+                receipt(id + ":conflict");
+                return false;
+            }
+            if(index >= 36 && root.containsKey("equipment")
+                && compound(root.get("equipment")).containsKey(EQUIPMENT[index-36])) {
+                compound(root.get("equipment")).remove(EQUIPMENT[index-36]);
+            } else {
+                inventory().values.removeIf(tag -> {
+                    try { return slot(compound(tag)) == index; }
+                    catch(IOException error) { throw new java.io.UncheckedIOException(error); }
+                });
+            }
+            receipt(id + ":deleted");
+            return true;
+        }
+        // Lossless partial escrow / insertion in the modern saved-player layout.
+        void replaceMarketItem(int index, Map<String,Tag> replacement) throws IOException {
+            if(index<0 || index>40) throw new IOException("Invalid slot");
+            if(index>=36 && root.containsKey("equipment")) {
+                var equipment=compound(root.get("equipment"));
+                if(replacement==null) equipment.remove(EQUIPMENT[index-36]);
+                else {
+                    var copy=new TreeMap<>(replacement); copy.remove("DataVersion"); copy.remove("Slot"); copy.remove("slot");
+                    equipment.put(EQUIPMENT[index-36],new Tag(10,copy));
+                }
+            } else {
+                Tags entries=inventory();
+                if(!root.containsKey("Inventory") && !root.containsKey("inventory")) root.put("Inventory",new Tag(9,entries));
+                entries.values.removeIf(tag -> {
+                    try { return slot(compound(tag))==index; }
+                    catch(IOException error) { throw new java.io.UncheckedIOException(error); }
+                });
+                if(replacement!=null) {
+                    var copy=new TreeMap<>(replacement); copy.remove("DataVersion"); copy.remove("slot");
+                    copy.put("Slot",new Tag(1,(byte)(index<36?index:index==40?150:index+64)));
+                    entries.values.add(new Tag(10,copy));
+                }
+            }
+        }
+        String marketReceipt() throws IOException {
+            Tag values=root.get("BukkitValues");
+            if(values==null) return "";
+            Tag value=compound(values).get("linkbridge:marketplace");
+            return value!=null && value.type==8 ? (String)value.value : "";
+        }
+        void marketReceipt(String receipt) throws IOException {
+            if(!root.containsKey("BukkitValues")) root.put("BukkitValues",new Tag(10,new TreeMap<String,Tag>()));
+            compound(root.get("BukkitValues")).put("linkbridge:marketplace",new Tag(8,receipt));
+        }
+        String receipt() throws IOException {
+            Tag values = root.get("BukkitValues");
+            if(values == null) return "";
+            Tag receipt = compound(values).get(RECEIPT);
+            return receipt != null && receipt.type == 8 ? (String)receipt.value : "";
+        }
+        void receipt(String id) throws IOException {
+            if(!root.containsKey("BukkitValues")) root.put("BukkitValues",new Tag(10,new TreeMap<String,Tag>()));
+            compound(root.get("BukkitValues")).put(RECEIPT,new Tag(8,id));
+        }
+        byte[] itemBytes(Map<String,Tag> item) throws IOException {
+            var copy = new TreeMap<>(item);
+            copy.remove("Slot"); copy.remove("slot");
+            Tag version = root.get("DataVersion");
+            if(version == null) throw new IOException("Missing data version");
+            copy.put("DataVersion",version);
+            return new InventoryNbt(copy).bytes();
+        }
+        void save(Path file) throws IOException {
+            Path staged = Files.createTempFile(file.getParent(), ".linkbridge-", ".dat");
+            try {
+                try(var channel=java.nio.channels.FileChannel.open(staged,StandardOpenOption.WRITE)) {
+                    var buffer=java.nio.ByteBuffer.wrap(bytes());
+                    while(buffer.hasRemaining()) channel.write(buffer);
+                    channel.force(true);
+                }
+                Files.copy(file,file.resolveSibling(file.getFileName()+".linkbridge-backup"),StandardCopyOption.REPLACE_EXISTING);
+                Files.move(staged,file,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+            } finally { Files.deleteIfExists(staged); }
+        }
     }
 }

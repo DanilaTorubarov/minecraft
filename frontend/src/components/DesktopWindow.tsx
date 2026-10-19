@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { fitWindow, initialWindow, type WindowKind, type WindowRect } from '../lib/windowGeometry'
 
 type Props = {
@@ -6,15 +6,18 @@ type Props = {
   onFocus: () => void; onClose: () => void; onMinimize: () => void
   /** Optional controls that sit in the title bar, just left of Reset. */
   titlebarExtra?: ReactNode
+  /** Replace the centered title with an accessible native control. */
+  titleContent?: ReactNode
   children: ReactNode
 }
 const desktopSize = () => ({ width: window.innerWidth, height: Math.max(280, window.innerHeight - 148) })
 const FOOTER: Record<WindowKind, [string, string]> = {
-  account: ['Minecraft account portal', 'No game passwords shared'],
+  account: ['Oasis Aero', 'No game passwords shared'],
   settings: ['Website preferences', 'Saved on this device'],
   stats: ['Server-measured activity', 'No invented numbers'],
-  player: ['Minecraft player', 'Statistics & skin'],
+  player: ['Minecraft player', 'Statistics, inventory & skin'],
   casino: ['Server Mini Games', 'Play and test your luck'],
+  marketplace: ['Player marketplace', 'Items held by the server'],
 }
 
 type Gesture = {
@@ -36,7 +39,7 @@ function wobbleTransform(x: number, y: number, scale = 1.001): string {
   return `perspective(1100px) rotateX(${-y * 0.32}deg) rotateY(${x * 0.26}deg) rotate(${rotate}deg) skew(${x}deg, ${y * 0.58}deg) scale(${scale})`
 }
 
-export default function DesktopWindow({ id, title, icon, open, activation, active, kind = 'account', onFocus, onClose, onMinimize, titlebarExtra, children }: Props) {
+export default function DesktopWindow({ id, title, icon, open, activation, active, kind = 'account', onFocus, onClose, onMinimize, titlebarExtra, titleContent, children }: Props) {
   const [area, setArea] = useState(desktopSize)
   const [rect, setRect] = useState(() => initialWindow(desktopSize(), kind))
   const [maximized, setMaximized] = useState(false)
@@ -45,6 +48,7 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
   const titleRef = useRef<HTMLDivElement>(null)
   const gesture = useRef<Gesture | null>(null)
   const settleAnimation = useRef<Animation | null>(null)
+  const wasOpen = useRef(open)
   const moved = useRef(false)
   const minimum = kind === 'settings' ? 380 : 520
   const fitted = fitWindow(maximized ? { x: 12, y: 8, width: area.width, height: area.height } : rect, area, minimum)
@@ -61,6 +65,28 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
     }
   }, [open, activation])
   useEffect(() => () => settleAnimation.current?.cancel(), [])
+
+  useLayoutEffect(() => {
+    const node = windowRef.current
+    const closing = wasOpen.current && !open
+    wasOpen.current = open
+    if (node === null) return
+    node.hidden = !open
+    if (!closing || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+    // Keep the glass visible for its exit, but inert from the moment it closes.
+    // Cleanup cancels this exit if the dock reopens it before it finishes.
+    node.hidden = false
+    settleAnimation.current?.cancel()
+    node.style.transform = ''
+    node.style.transformOrigin = ''
+    const animation = node.animate([
+      { opacity: 1, transform: 'none' },
+      { opacity: 0, transform: 'translateY(14px) scale(.94, .97)' },
+    ], { duration: 180, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' })
+    animation.onfinish = () => { node.hidden = true }
+    return () => { animation.cancel() }
+  }, [open])
 
   function playWobble(x: number, y: number, duration = 900) {
     const node = windowRef.current
@@ -167,7 +193,7 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
 
   return (
     <section ref={windowRef} id={id} className={`desktop-window ${kind}-window${dragging ? ' dragging' : ''}`}
-      aria-label={`${title} window`} hidden={!open} data-active={active}
+      aria-label={`${title} window`} hidden={!open} data-open={open} aria-hidden={!open} inert={!open} data-active={active}
       onPointerDownCapture={onFocus} onFocusCapture={onFocus}
       style={{ left: fitted.x, top: fitted.y, width: fitted.width, height: fitted.height }}>
       <div className="window-titlebar" ref={titleRef} tabIndex={0} role="toolbar"
@@ -175,13 +201,13 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
         onPointerDown={(event) => begin(event, false)} onPointerMove={move}
         onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}
         onKeyDown={(event) => keyboard(event, false)}
-        onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) toggleMaximized() }}>
+        onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button, select')) toggleMaximized() }}>
         <div className="window-lights">
           <button className="window-light light-close" data-ui-sound="close" aria-label={`Close ${title}`} onClick={onClose} />
           <button className="window-light light-minimize" data-ui-sound="close" aria-label={`Minimize ${title}`} onClick={onMinimize} />
           <button className="window-light light-maximize" aria-label={`${maximized ? 'Restore' : 'Maximize'} ${title}`} onClick={toggleMaximized} />
         </div>
-        <span className="window-title">{typeof icon === 'string' ? <img src={icon} alt="" /> : icon}{title}</span>
+        <span className="window-title" data-interactive={titleContent !== undefined}>{titleContent ?? <>{typeof icon === 'string' ? <img src={icon} alt="" /> : icon}{title}</>}</span>
         {titlebarExtra !== undefined && <div className="window-titlebar-extra">{titlebarExtra}</div>}
         <button className="window-reset" onClick={resetWindow}>Reset</button>
       </div>

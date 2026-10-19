@@ -971,9 +971,9 @@
   ],
   "narrative": {
     "northStar": "Old Mac desktop / Frutiger Aero",
-    "overview": "Account linking lives in a small desktop: a pearl menu bar, a bottom dock, and independent glass windows for Account, Global Statistics, Settings, and every linked Minecraft nickname. Aqua traffic lights and glossy blue controls bring the old Mac silhouette into the user-approved Frutiger Aero world. Light is the fresh-browser default and carries the supplied Asadal landscape; optional Dark uses smoked blue over a user-supplied night park scene.\n\nThe supplied landscapes are decorative, never a depiction of the real server. The portal still has one practical job: register, sign in, and link an in-game identity. Window controls support that work without changing authentication state.",
+    "overview": "Account linking lives in a small desktop: a pearl menu bar, a bottom dock, and independent glass windows for Account, Global Statistics, Marketplace, Player Controls and Settings. Player Controls uses one native title-bar account picker instead of separate nickname launchers. Aqua traffic lights and glossy blue controls bring the old Mac silhouette into the user-approved Frutiger Aero world. Light is the fresh-browser default and carries the supplied Asadal landscape; optional Dark uses smoked blue over a user-supplied night park scene.\n\nThe supplied landscapes are decorative, never a depiction of the real server. The portal still has one practical job: register, sign in, and link an in-game identity. Window controls support that work without changing authentication state.",
     "keyCharacteristics": [
-      "A menu bar and dock launch Account, Global Statistics, Settings, and linked player apps with Statistics and Skin pages.",
+      "A menu bar and dock launch Account, Global Statistics, Marketplace, Player Controls and Settings. Player Controls has a native title-bar account picker and per-player Statistics, Inventory and Skin pages.",
       "Aqua window controls, readable glass and sourced Vista artwork.",
       "Truthful account states, keyboard access and responsive windows."
     ],

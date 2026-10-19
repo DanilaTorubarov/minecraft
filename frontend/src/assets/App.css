@@ -11,7 +11,7 @@
   82% { transform: perspective(1100px) scale(.999, 1.001) rotateY(-.1deg) skewX(-.14deg); }
   100% { opacity: 1; transform: none; }
 }
-.desktop-window:not([hidden]) { animation: window-wobble-open 760ms cubic-bezier(.14, .82, .22, 1); }
+.desktop-window[data-open='true']:not([hidden]) { animation: window-wobble-open 760ms cubic-bezier(.14, .82, .22, 1); }
 @keyframes rise-in {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
@@ -27,6 +27,8 @@
 .desktop-menubar .desktop-brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; padding-left: 0; }
 .desktop-brand img { width: 27px; height: 27px; }
 .desktop-brand span { font-size: 11px; font-weight: 400; margin-left: 8px; color: var(--muted); }
+.desktop-brand .brand-wordmark { white-space: nowrap; font-size: 15px; font-weight: 700; letter-spacing: -.3px; }
+.desktop-brand .brand-wordmark span { display: inline; margin: 0; font: inherit; font-weight: 600; color: var(--link); }
 .desktop-menu { display: flex; gap: 4px; }
 .desktop-menu-caption { margin-left: auto; color: var(--muted); font-size: 11px; }
 .desktop-menubar .menu-logout { border: 1px solid var(--frame); background: linear-gradient(var(--chrome-top), var(--chrome-bottom)), var(--surface-soft); box-shadow: inset 0 1px 0 var(--glass-edge); }
@@ -176,6 +178,7 @@
 /* The player and dock share their height and bottom alignment. */
 .desktop-shell { --desktop-dock-height: 94px; }
 .desktop-dock { height: var(--desktop-dock-height); }
+.music-mobile-toggle { display: none; }
 .music-player {
   position: fixed; right: 18px; bottom: 16px; z-index: 45;
   display: grid; grid-template-rows: 22px 30px 16px; gap: 3px;
@@ -289,7 +292,12 @@
   .desktop-window { transition: none; }
   .desktop-window:not([hidden]) { animation: none; }
   .desktop-shell { --desktop-dock-height: 84px; }
-  .music-player { right: 8px; bottom: calc(var(--desktop-dock-height) + 24px); width: min(360px, calc(100vw - 16px)); grid-template-rows: 22px 28px 14px; gap: 2px; padding: 6px 10px; }
+  .music-mobile-toggle { display: block; position: fixed; z-index: 46; left: 50%; transform: translateX(-50%); bottom: calc(var(--desktop-dock-height) + 24px); min-height: 44px; padding: 8px 18px; }
+  .music-player { display: none; left: 0; right: 0; margin-inline: auto; bottom: calc(var(--desktop-dock-height) + 76px); width: min(360px, calc(100vw - 24px)); height: auto; grid-template-rows: 30px 44px 28px; gap: 6px; padding: 10px; }
+  .music-player[data-mobile-open='true'] { display: grid; }
+  .music-player .music-btn { height: 44px; }
+  .music-player .music-track-select select { height: 30px; font-size: 12px; }
+  .music-player .music-credits-toggle { min-height: 30px; font-size: 11px; }
 }
 @media (min-width: 761px) and (max-width: 1100px) {
   .music-player { right: 12px; bottom: calc(var(--desktop-dock-height) + 28px); }
@@ -1597,3 +1605,54 @@
   .mines-boost-tag { font-size: 8px; padding: 0 3px; }
   .mines-stage-layout:has(.mines-table-card) { grid-template-columns: 1fr; }
 }
+button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor: pointer; }
+/* Item details unfold from their top edge, matching the desktop's glass. */
+.inv-selection { transform-origin: top center; }
+@media (prefers-reduced-motion: no-preference) {
+  .inv-selection { animation: inventory-panel-open 240ms cubic-bezier(.16, 1, .3, 1); }
+}
+@keyframes inventory-panel-open {
+  from { clip-path: inset(0 0 100% 0 round 6px); transform: scaleY(.96); }
+  to { clip-path: inset(0 0 0 0 round 6px); transform: scaleY(1); }
+}
+.inv-selection h2 { margin: 0 0 8px; font-size: 16px; overflow-wrap: anywhere; }
+.inv-selection p { overflow-wrap: anywhere; }
+.inv-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* Marketplace extends the inventory's shared glass bubbles and readable wells. */
+.market-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; margin-block: 16px; }
+.market-fields label, .market-search { display: grid; gap: 6px; min-width: 0; font-weight: 600; font-size: 13px; }
+.market-fields input, .market-fields select, .market-search input { width: 100%; min-width: 0; min-height: 42px; padding: 9px 11px; border: 1px solid var(--frame); border-radius: 5px; background: var(--field); color: var(--text); }
+.market-fields input:hover, .market-fields select:hover, .market-search input:hover { border-color: var(--muted); }
+.market-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 20px; margin-bottom: 20px; }
+.market-search { flex: 1 1 200px; }
+.market-toolbar .inv-actions { margin: 0; }
+.market-toolbar [aria-pressed='true'] { color: var(--primary-text); background: linear-gradient(var(--primary-top), var(--primary-bottom)); border-color: var(--primary-edge); }
+.market-sell { margin-bottom: 22px; color: var(--muted); }
+.market-sell summary { width: fit-content; color: var(--link); font-weight: 600; cursor: pointer; }
+.market-buy-fields { padding: 0; border: 0; margin: 0; min-width: 0; }
+.market-total { font-weight: 600; font-variant-numeric: tabular-nums; }
+.market-dismiss { margin-top: 12px; }
+.market-listings { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(285px, 100%), 1fr)); gap: 0 24px; list-style: none; padding: 0; margin: 20px 0; }
+.market-listing { display: flex; gap: 16px; align-items: center; padding: 20px 0; min-width: 0; border-bottom: 1px solid var(--line); }
+.market-listing > .inv-cell { flex: 0 0 64px; }
+.market-listing-copy { min-width: 0; display: grid; gap: 4px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.market-item-name { padding: 0; border: 0; background: transparent; color: var(--link); text-align: left; font-weight: 600; font-size: 14px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.market-prices { display: grid; color: var(--text); font-variant-numeric: tabular-nums; }
+.market-deliveries { margin-top: 28px; }
+.market-deliveries h2 { font-size: 16px; margin-bottom: 6px; }
+.market-deliveries .row { flex-wrap: wrap; gap: 8px 16px; overflow-wrap: anywhere; }
+.market-deliveries .row strong { font-size: 12px; color: var(--muted); }
+@container (max-width: 480px) {
+  .market-fields { grid-template-columns: 1fr; }
+  .market-fields input, .market-fields select, .market-search input { font-size: 16px; }
+}
+
+/* One Player Controls window, with a native account picker in the title bar. */
+.window-title[data-interactive='true'] { pointer-events: auto; overflow: visible; }
+.player-account-picker { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.player-account-picker .player-head { flex: none; }
+.player-account-picker select { min-width: 0; max-width: 100%; min-height: 32px; padding: 4px 5px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text); font: inherit; text-overflow: ellipsis; cursor: pointer; touch-action: auto; }
+.player-account-picker select:hover { background: var(--surface-soft); border-color: var(--frame); }
+.player-account-picker select option { color: var(--text); background: var(--surface); }
+.player-account-content:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
