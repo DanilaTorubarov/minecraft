@@ -1,6 +1,6 @@
 services:
   proxy:
-    image: caddy:2
+    image: dhi.io/caddy:2
     restart: unless-stopped
     ports:
       - "80:8080"
@@ -23,15 +23,10 @@ services:
         condition: service_healthy
 
   db:
-    image: postgres:18
+    image: dhi.io/postgres:18
     environment:
       POSTGRES_DB: project_db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # The volume holds a PostgreSQL 18 cluster at <volume>/18/data, created by the
-      # hardened image main uses. That is not this image's default PGDATA
-      # (/var/lib/postgresql/18/docker), so it is spelled out; without it the
-      # entrypoint finds an empty directory, runs initdb, and fails.
-      PGDATA: /var/lib/postgresql/18/data
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
@@ -39,7 +34,7 @@ services:
       interval: 5s
       retries: 10
   tests:
-    image: rust:1
+    image: dhi.io/rust:1-dev
     profiles: ["tests"]
     working_dir: /app
     volumes:

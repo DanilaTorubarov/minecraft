@@ -32,6 +32,18 @@ Start Docker Desktop and sign in to Docker Hardened Images:
 docker login dhi.io
 ```
 
+If this host already holds a `pgdata` volume created by the **community** PostgreSQL image (uid 999), the hardened `db` image cannot open it (`Permission denied` on `/var/lib/postgresql/18/data`). Do not edit `compose.yaml` — production runs the hardened images. Put the exception in a gitignored `compose.override.yaml`, which Compose merges automatically on this machine only:
+
+```yaml
+services:
+  db:
+    image: postgres:18
+    environment:
+      PGDATA: /var/lib/postgresql/18/data
+```
+
+Never delete, empty or chown the volume to avoid this. See [AGENTS.md](AGENTS.md) "Traps".
+
 On a fresh clone, copy the example file, then edit `.env.docker` to use your own password in both places:
 
 ```sh

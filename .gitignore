@@ -11,6 +11,11 @@
 !.env.example
 !.env.docker.example
 
+# Machine-local Compose overrides (e.g. the community Postgres image a host
+# whose pgdata cluster is not the hardened image's needs — see AGENTS.md
+# "Traps"). Never deploy these; main keeps the hardened images.
+compose.override.yaml
+
 # Logs and machine-specific files
 *.log
 .DS_Store
