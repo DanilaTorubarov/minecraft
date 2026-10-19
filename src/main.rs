@@ -2055,7 +2055,14 @@ async fn sync_market_tasks(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     require_service_token(&headers)?;
-    let rows = sqlx::query("SELECT * FROM (SELECT DISTINCT ON(uuid) * FROM market_tasks WHERE status='pending' ORDER BY uuid,sequence) t ORDER BY sequence LIMIT 25")
+    // Rotate between players even when an old delivery is waiting for space.
+    // Within each player's queue, only the oldest unacknowledged task is eligible.
+    let rows = sqlx::query("WITH candidates AS (
+        SELECT sequence FROM (SELECT DISTINCT ON(uuid) sequence,last_checked_at
+            FROM market_tasks WHERE status='pending' ORDER BY uuid,sequence) heads
+        ORDER BY last_checked_at NULLS FIRST,sequence LIMIT 25)
+        UPDATE market_tasks t SET last_checked_at=clock_timestamp() FROM candidates c
+        WHERE t.sequence=c.sequence RETURNING t.*")
         .fetch_all(&pool).await.map_err(market_db)?;
     let tasks: Vec<serde_json::Value> = rows.into_iter().map(|r| serde_json::json!({
         "id":r.get::<String,_>("id"),"uuid":r.get::<String,_>("uuid"),"username":r.get::<String,_>("username"),
@@ -2776,6 +2783,7 @@ struct MinesCellView {
 #[derive(serde::Serialize)]
 struct MinesRoundView {
     round_id: String,
+    payer_uuid: String,
     bet: i64,
     mines: i64,
     min_safe: i64,
@@ -2861,24 +2869,26 @@ async fn credit_coins(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-async fn payer_balance(pool: &sqlx::PgPool, uuid: &str) -> Result<i64, StatusCode> {
+async fn payer_balance<'e, E>(executor: E, uuid: &str) -> Result<i64, StatusCode>
+where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
     let balance: Option<i64> = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1")
         .bind(uuid)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(balance.unwrap_or(0))
 }
 
 /// The Minesweeper round this user already paid for, if any.
-async fn active_mines_round(pool: &sqlx::PgPool, user_id: i64) -> Result<Option<StoredRound>, StatusCode> {
+async fn active_mines_round<'e, E>(executor: E, user_id: i64) -> Result<Option<StoredRound>, StatusCode>
+where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
     let row = sqlx::query(
         "SELECT id::text AS id, uuid, bet, status, payout, outcome, state::text AS state
            FROM minigame_rounds
           WHERE user_id = $1 AND game = 'minesweeper' AND status = 'active'",
     )
     .bind(user_id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match row {
@@ -2951,6 +2961,7 @@ fn mines_view(round: &StoredRound, state: &MinesState, balance: i64) -> MinesRou
         .collect();
     MinesRoundView {
         round_id: round.id.clone(),
+        payer_uuid: round.uuid.clone(),
         bet: round.bet,
         mines: state.mines,
         min_safe: MINES_MIN_SAFE,
@@ -2971,6 +2982,13 @@ async fn lock_mines_round(
     user_id: i64,
     round_id: &str,
 ) -> Result<StoredRound, StatusCode> {
+    // Expiry is enforced on every action under the same row lock as settlement.
+    // A tab left open cannot bypass the deadline by avoiding GET /state.
+    sqlx::query("UPDATE minigame_rounds SET status='settled', outcome='expired', settled_at=now()
+        WHERE id=$1::uuid AND user_id=$2 AND game='minesweeper' AND status='active'
+        AND created_at < now() - make_interval(secs => $3)")
+        .bind(round_id).bind(user_id).bind(MINIGAME_ROUND_TTL_SECONDS as f64)
+        .execute(&mut **tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let row = sqlx::query(
         "SELECT id::text AS id, uuid, bet, status, payout, outcome, state::text AS state
            FROM minigame_rounds
@@ -3008,11 +3026,12 @@ async fn settle_round(
     Ok(())
 }
 
-async fn return_chest_spin(
-    pool: &sqlx::PgPool,
+async fn return_chest_spin<'e, E>(
+    executor: E,
     user_id: i64,
     client_id: &str,
-) -> Result<Option<ChestSpinView>, StatusCode> {
+) -> Result<Option<ChestSpinView>, StatusCode>
+where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
     let row = sqlx::query(
         "SELECT r.id::text AS id, r.bet, r.payout, r.state::text AS state,
                 COALESCE(ps.coins, 0) AS balance
@@ -3022,7 +3041,7 @@ async fn return_chest_spin(
     )
     .bind(user_id)
     .bind(client_id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(row) = row else { return Ok(None) };
@@ -3047,8 +3066,7 @@ async fn spin_lucky_chest(
     Json(input): Json<ChestSpinRequest>,
 ) -> Result<Json<ChestSpinView>, StatusCode> {
     let uuid = input.uuid.trim().to_lowercase();
-    // 400 for a malformed UUID, 404 when it is not this user's linked account.
-    owns_player(&pool, user_id, &uuid).await?;
+    if !is_uuid(&uuid) { return Err(StatusCode::BAD_REQUEST); }
     let bet = validate_bet(input.bet)?;
     let client_id = input.client_id.trim().to_lowercase();
     if !is_uuid(&client_id) {
@@ -3058,6 +3076,8 @@ async fn spin_lucky_chest(
     if let Some(view) = return_chest_spin(&pool, user_id, &client_id).await? {
         return Ok(Json(view));
     }
+    // A receipt is still recoverable after unlinking; only a new stake needs a link.
+    owns_player(&pool, user_id, &uuid).await?;
 
     let spin = spin_chest()?;
     let payout = bet * spin.mult_x100 / 100;
@@ -3069,6 +3089,13 @@ async fn spin_lucky_chest(
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Serialize the receipt check with other stakes from this user. Otherwise a
+    // concurrent retry can fail its debit before discovering the first receipt.
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE").bind(user_id)
+        .fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(view) = return_chest_spin(&mut *tx, user_id, &client_id).await? {
+        return Ok(Json(view));
+    }
     let mut balance = debit_coins(&mut tx, &uuid, bet).await?;
     if payout > 0 {
         balance = credit_coins(&mut tx, &uuid, payout).await?;
@@ -3140,6 +3167,13 @@ async fn start_mines(
     let stored = serde_json::to_string(&state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE").bind(user_id)
+        .fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(round) = active_mines_round(&mut *tx, user_id).await? {
+        let state = round.mines_state()?;
+        let balance = payer_balance(&mut *tx, &round.uuid).await?;
+        return Ok(Json(mines_view(&round, &state, balance)));
+    }
     let balance = debit_coins(&mut tx, &uuid, bet).await?;
     // The partial unique index allows one live round per game, so a second tab
     // resolves to the same round instead of staking money twice.
@@ -3214,7 +3248,7 @@ async fn reveal_mines(
         round.payout = 0;
         // Nothing is credited: the stake was taken when the round started.
         settle_round(&mut tx, &round_id, "lost", 0, &state).await?;
-        payer_balance(&pool, &round.uuid).await?
+        payer_balance(&mut *tx, &round.uuid).await?
     } else {
         let preset = mines_preset(state.mines).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         state.mult_x100 += mines_boost(preset, &content);
@@ -3236,7 +3270,7 @@ async fn reveal_mines(
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            payer_balance(&pool, &round.uuid).await?
+            payer_balance(&mut *tx, &round.uuid).await?
         }
     };
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -6522,6 +6556,44 @@ mod test {
         serde_json::json!({"slot":0,"fingerprint":"a".repeat(64),"quantity":quantity,"unit_price":10,"lot_price":15})
     }
     #[tokio::test]
+    async fn marketplace_rotates_blocked_players_without_skipping_their_fifo() -> TestResult {
+        let pool=connect().await?;
+        let (email,_cookie)=fresh_user(&pool).await?;
+        let seller=test_uuid(&email);
+        let listing=new_session_token().map_err(|_| "randomness unavailable")?;
+        let outcome: Result<_,Box<dyn std::error::Error>>=async {
+            sqlx::query("INSERT INTO market_listings(id,user_id,uuid,username,item,quantity,remaining,unit_price,status) SELECT $1,id,$2,'QueueTest','{}',1,1,1,'closed' FROM users WHERE email=$3")
+                .bind(&listing).bind(&seller).bind(&email).execute(&pool).await?;
+            let mut heads=Vec::new();
+            for _ in 0..26 {
+                let id=new_session_token().map_err(|_| "randomness unavailable")?;
+                let uuid=new_round_id().map_err(|_| "randomness unavailable")?;
+                sqlx::query("INSERT INTO market_tasks(id,listing_id,uuid,username,kind,quantity,item_bytes) VALUES($1,$2,$3,'QueueTest','deliver',1,'test')")
+                    .bind(&id).bind(&listing).bind(uuid).execute(&pool).await?;
+                heads.push(id);
+            }
+            // A second task for the first player must remain ineligible.
+            let second=new_session_token().map_err(|_| "randomness unavailable")?;
+            sqlx::query("INSERT INTO market_tasks(id,listing_id,uuid,username,kind,quantity,item_bytes) SELECT $1,listing_id,uuid,username,kind,quantity,item_bytes FROM market_tasks WHERE id=$2")
+                .bind(&second).bind(&heads[0]).execute(&pool).await?;
+            let mut seen=std::collections::HashSet::new();
+            for _ in 0..8 {
+                let answer=body_json(post_internal(&pool,"/internal/marketplace/sync",Some(&test_service_token()),serde_json::json!({}),&random_ip()).await?).await?;
+                for task in answer.as_array().ok_or("tasks missing")? {
+                    seen.insert(task["id"].as_str().ok_or("id missing")?.to_owned());
+                }
+            }
+            Ok((heads,second,seen))
+        }.await;
+        clear_market(&pool,&[seller]).await?;
+        delete_user(&pool,&email).await?;
+        let (heads,second,seen)=outcome?;
+        assert!(heads.iter().all(|id|seen.contains(id)),"a blocked first batch must not starve the 26th player");
+        assert!(!seen.contains(&second),"rotation must preserve each player's FIFO");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn marketplace_escrow_requires_ownership_and_server_acknowledgement() -> TestResult {
         let pool = connect().await?;
         let (email, cookie) = fresh_user(&pool).await?;
@@ -6889,9 +6961,17 @@ mod test {
         let retry_status = retry.status();
         let retry = body_json(retry).await?;
         let after_retry = coins_of(&pool, &uuid).await?;
+        let unlinked = send(&pool, "DELETE", &format!("/api/link/{uuid}"), Some(&cookie), None).await?.status();
+        let recovered = post_session(&pool, "/api/minigames/chest/spin", &cookie,
+            serde_json::json!({"uuid":uuid,"bet":50,"client_id":client_id})).await?;
+        let recovered_status = recovered.status();
+        let recovered = body_json(recovered).await?;
         delete_player_stats(&pool, &uuid).await?;
         delete_user(&pool, &email).await?;
 
+        assert_eq!(unlinked, StatusCode::NO_CONTENT);
+        assert_eq!(recovered_status, StatusCode::OK, "a receipt survives unlinking");
+        assert_eq!(recovered["round_id"], serde_json::json!(round_id));
         assert_eq!(spin_status, StatusCode::OK);
         assert_eq!(retry_status, StatusCode::OK);
         assert_eq!(reels.len(), 3, "a spin lands three reels");
@@ -7213,6 +7293,76 @@ mod test {
         assert_eq!(wrong_mines, StatusCode::BAD_REQUEST, "9 TNT is not a table");
         assert_eq!(state["active"]["round_id"], serde_json::json!(round_id));
         assert_eq!(no_round, StatusCode::NOT_FOUND, "another user's round does not exist for you");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mines_actions_enforce_expiry_without_loading_state() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie, uuid) = paid_player(&pool, 1_000).await?;
+        let outcome: Result<_, Box<dyn std::error::Error>> = async {
+            let mut answers = Vec::new();
+            for action in ["reveal", "cashout"] {
+                let started = body_json(post_session(&pool, "/api/minigames/mines/start", &cookie,
+                    serde_json::json!({"uuid":uuid,"bet":100,"mines":8})).await?).await?;
+                let id = started["round_id"].as_str().ok_or("missing round")?;
+                let board = mines_board(&pool,id).await?;
+                // Open two safe cells so cashout would otherwise succeed.
+                for cell in board.iter().enumerate().filter(|(_,v)| v.as_str()!="tnt").take(2).map(|(i,_)| i) {
+                    post_session(&pool,"/api/minigames/mines/reveal",&cookie,
+                        serde_json::json!({"round_id":id,"cell":cell})).await?;
+                }
+                sqlx::query("UPDATE minigame_rounds SET created_at=now()-interval '16 minutes' WHERE id=$1::uuid")
+                    .bind(id).execute(&pool).await?;
+                let answer = body_json(post_session(&pool,&format!("/api/minigames/mines/{action}"),&cookie,
+                    serde_json::json!({"round_id":id,"cell":cell_of(&board,"tnt")})).await?).await?;
+                answers.push(answer);
+            }
+            Ok((answers, coins_of(&pool,&uuid).await?))
+        }.await;
+        delete_player_stats(&pool,&uuid).await?;
+        delete_user(&pool,&email).await?;
+        let (answers,balance) = outcome?;
+        for answer in answers {
+            assert_eq!(answer["outcome"],"expired");
+            assert_eq!(answer["payout"],0);
+            assert_eq!(answer["payer_uuid"],uuid);
+        }
+        assert_eq!(balance,800,"expired rounds cannot pay out through a stale tab");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn simultaneous_minigame_retries_recover_a_stake_that_uses_the_balance() -> TestResult {
+        let pool = connect().await?;
+        let (email,cookie,uuid) = paid_player(&pool,100).await?;
+        let outcome: Result<_,Box<dyn std::error::Error>> = async {
+            let body=serde_json::json!({"uuid":uuid,"bet":100,"mines":8});
+            // More simultaneous requests than the pool's five connections must
+            // still progress: receipt checks cannot borrow another connection.
+            let (a,b,c,d,e,f)=tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(
+                    post_session(&pool,"/api/minigames/mines/start",&cookie,body.clone()),
+                    post_session(&pool,"/api/minigames/mines/start",&cookie,body.clone()),
+                    post_session(&pool,"/api/minigames/mines/start",&cookie,body.clone()),
+                    post_session(&pool,"/api/minigames/mines/start",&cookie,body.clone()),
+                    post_session(&pool,"/api/minigames/mines/start",&cookie,body.clone()),
+                    post_session(&pool,"/api/minigames/mines/start",&cookie,body.clone()))
+            }).await?;
+            let extra_statuses = [c?.status(),d?.status(),e?.status(),f?.status()];
+            let a=a?; let b=b?;
+            let statuses=(a.status(),b.status());
+            let a=body_json(a).await?; let b=body_json(b).await?;
+            Ok((statuses,extra_statuses,a,b,coins_of(&pool,&uuid).await?))
+        }.await;
+        delete_player_stats(&pool,&uuid).await?;
+        delete_user(&pool,&email).await?;
+        let (statuses,extra_statuses,a,b,balance)=outcome?;
+        assert!(extra_statuses.iter().all(|status| *status == StatusCode::OK));
+        assert_eq!(statuses,(StatusCode::OK,StatusCode::OK));
+        assert_eq!(a["round_id"],b["round_id"]);
+        assert_eq!(a["payer_uuid"],uuid);
+        assert_eq!(balance,0);
         Ok(())
     }
 

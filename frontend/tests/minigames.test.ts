@@ -92,6 +92,7 @@ test('the remembered payer wins only while that account is still linked', () => 
 test('a round names only the cells it has opened, and counts the safe ones', () => {
   const round: MinesRound = {
     round_id: 'x',
+    payer_uuid: 'player-a',
     bet: 100,
     mines: 8,
     min_safe: 2,
@@ -126,11 +127,10 @@ test('the paytable and ore names cover every symbol the server can pay', () => {
     'pufferfish',
     'tropical_fish',
   ]) {
-    assert.ok(CHEST_LABELS[id]?.ru, `${id} needs a Russian label`)
-    assert.ok(CHEST_LABELS[id]?.en, `${id} needs an English label`)
+    assert.ok(CHEST_LABELS[id], `${id} needs an English label`)
   }
   for (const ore of ['iron', 'gold', 'diamond'] as const) {
-    assert.ok(ORE_LABELS[ore].ru)
+    assert.ok(ORE_LABELS[ore])
   }
 })
 
@@ -223,4 +223,30 @@ test('the live round is unwrapped from its envelope, and rules come from the ser
   const rules = await getMinigameRules()
   assert.equal(rules.chest.rtp_x10000, 9_180)
   assert.equal(rules.mines.cells, 25)
+})
+
+test('an unresolved chest request survives reload and retains the exact stake and id', async () => {
+  const { readChestRequest, writeChestRequest } = await import('../src/lib/chestRetry.ts')
+  const entries = new Map<string, string>()
+  const storage = { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => { entries.set(key, value) }, removeItem: (key: string) => { entries.delete(key) } }
+  const request = { uuid: 'player-a', bet: 50, client_id: newClientId() }
+  writeChestRequest(storage, 'user-1', request)
+  const reloaded = readChestRequest(storage, 'user-1')
+  assert.deepEqual(reloaded, request)
+  assert.equal(readChestRequest(storage, 'user-2'), null, 'never recover another website user’s stake')
+  const sent: unknown[] = []
+  globalThis.fetch = async (_path, options) => {
+    sent.push(JSON.parse(String(options?.body)))
+    if (sent.length === 1) throw new TypeError('Response lost after server commit')
+    return new Response(JSON.stringify({ round_id: 'same-round', payout: 0, balance: 950 }), { status: 200 })
+  }
+  await assert.rejects(spinChest(reloaded!))
+  assert.deepEqual(readChestRequest(storage, 'user-1'), request, 'failure does not consume the retry')
+  await spinChest(readChestRequest(storage, 'user-1')!)
+  assert.deepEqual(sent[0], sent[1], 'a retry uses the identical payload')
+  writeChestRequest(storage, 'user-1', null)
+  assert.equal(readChestRequest(storage, 'user-1'), null)
+  entries.set('bad', '{broken')
+  assert.equal(readChestRequest(storage, 'bad'), null)
+  assert.equal(readChestRequest(null, 'user-1'), null)
 })

@@ -78,8 +78,8 @@ export function useStakedBalance(payerUuid: string | null, serverCoins: number |
   const [settled, setSettled] = useState<{ payer: string | null; balance: number; stale: number } | null>(null)
   const superseded = settled !== null && settled.payer === payerUuid && serverCoins === settled.stale
   const balance = superseded ? settled.balance : serverCoins ?? 0
-  const applySettled = (next: number) => {
-    setSettled({ payer: payerUuid, balance: next, stale: serverCoins ?? 0 })
+  const applySettled = (next: number, uuid = payerUuid, stale = serverCoins ?? 0) => {
+    setSettled({ payer: uuid, balance: next, stale })
   }
   return { balance, applySettled }
 }

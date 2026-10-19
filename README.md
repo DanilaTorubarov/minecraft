@@ -646,3 +646,10 @@ docker compose --env-file .env.docker down
 `docker compose --env-file .env.docker down -v` also **deletes the database volume and its data**. Use it only when you want a fresh database.
 
 Sign-in accepts either an email address or a login name, trimmed and case-insensitive. Both share the account’s existing lockout counter. `POST /api/login` takes `{identifier, password}`; the legacy `{email, password}` payload remains supported. If an email exactly matches another account’s login name, the email owner takes precedence; the other account can sign in with its own email.
+
+
+### Minigame recovery and queue rotation
+
+Minigames is entirely in English. Lucky Chest retains an unresolved spin’s exact request in session storage for the current website user; **Recover spin** retries that same stake, including after reloading the tab. Allow the recovery to finish before placing a new stake. Minesweeper identifies the original paying player when restoring a round and enforces its fifteen-minute deadline on reveal and cash-out as well as state loading. Its classic raised cells support arrow-key navigation.
+
+Migration `0015_market_task_rotation.sql` adds the last-checked time for Marketplace task rotation. Sync still returns only each player’s oldest pending task, but rotates between players so full inventories cannot hold up everyone else’s deliveries.

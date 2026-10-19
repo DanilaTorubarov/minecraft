@@ -28,8 +28,7 @@ above. Original generated outputs remain in the imagegen folder outside the
 repository and are not loaded by this interface.
 
 Open Sans is self-hosted in `fonts/open-sans.ttf`; its SIL Open Font License is in
-`fonts/open-sans-LICENSE.txt`. The former Minecraft font, dirt, and wood files remain
-as unused historical assets.
+`fonts/open-sans-LICENSE.txt`. The unused Minecraft font, dirt, and wood files have been removed.
 
 ## Icons and cursors
 

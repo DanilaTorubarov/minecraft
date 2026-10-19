@@ -1,4 +1,16 @@
-# Project checkpoint — 2026-10-18
+# Project checkpoint — 2026-10-19
+
+## English minigames and recovery — 2026-10-19
+
+- Follow-up: capped the Minesweeper cabinet at 288px (field about 258px), with classic gray beveled cells and recessed counters. Desktop/mobile and Light/Dark previews checked; square cells measured at about 49px at the capped size.
+
+- Minigames, its menu/dock/title bar, payer controls, paytables and errors now use English. Both games use existing Aero surface/field/button tokens. Lucky Chest reels move complete shared-material bubbles and decelerate in sequence; reduced motion places the results directly. Minesweeper uses classic raised squares, an inset field, keyboard arrows and the site palette in both themes.
+- Pending chest requests retain their exact client ID, payer and stake in per-user tab storage until resolved; retries and post-unlink receipt recovery cannot buy a second spin. Concurrent starts/receipt checks serialize on the user row and reuse their transaction connection.
+- Minesweeper responses identify the original payer. Expiry is checked in the same transaction as reveal/cash-out, so stale tabs cannot bypass the fifteen-minute deadline. Recovery errors block new stakes until retried.
+- Migration `0015_market_task_rotation.sql` rotates Marketplace queue heads by last-check time, preserving per-player FIFO while preventing full inventories from starving later players.
+- Removed the five unused legacy font/texture/sound assets and obsolete game CSS. Updated the stale frontend application guide.
+- Verified: `cargo check --tests`, 115 PostgreSQL-backed backend tests, 55 frontend tests, ESLint and the full Docker production image. Browser checks used a temporary, clearly labeled simulated-coin fixture at wide and narrow widths in both themes; the fixture was removed. Captures are gitignored under `.impeccable/review/`. Local app/proxy were rebuilt; no external deployment or Git push was performed.
+
 
 ## Local Purpur executable option — 2026-10-18
 

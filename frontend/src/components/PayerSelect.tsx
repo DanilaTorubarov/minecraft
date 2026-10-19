@@ -19,15 +19,15 @@ export default function PayerSelect({ payer, accounts, onChoose, disabled = fals
     <div className="chest-balance-pill casino-payer-pill">
       <img src={coinIcon} alt="" className="chest-coin-icon" />
       <span className="chest-balance-num">{formatCoins(payer.coins)}</span>
-      <span className="chest-balance-label">монет</span>
+      <span className="chest-balance-label">coins</span>
       {accounts.length > 1 ? (
         <select
           className="casino-payer-select"
           value={payer.uuid}
           onChange={(event) => onChoose(event.target.value)}
           disabled={disabled}
-          aria-label="Счёт для ставки"
-          title="Счёт для ставки"
+          aria-label="Paying player"
+          title="Paying player"
         >
           {accounts.map((account) => (
             <option key={account.uuid} value={account.uuid}>

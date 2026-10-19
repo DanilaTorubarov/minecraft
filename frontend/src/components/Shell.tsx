@@ -104,7 +104,7 @@ function Shell() {
         <nav className="desktop-menu" aria-label="Applications">
           <button onClick={openAccount} data-ui-sound={accountOpen ? 'click' : 'open'} aria-controls="account-window">Account</button>
           <button onClick={openStats} data-ui-sound={statsOpen ? 'click' : 'open'} aria-controls="stats-window">Global Statistics</button>
-          <button onClick={openCasino} data-ui-sound={casinoOpen ? 'click' : 'open'} aria-controls="casino-window">Мини-игры</button>
+          <button onClick={openCasino} data-ui-sound={casinoOpen ? 'click' : 'open'} aria-controls="casino-window">Minigames</button>
           <button onClick={openMarket} data-ui-sound={marketOpen ? 'click' : 'open'} aria-controls="marketplace-window">Marketplace</button>
           <button onClick={() => openPlayer()} data-ui-sound={playerOpen ? 'click' : 'open'} aria-controls="player-controls-window">Player Controls</button>
           <button onClick={openSettings} data-ui-sound={settingsOpen ? 'click' : 'open'} aria-controls="settings-window">Settings</button>
@@ -166,8 +166,8 @@ function Shell() {
               : <MarketplacePage key={user.id} visible={marketOpen} accounts={statsAccounts} onOpenInventory={openInventory} />}
           </main></div>
         </DesktopWindow>
-        <DesktopWindow id="casino-window" title="Мини-игры" icon={minigamesIcon} kind="casino" open={casinoOpen} activation={casinoActivation} active={active === 'casino'} onFocus={() => setActive('casino')} onClose={hideCasino} onMinimize={hideCasino}>
-          <div className="workspace casino-workspace">
+        <DesktopWindow id="casino-window" title="Minigames" icon={minigamesIcon} kind="casino" open={casinoOpen} activation={casinoActivation} active={active === 'casino'} onFocus={() => setActive('casino')} onClose={hideCasino} onMinimize={hideCasino}>
+          <div className="workspace stats-workspace">
             <main className="main" id="casino-content">
               <MinigamesPage onGoToAccount={() => { navigate('/login', { replace: true }); openAccount() }} />
             </main>
@@ -200,7 +200,7 @@ function Shell() {
       <nav className="desktop-dock" aria-label="Dock">
         <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? active === 'account' ? 'close' : 'click' : 'open'} onClick={accountOpen && active === 'account' ? hideAccount : openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
         <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? active === 'stats' ? 'close' : 'click' : 'open'} onClick={statsOpen && active === 'stats' ? hideStats : openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Global Statistics</span></button>
-        <button ref={casinoDock} className="dock-app" data-ui-sound={casinoOpen ? active === 'casino' ? 'close' : 'click' : 'open'} onClick={casinoOpen && active === 'casino' ? hideCasino : openCasino} aria-controls="casino-window" aria-expanded={casinoOpen} data-open={casinoOpen}><img src={minigamesIcon} alt="" /><span>Мини-игры</span></button>
+        <button ref={casinoDock} className="dock-app" data-ui-sound={casinoOpen ? active === 'casino' ? 'close' : 'click' : 'open'} onClick={casinoOpen && active === 'casino' ? hideCasino : openCasino} aria-controls="casino-window" aria-expanded={casinoOpen} data-open={casinoOpen}><img src={minigamesIcon} alt="" /><span>Minigames</span></button>
         <button ref={marketDock} className="dock-app" data-ui-sound={marketOpen ? active === 'market' ? 'close' : 'click' : 'open'} onClick={marketOpen && active === 'market' ? hideMarket : openMarket} aria-controls="marketplace-window" aria-expanded={marketOpen} data-open={marketOpen}><img src={globeIcon} alt="" /><span>Marketplace</span></button>
         <button ref={playerDock} className="dock-app" onClick={playerOpen && active === 'player' ? hidePlayer : () => openPlayer()} aria-controls="player-controls-window" aria-expanded={playerOpen} data-open={playerOpen} data-ui-sound={playerOpen ? active === 'player' ? 'close' : 'click' : 'open'}>{selectedPlayer ? <PlayerHead username={selectedPlayer.username} textureHash={selectedPlayer.skin_hash} /> : <img src={perfCenterIcon} alt="" />}<span>Player Controls</span></button>
         <span className="dock-divider" />

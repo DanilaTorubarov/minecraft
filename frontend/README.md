@@ -4,7 +4,7 @@ React 19, TypeScript 6, Vite 8, and React Router. This directory is the website 
 
 ## Applications
 
-`Shell.tsx` provides the desktop menu, dock, and independent windows. Account contains registration, login, cabinet, and security flows. Global Statistics combines only the signed-in user's linked Minecraft accounts. Each linked nickname opens its own **player app**, with a server-reported skin head and two pages: Statistics and Skin. Settings contains appearance and interface-sound preferences. The music player is a separate widget beside the dock.
+`Shell.tsx` provides the desktop menu, dock, and independent windows. Account contains registration, login, cabinet, and security flows. Global Statistics combines only the signed-in user's linked Minecraft accounts. **Player Controls** is one window with a native player picker and Statistics, Inventory, and Skin pages. Minigames and Marketplace have their own windows. Settings contains appearance and interface-sound preferences. The music player is a separate widget beside the dock.
 
 `PlayerApp.tsx` owns each player's page selection. `lib/useStatistics.ts` supplies the shared five-second account/statistics snapshot. `pages/SkinPage.tsx` manages current-skin loading, PNG preview/upload, and progress; `SkinFigure.tsx` draws the real skin texture. All account data comes from the API. Preserve loading, empty, failure, ownership, keyboard, reduced-motion, and responsive states.
 
@@ -28,4 +28,4 @@ Run from the repository root. Node's built-in test runner loads TypeScript tests
 
 ## Visual system and assets
 
-Use the semantic tokens in `src/index.css` and the authoritative root design guide. Light uses the supplied Asadal landscape; Dark uses the user-supplied night park. Preserve all artwork, icon, cursor, font, and audio provenance/license files. Native buttons expose the player page selection with `aria-current="page"`. Window state remains independent per linked user/UUID while that account remains in the current session.
+Use the semantic tokens in `src/index.css` and the authoritative root design guide. Light uses the supplied Asadal landscape; Dark uses the user-supplied night park. Preserve all artwork, icon, cursor, font, and audio provenance/license files. Native buttons expose the player page selection with `aria-current="page"`. Player page contents remain independent per linked user/UUID; Player Controls shares one window geometry.

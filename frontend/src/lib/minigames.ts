@@ -4,8 +4,7 @@
 // project's tests may only touch asset-free modules. Icons and React live in the
 // components; the numbers and the messages live here.
 //
-// Money is integer hundredths everywhere, on both sides of the wire, so no
-// balance is ever rounded by a float on its way to the screen.
+// Balances and stakes are whole coins; multipliers are integer hundredths.
 
 export type ChestSymbolRules = {
   id: string
@@ -66,6 +65,7 @@ export type MinesCell = {
 /** The Minesweeper round as the server describes it; only revealed cells are named. */
 export type MinesRound = {
   round_id: string
+  payer_uuid: string
   bet: number
   mines: number
   min_safe: number
@@ -87,25 +87,18 @@ export type Payer = {
   coins: number
 }
 
-export const CHEST_LABELS: Record<string, { ru: string; en: string }> = {
-  diamond: { ru: 'Алмаз', en: 'Diamond' },
-  heart_of_the_sea: { ru: 'Сердце моря', en: 'Heart of the Sea' },
-  trident: { ru: 'Трезубец', en: 'Trident' },
-  nautilus_shell: { ru: 'Раковина наутилуса', en: 'Nautilus Shell' },
-  prismarine_crystals: { ru: 'Кристалл призмарина', en: 'Prismarine Crystals' },
-  prismarine_shard: { ru: 'Осколок призмарина', en: 'Prismarine Shard' },
-  pufferfish: { ru: 'Иглобрюх', en: 'Pufferfish' },
-  tropical_fish: { ru: 'Тропическая рыба', en: 'Tropical Fish' },
+export const CHEST_LABELS: Record<string, string> = {
+  diamond: 'Diamond', heart_of_the_sea: 'Heart of the Sea', trident: 'Trident',
+  nautilus_shell: 'Nautilus Shell', prismarine_crystals: 'Prismarine Crystals',
+  prismarine_shard: 'Prismarine Shard', pufferfish: 'Pufferfish', tropical_fish: 'Tropical Fish',
 }
 
-export const ORE_LABELS: Record<Exclude<OreContent, 'tnt'>, { ru: string; en: string }> = {
-  iron: { ru: 'Железный слиток', en: 'Iron Ingot' },
-  gold: { ru: 'Золотой слиток', en: 'Gold Ingot' },
-  diamond: { ru: 'Алмаз', en: 'Diamond' },
+export const ORE_LABELS: Record<Exclude<OreContent, 'tnt'>, string> = {
+  iron: 'Iron', gold: 'Gold', diamond: 'Diamond',
 }
 
 export function formatCoins(value: number): string {
-  return Math.max(0, Math.floor(value)).toLocaleString('ru-RU')
+  return Math.max(0, Math.floor(value)).toLocaleString('en-US')
 }
 
 /** `170` reads as `x1.70`; a multiplier is never shown with a hidden remainder. */
@@ -152,21 +145,21 @@ export type MinigameFailure = {
  */
 export function minigameFailure(status: number): MinigameFailure {
   if (status === 0) {
-    return { kind: 'network', message: 'Нет связи с сервером. Проверьте подключение и попробуйте снова.' }
+    return { kind: 'network', message: 'Connection lost. Retry to recover the same request.' }
   }
   if (status === 401) {
-    return { kind: 'auth', message: 'Сессия истекла. Войдите заново.' }
+    return { kind: 'auth', message: 'Your session expired. Sign in again.' }
   }
   if (status === 404) {
-    return { kind: 'unlinked', message: 'Этот Minecraft-аккаунт не привязан к вашему входу.' }
+    return { kind: 'unlinked', message: 'This Minecraft player is no longer linked to your account.' }
   }
   if (status === 409) {
-    return { kind: 'balance', message: 'Не хватает монет на эту ставку.' }
+    return { kind: 'balance', message: 'This player does not have enough coins for that stake.' }
   }
   if (status === 400) {
-    return { kind: 'invalid', message: 'Сервер не принял запрос. Проверьте ставку и число динамита.' }
+    return { kind: 'invalid', message: 'The request was refused. Check the stake and difficulty.' }
   }
-  return { kind: 'unavailable', message: 'Сервер не ответил. Попробуйте ещё раз.' }
+  return { kind: 'unavailable', message: 'The server could not complete the request. Please retry.' }
 }
 
 /**
@@ -204,7 +197,8 @@ export function choosePayer<T extends { uuid: string }>(accounts: T[], preferred
   return accounts.find((account) => account.uuid === preferred) ?? accounts[0]
 }
 
-/** The cells a finished round shows in full, or the ones opened so far. */export function revealedCells(round: MinesRound): Map<number, OreContent> {
+/** The cells a finished round shows in full, or the ones opened so far. */
+export function revealedCells(round: MinesRound): Map<number, OreContent> {
   return new Map(round.revealed.map((cell) => [cell.cell, cell.content]))
 }
 
