@@ -29,6 +29,10 @@ with open(os.environ['COMMAND_LOG'], 'a') as log:
 if name == 'git':
     if args[0] == 'status': print(os.environ.get('DIRTY', ''))
     if args[0] == 'rev-parse': print(os.environ['CHECKOUT_SHA'])
+    if args[0] == 'ls-tree' and os.environ.get('UNTRACKED_CONFLICT'):
+        print(os.environ['UNTRACKED_CONFLICT'])
+    if args[0] == 'ls-files' and os.environ.get('TRACKED_PATH'):
+        print(os.environ['TRACKED_PATH'])
     if args[0] == 'merge-base' and os.environ.get('UNTRUSTED'): sys.exit(1)
 if name == 'docker' and 'build' in args and os.environ.get('FAIL_BUILD'):
     sys.exit(17)
@@ -84,6 +88,27 @@ if name == 'docker' and 'build' in args and os.environ.get('FAIL_BUILD'):
         result, calls = self.deploy(UNTRUSTED='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any('switch' in call or call[0] == 'docker' for call in calls))
+
+    def test_untracked_file_now_tracked_is_preserved_before_merge(self):
+        conflict = 'scripts/new-tool.sh'
+        (self.project / conflict).write_text('local copy')
+        result, calls = self.deploy(UNTRACKED_CONFLICT=conflict)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['git', 'merge', '--ff-only', self.sha], calls)
+        self.assertFalse((self.project / conflict).exists())
+        backups = list((self.project / '.git').glob(
+            f'deploy-untracked-*/{conflict}'))
+        self.assertEqual([path.read_text() for path in backups], ['local copy'])
+
+    def test_tracked_file_is_never_moved_aside(self):
+        conflict = 'scripts/new-tool.sh'
+        (self.project / conflict).write_text('committed copy')
+        result, _ = self.deploy(UNTRACKED_CONFLICT=conflict,
+                                TRACKED_PATH=conflict)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.project / conflict).read_text(), 'committed copy')
+        self.assertEqual(
+            list((self.project / '.git').glob('deploy-untracked-*')), [])
 
     def test_invalid_commit_argument_is_rejected_before_commands(self):
         result, calls = self.deploy(sha='main; echo invalid')
