@@ -70,6 +70,9 @@ dependencies {
     compileOnly fileTree('../.plugin-build/lib') { include 'AuthMe-*.jar', 'SkinsRestorer-*.jar' }
 }
 
+// Nested codec tests need the plugin class's API types for JVM nest-host resolution.
+configurations { testCompileOnly.extendsFrom compileOnly }
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
@@ -81,3 +84,11 @@ tasks.withType(JavaCompile).configureEach {
     // The backend runs Java 25 and paper-api 26.3 is built for it.
     options.release.set(25)
 }
+
+// Pure-Java regression checks exercise offline inventory edits without a server.
+tasks.register('inventoryNbtTest', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.compileClasspath
+    mainClass = 'dev.mcpanel.linkbridge.InventoryNbtTest'
+}
+tasks.named('check') { dependsOn tasks.named('inventoryNbtTest') }

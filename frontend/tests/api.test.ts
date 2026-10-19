@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
-import { ApiError, formatDuration, getStats, logIn, logOut, register, confirmRegistration } from '../src/lib/api.ts'
+import { ApiError, formatDuration, getStats, logIn, logOut, register, confirmRegistration, sendInventoryToMarket } from '../src/lib/api.ts'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -109,4 +109,57 @@ test('sign-in preserves rate-limit and server failures for user feedback', async
     await assert.rejects(logIn('Test_Player', 'password'),
       (error) => error instanceof ApiError && error.status === status)
   }
+})
+
+
+test('marketplace transfer sends quantity, independent prices and stack fingerprint', async () => {
+  globalThis.fetch = async (path, options) => {
+    assert.equal(path, '/api/players/player%2Fid/inventory/marketplace')
+    assert.equal(options?.method, 'POST')
+    assert.equal(options?.credentials, 'same-origin')
+    assert.equal(new Headers(options?.headers).get('X-Marketplace'), 'trade')
+    assert.deepEqual(JSON.parse(options?.body as string), { slot: 40, fingerprint: 'a'.repeat(64), quantity: 5, unit_price: 4, lot_price: 15 })
+    return new Response(null, { status: 202 })
+  }
+  await sendInventoryToMarket('player/id', { slot: 40, fingerprint: 'a'.repeat(64), quantity: 5, unit_price: 4, lot_price: 15 })
+})
+
+test('marketplace transfer preserves conflicts and network failures for honest feedback', async () => {
+  globalThis.fetch = async () => new Response(null, { status: 409 })
+  await assert.rejects(sendInventoryToMarket('u', { slot: 0, fingerprint: 'a'.repeat(64), quantity: 1, unit_price: 1, lot_price: null }), (e) => e instanceof ApiError && e.status === 409)
+  globalThis.fetch = async () => { throw new TypeError('offline') }
+  await assert.rejects(sendInventoryToMarket('u', { slot: 0, fingerprint: 'a'.repeat(64), quantity: 1, unit_price: 1, lot_price: null }), (e) => e instanceof ApiError && e.status === 0)
+})
+
+test('market purchase preserves the exact quote and idempotency key across retries', async () => {
+  const { buyMarketListing } = await import('../src/lib/api.ts')
+  const quote = { request_id: 'purchase-id', buyer_uuid: 'player-id', quantity: 12, pricing: 'lot' as const, expected_total: 90, expected_remaining: 12 }
+  let attempts = 0
+  globalThis.fetch = async (path, options) => {
+    assert.equal(path, '/api/marketplace/listing%2Fid/buy')
+    assert.equal(new Headers(options?.headers).get('X-Marketplace'), 'trade')
+    assert.deepEqual(JSON.parse(String(options?.body)), quote)
+    if (++attempts === 1) throw new TypeError('lost response')
+    return new Response(null, { status: 202 })
+  }
+  await assert.rejects(buyMarketListing('listing/id', quote), (e) => e instanceof ApiError && e.status === 0)
+  await buyMarketListing('listing/id', quote)
+})
+
+test('marketplace reads encode search and pagination and cancellation requires a confirmed response', async () => {
+  const { getMarketplace, cancelMarketListing } = await import('../src/lib/api.ts')
+  globalThis.fetch = async (path) => {
+    const query = new URL(String(path), 'https://localhost').searchParams
+    assert.equal(query.get('q'), 'stone & tools')
+    assert.equal(query.get('mine'), 'true')
+    assert.equal(query.get('cursor'), 'last-id')
+    return new Response(JSON.stringify({ listings: [], deliveries: [], next_cursor: null }), { status: 200 })
+  }
+  assert.deepEqual(await getMarketplace({ mine: true, q: 'stone & tools', cursor: 'last-id' }), { listings: [], deliveries: [], next_cursor: null })
+  globalThis.fetch = async (path, options) => {
+    assert.equal(path, '/api/marketplace/listing%2Fid/cancel')
+    assert.equal(options?.method, 'POST')
+    return new Response(null, { status: 409 })
+  }
+  await assert.rejects(cancelMarketListing('listing/id'), (e) => e instanceof ApiError && e.status === 409)
 })

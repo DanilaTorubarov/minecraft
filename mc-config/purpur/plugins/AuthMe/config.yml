@@ -27,11 +27,13 @@
 
 settings:
     restrictions:
+        # Up to four in-game registrations may share one IP address.
+        maxRegPerIp: 4
         # A single IP may only have this many players logged in at once.
         # 0 means unlimited, which lets one host drive a credential-stuffing run.
-        maxLoginPerIp: 3
+        maxLoginPerIp: 4
         # Same, for accounts allowed to join (registered or not).
-        maxJoinPerIp: 3
+        maxJoinPerIp: 4
         # AuthMe can tell a player which other accounts share their IP. On a
         # cracked server that is free reconnaissance for an attacker.
         displayOtherAccounts: false

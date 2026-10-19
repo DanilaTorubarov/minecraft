@@ -17,6 +17,8 @@ import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 import { linkCommand } from '../lib/linkCommand'
 
+const ACCOUNT_LIMIT = 4
+
 function messageFor(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
     const shared = sharedMessage(error.status)
@@ -113,7 +115,7 @@ function CabinetPage() {
       setNow(Date.now())
       setError('')
     } catch (problem) {
-      setError(messageFor(problem, 'Could not create a code. Try again.'))
+      setError(problem instanceof ApiError && problem.status === 422 ? 'You can link up to four Minecraft accounts. Unlink one before adding another.' : messageFor(problem, 'Could not create a code. Try again.'))
     } finally {
       setIssuing(false)
     }
@@ -145,7 +147,7 @@ function CabinetPage() {
       setRefreshVersion((version) => version + 1)
       setError('')
     } catch (problem) {
-      setError(messageFor(problem, 'Could not unlink that account. Try again.'))
+      setError(problem instanceof ApiError && problem.status === 409 ? 'Cancel this player’s Marketplace listings and wait for pending transfers and deliveries before unlinking.' : messageFor(problem, 'Could not unlink that account. Try again.'))
     } finally {
       setRemoving(null)
     }
@@ -206,7 +208,7 @@ function CabinetPage() {
             <span className="entry-state">{linked ? 'Linked' : 'Not linked'}</span>
           </section>
 
-          {(!linked || linking) && (
+          {(!linked || linking) && accounts.length < ACCOUNT_LIMIT && (
             <section className="section">
               <div className="section-head">
                 <h2>{linked ? 'Link another account' : 'Link an account'}</h2>
@@ -223,7 +225,7 @@ function CabinetPage() {
 
               <div className="claim">
                 <p className="lede">
-                  Create a code here, then paste <code>/website link &lt;code&gt;</code> in the game. A
+                  Link up to four Minecraft accounts. Create a code here, then paste <code>/website link &lt;code&gt;</code> in the game. A
                   code works once, and only for five minutes.
                 </p>
 
@@ -267,12 +269,14 @@ function CabinetPage() {
             </section>
           )}
 
+          {accounts.length >= ACCOUNT_LIMIT && <p className="note">You have reached the four-account limit. Unlink an account before linking another.</p>}
+
           {linked && (
             <section className="section">
               <div className="section-head">
                 <h2>Linked accounts</h2>
-                <span className="count">{accounts.length}</span>
-                {!linking && (
+                <span className="count">{accounts.length} / {ACCOUNT_LIMIT}</span>
+                {!linking && accounts.length < ACCOUNT_LIMIT && (
                   <button
                     type="button"
                     className="btn btn-quiet section-action"

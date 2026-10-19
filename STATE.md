@@ -1,5 +1,26 @@
 # Project checkpoint — 2026-10-18
 
+## Local Purpur executable option — 2026-10-18
+
+- External-server logs supplied by the operator show Java rejecting
+  `purpur-26.3-2652.jar` while the startup downloader repeatedly reports it is
+  already up to date. A manual download stalled after about 20 KiB. The cause
+  of the original corruption is not established.
+- Added optional `compose.purpur-local.yaml`, activated with `COMPOSE_FILE` in
+  `.env.docker`: Java 25, local CUSTOM_SERVER mode, read-only executable mount
+  outside `/data`, and a SHA-256 pre-start check. The server remains Purpur with
+  the same world, plugins, AuthMe and forwarding configuration.
+- `scripts/install-local-purpur.sh` verifies a complete local build 2652 source
+  and staged copy before atomically installing under `mc/server-jars/`. The
+  recovery copy's SHA-256 is
+  `893bf450c86117b1e872e992f874fca5e7f1f51b8dcc910eb2e646076c58e42a`.
+- Verified the real recovery JAR and installer, merged Compose configuration,
+  shell syntax, all 13 operator-script tests, and `cargo check --tests`.
+  Docker's daemon was unavailable, so no live boot was tested. No external
+  deployment or local service restart was performed; local `.env.docker` was
+  unchanged. This option removes Purpur executable downloads only; plugins and
+  missing libraries may still need network access.
+
 This file records the state at this checkpoint. It is historical evidence, not a live health indicator. Read `README.md` for operation, `AGENTS.md` for engineering constraints, and `PRODUCT.md` / `DESIGN.md` for product and visual intent.
 
 ## Implemented
@@ -112,3 +133,37 @@ Inventory grids now cap their width (568px for nine slots, 312px for equipment),
 - Added six backend tests for malformed/ambiguous payloads, unknown/blank identifiers without cookies or failure rows, normalized email/login through both payload names with correct session ownership and exact password preservation, bidirectional failure-counter reset, locked cross-account email/login collisions, and pending-signup login before/after confirmation. Inserting test cases clean up accounts before assertions.
 - Added two frontend tests for network failure and rate-limit/server error propagation; the existing sign-in contract test also verifies same-origin credentials.
 - Verification: all **97 Rust/PostgreSQL tests** and **36 frontend tests** passed, along with `cargo check --tests`, ESLint and `git diff --check`. This increment changes tests and this checkpoint only; nothing was pushed or deployed.
+
+## Inventory stack deletion, including offline players — 2026-10-18
+
+- Filled inventory bubbles now open an inline inspection with Delete stack / Cancel, explicit whole-stack permanence, keyboard focus return, and pending/completed/conflict/request-error feedback. The website waits for server acknowledgement instead of clearing a slot optimistically.
+- Migration `0012` adds one durable deletion per linked UUID and rotates offline refreshes. Requests require the owning session, an explicit edit header, the slot and a full-item NBT fingerprint; ownership/concurrent requests are serialized. Service-token acknowledgements match the current request and commit status plus snapshot together. Old snapshots gain fingerprints from offline refreshes without requiring another game login.
+- LinkBridge **1.6.0** edits authenticated online inventories on the server thread and verifies saved receipts on disk. Offline edits use the pinned 26.3 server level directory's `players/data/<uuid>.dat`, including armor/off hand in `equipment`; they preserve unrelated tags, create `.dat.linkbridge-backup`, and atomically replace the file with a persistent deletion/conflict receipt. Lost-response retries cannot delete replacement stacks. Unsupported files stay untouched and cannot block other tasks.
+- The live check caught the 26.3 directory change: `World.getWorldFolder()` now points at a dimension, and `playerdata` has moved to `players/data`. The implementation uses `Server.getLevelDirectory()`. Early disposable fixtures at the incorrect path were cleaned without modification.
+- Verification: `cargo check --tests`, **98 Rust/PostgreSQL tests**, **38 frontend tests**, ESLint, TypeScript checks, the production Docker build, and Gradle/JDK 25 NBT regression checks passed. The standard plugin Docker build now runs those regression checks before installation. Light desktop and 360px Dark sample-data previews were inspected, including selection and pending feedback; capture `.impeccable/review/inventory-delete-mobile.png` is ignored.
+- Docker Desktop was started; the local web and Minecraft stack is running, Purpur is healthy and enabled LinkBridge 1.6.0. A real website → API → plugin → offline-file test passed for storage slot 0, helmet 39 and off hand 40; it checked preserved unrelated contents, stale-stack conflict, and backup creation. Its synthetic UUID, player file, backup, website account, sessions, links, inventory and observed skin rows were removed. No existing player's items were deleted. An authenticated in-game client's online deletion has not been exercised. Nothing was pushed or deployed externally.
+
+## Marketplace — 2026-10-19
+
+- Added an independent Marketplace desktop app with menu/dock launchers, retained window state, server-side item/seller search, cursor pagination, My listings, and delivery/return status. It reuses the exact ItemBubble component from Inventory, including official textures, wear, enchantment aura and portal tooltips.
+- Inventory now offers **Send to Marketplace** instead of deletion. Sellers choose quantity and independent optional per-item / whole-lot coin prices (at least one required). Buyers may buy quantities or the whole remaining lot; partial sales scale the original lot quote proportionally, rounded up. The old public deletion route returns 404; private legacy work/refresh synchronization remains compatible.
+- Migration `0013` adds durable escrow, FIFO game-server tasks and permanent purchase receipts. The server validates full-item fingerprints before withdrawal, publishes only acknowledged escrow, and atomically transfers coins/stock plus records delivery. Purchases reject stale quotes, insufficient funds and same-website-account trades. Retries preserve the exact order ID/quote and never charge twice. Cancellation returns unsold items; pending deliveries wait for enough empty storage slots without overwriting or dropping items. Unlinking waits for outstanding listings/transfers/deliveries.
+- LinkBridge **1.7.0** supports authenticated online and saved-file offline transfers/deliveries on the server thread. Item bytes and a replay receipt persist alongside each saved change, preserving hidden item components across lost acknowledgements. Offline files retain unrelated tags and backups. Oversized withdrawal payloads fail before mutation.
+- Verification: `cargo check --tests`, frontend TypeScript and ESLint, **40 frontend tests**, standard production Docker build, standard Docker Gradle/NBT build, and **101 Rust/PostgreSQL tests through Compose** passed. Docker was initially unavailable; isolated native PostgreSQL/SMTP and cached Java25/Gradle verified the implementation first, then Docker started and the normal container checks completed. Temporary native services were stopped.
+- Deployed locally: rebuilt app/proxy, applied migration `0013`, installed LinkBridge 1.7.0 and restarted Purpur. HTTPS returns 200; PostgreSQL, Mailpit, Velocity and Purpur are healthy. Purpur logged LinkBridge 1.7.0 enabled cleanly. This is local deployment only; nothing was pushed or deployed externally.
+- A disposable live website/API → plugin → offline-file flow passed partial withdrawal, quantity purchase, exact-order replay, coin debit/credit once, proportional lot pricing, cancellation/unsold return, a separate discounted whole-lot purchase, repeated deliveries without overwrite, preserved unrelated player tags and backup creation. Synthetic website accounts, sessions, linked UUIDs, listings, tasks, orders, inventories, skin rows, coin rows and player files/backups were removed. No existing player's items or balances were used. Authenticated in-game online fulfillment remains unexercised.
+- Light desktop / 390px Dark browse, purchase and sell sample-data renders were inspected; browser checks covered quantity/lot totals, transfer and delivery messages, and registry-key search with surrounding whitespace. The fresh review scored both findings resolved: removed redundant client search filtering and made missing-fingerprint close/reselect recovery explicit. Documentation check found no Marketplace-specific gaps. Captures under `.impeccable/review/marketplace-*.png` are ignored. The deployed browser verified real menu/dock launchers and Marketplace's unauthenticated window (`marketplace-live.png`); it did not inspect a real user's private inventory.
+
+## Item-panel reveal and dock activation — 2026-10-19
+
+- Inventory sell details and Marketplace inspection now unfold from their top edge over 240ms, using a clipped glass reveal and slight vertical expansion. Selecting a different item remounts the details to restart the reveal. Reduced Motion displays details immediately.
+- Every dock app now hides only when both open and focused; an open app behind another is raised/focused on its first click. Raising uses the quiet click sound, hidden apps use open, and hiding the focused app uses close. Menu behavior, retained contents/geometry and focus return are preserved.
+- Verified TypeScript, ESLint, all **40 frontend tests**, `cargo check --tests` and the production Docker build; rebuilt the local app/proxy. Real-browser checks covered Account behind a maximized Marketplace plus Global Statistics, Marketplace and Settings: first dock activation leaves the app open/active, the second hides it. Player dock buttons use the same focus condition; no private player session was needed. Sample-data inventory inspection verified the `inventory-panel-open` animation at `0.24s` on initial selection and switching items, with heading focus preserved. No backend/plugin changes, external deployment or push.
+
+## Player Controls and four-account limits — 2026-10-19
+
+- Consolidated nickname windows into one **Player Controls** menu/dock app. A native account selector in the centered title bar chooses the linked player; each user/UUID retains its own mounted Statistics, Inventory and Skin pages, while the app shares one window geometry. Statistics account links and Marketplace inventory shortcuts select the requested player. The selector preserves keyboard operation and does not drag or maximize the window. Focused-only dock hiding and item-panel reveal remain intact.
+- Website accounts may link up to **four** Minecraft accounts. Code issuance and claims return `422` at capacity; claims serialize on the user row, and rejected claims roll back without consuming their code. Start/claim use the same user-before-code lock order. The Account app shows capacity and hides additional linking at four. Existing links are preserved.
+- AuthMe's committed template sets `maxRegPerIp`, `maxLoginPerIp` and `maxJoinPerIp` to **4**. Existing Minecraft accounts are preserved. LinkBridge **1.7.1** explains a full website account when a claim returns `422`.
+- Verification: `cargo check --tests`, TypeScript, ESLint, **40 frontend tests**, **103 Rust/PostgreSQL tests through Compose**, and the standard Docker Gradle/NBT build passed. New backend tests cover the fourth/fifth link, code reuse after unlink, and concurrent claims at capacity. Desktop Light and 390px Dark browser previews exercised four clearly labeled sample accounts, account-specific inventory quantities, retained pages, title selection and the full-capacity Account state. Captures `.impeccable/review/player-controls-{desktop,mobile}.png` are ignored. Finish review returned Ship; documentation review found no remaining scope-specific gaps. The temporary preview server was stopped.
+- **Paused at the user's request.** All source changes are saved locally, uncommitted and unpushed. LinkBridge 1.7.1 was built and installed; Purpur was restarted and copied the AuthMe template (runtime values verified as 4/4/4), but its completed startup/health and plugin enable still need verification. The frontend production stage built successfully; the full website image was still compiling Rust and was cancelled before app recreation, so the running website may still show the preceding version. Resume with the standard app/proxy Compose rebuild, verify HTTPS and Player Controls in the deployed browser, then check Purpur health and LinkBridge 1.7.1 enable. No external deployment occurred.

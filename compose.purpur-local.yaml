@@ -1,0 +1,24 @@
+# Opt in with COMPOSE_FILE=compose.yaml:compose.purpur-local.yaml in .env.docker.
+# Install the verified jar once with scripts/install-local-purpur.sh first.
+services:
+  purpur:
+    image: itzg/minecraft-server:java25
+    environment:
+      TYPE: CUSTOM
+      FAMILY: SPIGOT
+      VERSION: "26.3"
+      CUSTOM_SERVER: /opt/purpur/server.jar
+      PRE_START_SCRIPT: /opt/verify-purpur.sh
+    volumes:
+      - type: bind
+        source: ./mc/server-jars/purpur-26.3-2652.jar
+        target: /opt/purpur/server.jar
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./scripts/verify-purpur.sh
+        target: /opt/verify-purpur.sh
+        read_only: true
+        bind:
+          create_host_path: false

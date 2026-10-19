@@ -146,10 +146,10 @@ DELETE /api/link/{uuid} → unlink
 
 | Method | Path | Auth | Result |
 | --- | --- | --- | --- |
-| `POST` | `/api/link/start` | session cookie | `200` `{code, expires_in}` |
+| `POST` | `/api/link/start` | session cookie | `200` `{code, expires_in}`; `422` at four linked accounts |
 | `GET` | `/api/link` | session cookie | `200` `{accounts: [...]}` |
 | `DELETE` | `/api/link/{uuid}` | session cookie | `204`, or `404` if not yours |
-| `POST` | `/internal/link/claim` | service token | `200`, `404` bad/used/expired code, `409` UUID already linked, `401` bad token, `503` not configured |
+| `POST` | `/internal/link/claim` | service token | `200`, `404` bad/used/expired code, `409` UUID already linked, `422` website account already has four links, `401` bad token, `503` not configured |
 | `POST` | `/internal/link/status` | service token | `200` linked, `404` not linked, `400` malformed UUID, `401` bad token, `503` not configured |
 | `POST` | `/internal/link/email` | service token | `200` plain-text masked email, `Cache-Control: no-store`; `404` unlinked, `400` malformed UUID, `401` bad token, `503` not configured |
 
@@ -160,6 +160,7 @@ Details:
 - `/internal/*` is **blocked at the proxy** (it answers `404` to the internet) and additionally requires the service token. `scripts/mc-init.sh` generates `LINK_SERVICE_TOKEN` in `.env.docker` (the plugin sends it as a bearer token); with it unset the endpoint answers `503`.
 - Link claim and status answer with **bare status codes and no body**. Email reminders and balances return plain text; skin synchronization uses JSON.
 - An unknown, used, or expired code all return the same `404`, so codes cannot be probed.
+- Website accounts can link up to **four** Minecraft accounts. Both code issuance and redemption return `422` at capacity. Claims serialize on the website user row, so concurrent codes cannot exceed four. Capacity rejection leaves the code usable after unlinking; existing links are not deleted.
 - Linking a UUID that is already linked returns `409` and does **not** consume the code, so the player can retry.
 
 The knobs, overridable in `.env.docker`:
@@ -174,9 +175,9 @@ Every in-game claim arrives from the game server's single container address, so 
 
 ## Statistics
 
-The game server measures what it can see in game — play time, blocks placed and broken, mobs killed, deaths, distance traveled, items crafted and picked up, fish caught, damage dealt and taken, logins, items enchanted, tools broken, animals bred, times slept and advancements — and reports the growth to the panel. The panel stores it per in-game UUID. **Global Statistics** shows combined totals for the current user’s linked accounts; each linked Minecraft account also has its own independent app, named after its nickname and marked with a skin head. Launch either from the menu bar or dock, or open an account from the global account list. “Global” means your linked accounts combined, never server-wide statistics. The panel never measures the game itself; it only shows what the server reported.
+The game server measures what it can see in game — play time, blocks placed and broken, mobs killed, deaths, distance traveled, items crafted and picked up, fish caught, damage dealt and taken, logins, items enchanted, tools broken, animals bred, times slept and advancements — and reports the growth to the panel. The panel stores it per in-game UUID. **Global Statistics** shows combined totals for the current user’s linked accounts; one **Player Controls** app manages a selected linked account using a nickname/skin-head picker in its title bar. Launch it from the menu or dock, or choose an account from the global account list. “Global” means your linked accounts combined, never server-wide statistics. The panel never measures the game itself; it only shows what the server reported.
 
-All statistics apps share one server snapshot, refreshed every five seconds while the page is visible and when it regains focus or links change. Each window closes, minimizes, and reopens independently, retaining its mounted contents and geometry while the account remains linked in the current session. Menu and dock launchers scroll horizontally when many accounts are linked. Skin heads use the server-reported texture hash through [MCHeads](https://mc-heads.net/). Unknown textures and loading failures use sourced Performance Center artwork. Requests send no referrer.
+All statistics apps share one server snapshot, refreshed every five seconds while the page is visible and when it regains focus or links change. Global Statistics and Player Controls close, minimize, and reopen independently. Player Controls keeps one geometry, while each linked player retains its own selected page and mounted contents across account switching. The five menu and dock launchers scroll horizontally when the viewport is narrow. Skin heads use the server-reported texture hash through [MCHeads](https://mc-heads.net/). Unknown textures and loading failures use sourced Performance Center artwork. Requests send no referrer.
 
 ```
 authenticated player in game      LinkBridge plugin             panel
@@ -233,7 +234,7 @@ Migration `0011` stores only hashed pending credentials; confirmation is atomic.
 
 ## Inventory
 
-Each player app also has an **Inventory** page: what that player is carrying, as the game server last saw it — armor, off hand, hotbar and main inventory, with every item in its own bubble over the desktop scenery. The panel draws the layout the game reports; it never invents one.
+Player Controls also has an **Inventory** page for its selected player: what that player is carrying, as the game server last saw it — armor, off hand, hotbar and main inventory, with every item in its own bubble over the desktop scenery. The panel draws the layout the game reports; it never invents one.
 
 ```
 authenticated player in game      LinkBridge plugin             panel
@@ -251,24 +252,27 @@ custom names, enchantments
                                                     replaces
                                                     player_inventory
                                   item textures read from the
-                                  running server jar, once per
+                                  packaged official client assets, once per
                                   item key:
                                   POST /internal/items/icons
 GET /api/players/{uuid}/inventory → the 41 slots, each with its
-                                    stored icon, or null slots
+                                    stored icon and full-item fingerprint, or null slots
                                     until a snapshot arrives
 ```
 
 | Method | Path | Auth | Result |
 | --- | --- | --- | --- |
-| `GET` | `/api/players/{uuid}/inventory` | owning session | `200` `{username, updated_at, slots}`, `Cache-Control: no-store`; `404` if not owned |
+| `GET` | `/api/players/{uuid}/inventory` | owning session | `200` `{username, updated_at, slots, marketplace, deletion}`, `Cache-Control: no-store`; `404` if not owned |
+| `POST` | `/api/players/{uuid}/inventory/marketplace` | owning session + `X-Marketplace: trade` | `{slot, fingerprint, quantity, unit_price, lot_price}` → `202` queued; `400` invalid input/header, `409` stale/busy, `404` not owned, `429` 100 active listings for this player |
+| `POST` | `/internal/inventory/deletions` | service token | up to 25 pending deletions or rotating refresh tasks, including offline players; blocked by public proxy |
+| `POST` | `/internal/inventory/deletions/report` | service token | `{uuid, request_id, status, slots}` → `200` acknowledgement and fresh snapshot in one transaction; `409` stale/already-completed request; blocked by public proxy |
 | `POST` | `/internal/inventory/report` | service token | `200`, `400` malformed snapshot, `401` bad token, `503` not configured; blocked by the public proxy |
 | `POST` | `/internal/items/icons` | service token | `200`, `400` malformed batch, `401` bad token, `503` not configured; blocked by the public proxy |
 
 Details:
 
 - A snapshot is **current state, not a delta**: it replaces the previous one for that UUID. Rows are keyed by UUID with no foreign key, so an inventory survives unlinking (it is invisible while unlinked) and re-linking restores it.
-- The layout is the game's own: storage `0–35` (hotbar `0–8`, main `9–35`), armor `36–39` (helmet, chestplate, leggings, boots) and off hand `40`. A null entry is an empty slot.
+- The layout is the game's own: storage `0–35` (hotbar `0–8`, main `9–35`), armor `36–39` (boots, leggings, chestplate, helmet) and off hand `40`. A null entry is an empty slot.
 - Each item carries its registry key, amount, wear (`damage` and `max_damage` together, drawn as a bar that turns amber and then red), a name when the player renamed it, and its enchantments — an enchanted item's bubble glows.
 - Item icons come from the official Minecraft client textures packaged for the server version, so a picture always matches the version that produced the snapshot, and are stored once per item key. An item with no readable texture (some items are assembled from models rather than a single PNG) shows the sourced Performance Center artwork with its name; nothing is ever generated.
 
@@ -277,9 +281,45 @@ The LinkBridge build downloads the official Minecraft **26.3 client** from Mojan
 - The page refreshes every five seconds while it is visible. `inventory-report-seconds` (default `60`) in `mc-config/purpur/plugins/LinkBridge/config.yml` is how often an unchanged inventory is re-sent; a change is reported as soon as it is sampled.
 - The report endpoint is **not** rate limited, for the same reason as `link_status` and the statistics report: it is reachable only from the game server's single container address, behind the service token, at a bounded rate — one snapshot per inventory change plus a periodic refresh per player.
 
+Select a filled bubble to inspect the stack, choose a quantity, and **Send to Marketplace**. Set a per-item price, whole-lot price, or both. Prices are independent positive whole coins, each at most 1,000,000,000. A listing becomes active only after the game server confirms removal of those exact items. The page keeps the last known inventory until acknowledgement. Changed stacks are rejected; no removal is inferred from `202`. The former public deletion endpoint now returns `404`; private deletion synchronization remains to finish previously accepted work and rotate saved-file reads.
+
+LinkBridge **1.7.0** processes inventory and marketplace work in its serialized inventory pass (every ten seconds). Authenticated online players use Bukkit on the server thread and save immediately, with the saved receipt verified on disk. Offline players use the level directory's `players/data/<uuid>.dat` (the pinned 26.3 layout), including modern equipment. The plugin preserves unrelated tags, keeps `<uuid>.dat.linkbridge-backup`, and atomically replaces files. Full-item SHA-256 fingerprints cover hidden components, including container contents. Marketplace withdrawal receipts preserve the full serialized escrow item alongside the inventory change, so a lost acknowledgement cannot remove or deliver it twice. Very large item payloads (over 60,000 base64 characters) fail withdrawal before mutation; unsupported or corrupt files remain untouched and pending. Pending tasks never imply that a player is online.
+
+Linked saved inventories rotate through a read at most once per 30 seconds (up to 25 per pass, oldest checked first), filling fingerprints without requiring a player to join. Online players awaiting AuthMe authentication are skipped. No saved file means no invented snapshot.
+
+## Marketplace
+
+Open **Marketplace** from the menu or dock. Browse confirmed escrow using the inventory's bubbles, search by item or seller, and choose a listing to inspect its prices. **My listings** includes your waiting, active, unsuccessful and closed listings. Search runs on the server and cursor pagination returns up to 50 listings per page; other users see only active offers and seller nicknames, never raw item data or private inventory.
+
+Choose a linked buyer, then either a quantity at the unit price or all remaining items at the whole-lot price. Both may be offered at different rates. After a partial sale, the remaining whole-lot quote is `ceil(original lot price × remaining / original quantity)`. For example, 12 items at 10 coins each may also have a whole-lot price of 90 coins: buying 3 individually costs 30; the remaining 9-item lot costs 68. Buyers confirm the exact remaining amount and total; stale quotes return `409`, insufficient funds `422`. A website account cannot buy its own listings, even through another linked player.
+
+The purchase transaction locks the listing and both coin balances, charges once, credits the seller, reduces remaining stock and records a durable delivery. The browser retains the order ID and original quote after a lost response for safe retry. Accepted purchases are final. **Cancel listing & return items** removes an active offer and queues its unsold quantity for return to its seller. Transfers, purchases and returns survive restarts in migration `0013`.
+
+Deliveries wait for sufficient **empty storage slots**, splitting over native stack limits when needed. They never overwrite items, use armor slots or drop overflow. The recipient can stay offline; online delivery requires AuthMe authentication. The website distinguishes waiting from game-server-confirmed delivery. While a player has waiting/active listings or pending deliveries, unlink returns `409` to prevent abandoning escrow. Finish or cancel the offers and let deliveries complete first. Escrow and trade receipts are durable; do not remove them manually.
+
+All writes below require `X-Marketplace: trade` as well as a session. Reads use `Cache-Control: no-store`. Service-token routes remain blocked by Caddy.
+
+| Method | Path | Auth | Result |
+| --- | --- | --- | --- |
+| `GET` | `/api/marketplace?mine=false&q=&cursor=` | session | `{listings, deliveries, next_cursor}`; at most 50 listings and 100 latest own deliveries |
+| `POST` | `/api/marketplace/{id}/buy` | session + trade header | `{request_id, buyer_uuid, quantity, pricing, expected_total, expected_remaining}`; `pricing` is `unit` or `lot`, request ID is a UUID; `202` accepted/replayed, `409` changed/self-trade/conflicting receipt, `422` insufficient coins, `404` unknown listing/not-owned buyer |
+| `POST` | `/api/marketplace/{id}/cancel` | seller session + trade header | `202` unsold return queued; `409` no longer active, `404` not owned |
+| `POST` | `/internal/marketplace/sync` | service token | up to 25 tasks; only the oldest pending task per player |
+| `POST` | `/internal/marketplace/report` | service token | matching task ID, UUID, status, lossless item bytes for withdrawals and 41-slot snapshot; `200` acknowledged/replayed, `400` invalid data, `409` out of order |
+
+Upgrade the API/frontend and plugin together:
+
+```sh
+./scripts/build-plugin.sh
+docker compose --env-file .env.docker up --build -d app proxy
+docker compose --env-file .env.docker restart purpur
+```
+
+The builder runs NBT regression checks and installs LinkBridge 1.7.0. Database migrations apply on app startup. Existing inventory snapshots become editable after a fingerprint refresh; a stopped game server leaves transfers and deliveries pending.
+
 ## Coins
 
-Each Minecraft account (offline UUID) has its own persistent balance in the panel database. After AuthMe login, every successful, uncancelled player block break earns **1 coin**, automatically, in every game mode. Placing blocks does not earn coins; placing and breaking the same block again does. There is no spending, transfer, purchase, interest, or retroactive reward for historical statistics in this first version. Existing accounts start at zero when migration `0007` is installed.
+Each Minecraft account (offline UUID) has its own persistent balance in the panel database. After AuthMe login, every successful, uncancelled player block break earns **1 coin**, automatically, in every game mode. Placing blocks does not earn coins; placing and breaking the same block again does. Coins can be spent on Marketplace, where the price transfers to the seller. There is no real-money conversion, interest, or retroactive reward for historical statistics. Existing accounts start at zero when migration `0007` is installed.
 
 - `/bal` and `/balance` show the authenticated player's own balance. No target-player argument is accepted. The command flushes pending earnings before reading the database and reports unavailability if syncing fails, rather than showing a stale number. It shares the `/website` cooldown.
 - Statistics shows coins for each linked Minecraft account and the total across those accounts. Earnings also accumulate before linking, survive unlinking, and appear when the UUID is linked again.
@@ -293,7 +333,7 @@ Build the plugin with `./scripts/build-plugin.sh`, rebuild the API with `docker 
 
 Three client-rendered pages: `/register`, `/login`, and `/cabinet` — the account page, where the link state, the link code, and the linked accounts live. Deep links work because the server hands back the built `index.html` for any path that is not a real file. A path that *does* name a file keeps its `404`, so a stale page pointing at a chunk that no longer exists fails loudly instead of returning HTML where JavaScript was expected.
 
-The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Global Statistics, Settings, and an independent player app for each linked Minecraft nickname, containing Statistics, Inventory and Skin pages. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
+The panel uses an **old Mac desktop with Frutiger Aero glass**: a 40px menu bar and bottom dock launch Account, Global Statistics, Marketplace, Player Controls and Settings. Player Controls has one dock button and a native title-bar account picker, containing Statistics, Inventory and Skin pages for the selected linked player. On desktop, drag or resize windows, minimize/close and reopen them from the dock, maximize/restore, or Reset their geometry. Focus the title bar to move with arrow keys, or the resize grip to resize; Shift changes the step from 10px to 40px. Closing a window keeps the session and form state. Windows stack on mobile, and each launch focuses and scrolls to the selected window. A small animated **music player** sits beside the bottom dock at the same height, keeps skip/play/pause/stop/volume controls visible, and plays quiet background music with animated level bars (sourced, attributed tracks, its own volume, always starting paused); small interface sounds play on window and button actions and can be turned off in Settings → Sound. [DESIGN.md](DESIGN.md) documents the visual system.
 
 Account contains the existing registration, login and cabinet routes. The cabinet puts link status first, with linking beside account details when its window has enough room. Authentication pairs a sourced-icon welcome sidebar with the form; narrower windows hide the sidebar. The user-selected Asadal wallpaper sits lower behind the desktop and appears once. It is decorative artwork, never an image of the real server. Light uses that Asadal scene; Dark switches to the user-supplied night park. Both have provenance sidecars.
 
@@ -365,7 +405,7 @@ Apply configuration changes with `docker compose --env-file .env.docker up -d --
 
 The installed release's official asset SHA-256 is `a85b4a370f988741c9a38f4d0498262edacbf3220314790ac1c127461996359c`. Upgrade the pinned Compose URL and verify the new release digest together.
 
-Each linked nickname opens an independent **player app**, identified by its nickname and Minecraft skin head. It contains all features for that player, currently **Statistics**, **Inventory** and **Skin**. Its selected page, mounted contents and geometry survive hiding and reopening during the linked session.
+**Player Controls** is one app for up to four linked players. Click the nickname in the title bar to select the account to control. Statistics, Inventory and Skin are isolated by website user and UUID; each player retains its page and mounted contents across switching and hiding. The shared window keeps its geometry, and Marketplace inventory shortcuts and Global Statistics links select the requested player in this same app.
 
 The Skin page shows the latest server-reported texture/model and accepts a 64 × 64 or legacy 64 × 32 PNG up to 256 KiB. Choose Classic or Slim arms, preview the local file, then choose **Save skin**. The current front-facing preview draws the actual `textures.minecraft.net` PNG and outer layer locally. Website heads use the server-reported texture hash through MCHeads, rather than guessing by username. Unknown textures and image failures use the sourced Performance Center artwork. A website upload changes this server's skin selection, not a Microsoft or launcher account.
 
@@ -384,6 +424,51 @@ Progress distinguishes queued/signing, prepared and waiting for the game server 
 
 Compose uses Paper's European Maven Central mirror, disables HTTP/2 in the image downloader, and retains server libraries across restarts (`PAPER_DEFAULT_CENTRAL_REPOSITORY`, `FETCH_USE_HTTP2`, `CLEAN_SERVER_LIBRARIES`). AuthMe shares the library directory, so cleaning it causes repeat downloads. These settings still require working access to artifact providers. If a download is interrupted, verify the complete server jar against the provider's checksum before replacing it and restarting; an existing filename alone does not establish a valid jar. See `STATE.md` for the current workstation recovery item.
 
+#### Repeated corrupt Purpur JAR / unreliable download host
+
+If Java reports `Invalid or corrupt jarfile` while the installer says the same
+file is already up to date, rebuilding the container keeps reusing that file in
+`mc/purpur/`. Pinning a build alone does not repair it.
+
+For this deployment's **26.3 build 2652**, opt into a verified local executable.
+Copy the complete recovery JAR from a working machine to the external server
+once (for example with `scp`), then run from the external project's directory:
+
+```sh
+./scripts/install-local-purpur.sh /path/to/purpur-26.3-2652-verified.jar
+```
+
+Add this line to the external server's `.env.docker` (replace an existing
+`COMPOSE_FILE` line rather than adding a duplicate):
+
+```dotenv
+COMPOSE_FILE=compose.yaml:compose.purpur-local.yaml
+```
+
+Then apply it once:
+
+```sh
+docker compose --env-file .env.docker up -d --no-deps --force-recreate purpur
+docker compose --env-file .env.docker logs --since=1m -f purpur
+```
+
+The override uses the image's supported `CUSTOM_SERVER` local-file mode to run
+the same Purpur server. It pins Java 25, mounts the executable read-only outside
+`/data`, and verifies SHA-256 before launching Java. It never downloads the
+Purpur executable on startup. Normal Compose commands and `scripts/deploy.sh`
+automatically use this override through `.env.docker`; explicit `-f` arguments
+override `COMPOSE_FILE`, so include both files when specifying them manually.
+Worlds, AuthMe, skins, forwarding and plugins still use the original `/data` and
+config mounts. Plugin downloads/checks and missing Minecraft libraries may
+still need network access; this is not a fully offline server.
+
+The installer checks the source and staged copy before atomically replacing the
+installed JAR. A failed check preserves the installed copy. Keep
+`mc/server-jars/` with `mc/` when moving or exporting the stack. The hash is tied
+to build 2652; upgrading requires a separately verified JAR and updating the
+override and verifier together. Remove the `COMPOSE_FILE` line and recreate
+Purpur to return to the normal downloader.
+
 ### Authentication
 
 An offline server is impersonatable by design: anyone can connect using your name. **AuthMe** (pinned to `6.0.1`, Paper jar) is what actually stops that — players register and log in with an in-game password, and nothing else works until they do.
@@ -394,7 +479,8 @@ It is configured for a hostile environment out of the box (`allowChat: false`, `
 | --- | --- | --- | --- |
 | `passwordHash` | `SHA256` | `BCRYPT` | SHA-256 is fast; cheap to brute-force if `authme.db` leaks |
 | `minPasswordLength` | `5` | `6` | Matches the website minimum for new/changed passwords |
-| `maxLoginPerIp` / `maxJoinPerIp` | `0` (unlimited) | `3` | Stops one host running a credential-stuffing run |
+| `maxRegPerIp` | `1` | `4` | Up to four Minecraft registrations from one IP |
+| `maxLoginPerIp` / `maxJoinPerIp` | `0` (unlimited) | `4` | Allows those four accounts to join/log in while retaining a per-IP limit |
 | `displayOtherAccounts` | `true` | `false` | Otherwise it tells a player which other accounts share their IP |
 
 That file is **partial** — AuthMe fills in every other key from its own defaults, so it stays small and survives AuthMe upgrades.
@@ -430,6 +516,7 @@ The jar is installed into `mc/purpur/plugins/`, so it travels with the server da
 | Linked! | `200` — done |
 | unknown, already used, or expired | `404` — all three are deliberately identical |
 | already linked | `409` — that Minecraft account belongs to another panel account |
+| four linked accounts | `422` — unlink one on the website, then retry the unconsumed code |
 | refused this server's credentials | `401`/`503` — a token problem, so it is an operator's job, not the player's |
 
 The plugin throttles each player to one attempt every three seconds. That is not cosmetic: every player reaches the panel from the same container address, so the panel's per-IP claim budget (`LINK_CLAIM_IP_LIMIT`) is shared by the whole server. Raise it if the server grows.

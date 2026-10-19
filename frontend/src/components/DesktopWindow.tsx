@@ -6,6 +6,8 @@ type Props = {
   onFocus: () => void; onClose: () => void; onMinimize: () => void
   /** Optional controls that sit in the title bar, just left of Reset. */
   titlebarExtra?: ReactNode
+  /** Replace the centered title with an accessible native control. */
+  titleContent?: ReactNode
   children: ReactNode
 }
 const desktopSize = () => ({ width: window.innerWidth, height: Math.max(280, window.innerHeight - 148) })
@@ -13,7 +15,8 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   account: ['Oasis Aero', 'No game passwords shared'],
   settings: ['Website preferences', 'Saved on this device'],
   stats: ['Server-measured activity', 'No invented numbers'],
-  player: ['Minecraft player', 'Statistics & skin'],
+  player: ['Minecraft player', 'Statistics, inventory & skin'],
+  marketplace: ['Player marketplace', 'Items held by the server'],
 }
 
 type Gesture = {
@@ -35,7 +38,7 @@ function wobbleTransform(x: number, y: number, scale = 1.001): string {
   return `perspective(1100px) rotateX(${-y * 0.32}deg) rotateY(${x * 0.26}deg) rotate(${rotate}deg) skew(${x}deg, ${y * 0.58}deg) scale(${scale})`
 }
 
-export default function DesktopWindow({ id, title, icon, open, activation, active, kind = 'account', onFocus, onClose, onMinimize, titlebarExtra, children }: Props) {
+export default function DesktopWindow({ id, title, icon, open, activation, active, kind = 'account', onFocus, onClose, onMinimize, titlebarExtra, titleContent, children }: Props) {
   const [area, setArea] = useState(desktopSize)
   const [rect, setRect] = useState(() => initialWindow(desktopSize(), kind))
   const [maximized, setMaximized] = useState(false)
@@ -197,13 +200,13 @@ export default function DesktopWindow({ id, title, icon, open, activation, activ
         onPointerDown={(event) => begin(event, false)} onPointerMove={move}
         onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}
         onKeyDown={(event) => keyboard(event, false)}
-        onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) toggleMaximized() }}>
+        onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button, select')) toggleMaximized() }}>
         <div className="window-lights">
           <button className="window-light light-close" data-ui-sound="close" aria-label={`Close ${title}`} onClick={onClose} />
           <button className="window-light light-minimize" data-ui-sound="close" aria-label={`Minimize ${title}`} onClick={onMinimize} />
           <button className="window-light light-maximize" aria-label={`${maximized ? 'Restore' : 'Maximize'} ${title}`} onClick={toggleMaximized} />
         </div>
-        <span className="window-title">{typeof icon === 'string' ? <img src={icon} alt="" /> : icon}{title}</span>
+        <span className="window-title" data-interactive={titleContent !== undefined}>{titleContent ?? <>{typeof icon === 'string' ? <img src={icon} alt="" /> : icon}{title}</>}</span>
         {titlebarExtra !== undefined && <div className="window-titlebar-extra">{titlebarExtra}</div>}
         <button className="window-reset" onClick={resetWindow}>Reset</button>
       </div>
