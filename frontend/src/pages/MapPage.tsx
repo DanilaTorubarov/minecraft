@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 
+type CameraMode = 'perspective' | 'free' | 'flat'
+
 type Props = {
   visible: boolean
 }
@@ -7,38 +9,91 @@ type Props = {
 export default function MapPage({ visible }: Props) {
   const [iframeKey, setIframeKey] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [cameraMode, setCameraMode] = useState<'perspective' | 'free' | 'flat'>('perspective')
+  const [cameraMode, setCameraMode] = useState<CameraMode>('perspective')
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
-  // Map URL with view anchors:
-  // #world:0:50:-50:500:0:0.5:0:0:perspective
-  // #world:0:30:-30:300:0:0:0:0:free
-  // #world:0:0:0:1500:0:0:0:0:flat
-  const getMapUrl = (mode: 'perspective' | 'free' | 'flat') => {
+  const getMapUrl = (mode: CameraMode) => {
     switch (mode) {
       case 'perspective':
-        return '/map/#world:0:60:-60:450:0:0.45:0:0:perspective'
+        return '/map/#world:0:70:0:450:0:0.45:0:0:perspective'
       case 'free':
-        return '/map/#world:0:30:-30:300:0:0:0:0:free'
+        return '/map/#world:0:40:0:300:0:0:0:0:free'
       case 'flat':
         return '/map/#world:0:0:0:1200:0:0:0:0:flat'
     }
   }
 
-  const setView = (mode: 'perspective' | 'free' | 'flat') => {
+  const setView = (mode: CameraMode) => {
     setCameraMode(mode)
+    try {
+      const win = iframeRef.current?.contentWindow as any
+      if (win?.bluemap) {
+        if (mode === 'perspective' && typeof win.bluemap.setPerspectiveView === 'function') {
+          win.bluemap.setPerspectiveView(0)
+          return
+        }
+        if (mode === 'free' && typeof win.bluemap.setFreeFlight === 'function') {
+          win.bluemap.setFreeFlight(0, 40)
+          return
+        }
+        if (mode === 'flat' && typeof win.bluemap.setFlatView === 'function') {
+          win.bluemap.setFlatView(0)
+          return
+        }
+      }
+    } catch {}
     if (iframeRef.current) {
       iframeRef.current.src = getMapUrl(mode)
     }
   }
 
-  const handleRefresh = () => {
-    setLoading(true)
-    setIframeKey((k) => k + 1)
+  const handleCenter = () => {
+    try {
+      const win = iframeRef.current?.contentWindow as any
+      if (win?.bluemap) {
+        if (typeof win.bluemap.resetCamera === 'function') {
+          win.bluemap.resetCamera()
+        }
+        const cm = win.bluemap.mapViewer?.controlsManager
+        if (cm && cm.position) {
+          cm.position.set(0, 70, 0)
+          cm.distance = 450
+          cm.rotation = 0
+          cm.angle = 0.45
+          cm.tilt = 0
+          win.bluemap.updatePageAddress?.()
+          win.bluemap.mapViewer?.updateLoadedMapArea?.()
+        }
+        return
+      }
+      if (win?.location) {
+        win.location.hash = `#world:0:70:0:450:0:0.45:0:0:${cameraMode}`
+        if (typeof win.bluemap?.loadPageAddress === 'function') {
+          win.bluemap.loadPageAddress()
+        }
+        return
+      }
+    } catch {}
+    if (iframeRef.current) {
+      iframeRef.current.src = getMapUrl(cameraMode)
+    }
   }
 
-  const handleCenter = () => {
-    setView(cameraMode)
+  const handleRefresh = () => {
+    try {
+      const win = iframeRef.current?.contentWindow as any
+      if (win?.bluemap?.mapViewer) {
+        if (typeof win.bluemap.mapViewer.clearTileCache === 'function') {
+          win.bluemap.mapViewer.clearTileCache()
+        }
+        if (typeof win.bluemap.mapViewer.updateLoadedMapArea === 'function') {
+          win.bluemap.mapViewer.updateLoadedMapArea()
+        }
+        return
+      }
+    } catch {}
+    setLoading(true)
+    setIframeKey((k) => k + 1)
   }
 
   const handlePopout = () => {
@@ -47,7 +102,7 @@ export default function MapPage({ visible }: Props) {
 
   useEffect(() => {
     if (!visible) return
-    const timer = setTimeout(() => setLoading(false), 3000)
+    const timer = setTimeout(() => setLoading(false), 2500)
     return () => clearTimeout(timer)
   }, [visible, iframeKey])
 
