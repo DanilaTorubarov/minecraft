@@ -269,6 +269,12 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.ExpeditionRules.formatDuration(300L).equals("05:00"), "5 minutes formats as 05:00");
         check(LinkBridgePlugin.ExpeditionRules.formatDuration(45L).equals("00:45"), "45 seconds formats as 00:45");
 
+        // Raid rules
+        check(LinkBridgePlugin.RaidRules.BREACH_DURATION_SECONDS == 300L, "Breach lasts 5 minutes");
+        check(LinkBridgePlugin.RaidRules.BREACH_RADIUS == 3, "Breach radius is 3 blocks");
+        check(LinkBridgePlugin.RaidRules.FUSE_SECONDS == 10, "Fuse is 10 seconds");
+        check(LinkBridgePlugin.RaidRules.CHARGE_PRICE == 2500L, "Breach charge costs 2500 coins");
+
         System.out.println("Inventory NBT regression checks passed");
     }
 }

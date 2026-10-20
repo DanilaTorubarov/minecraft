@@ -45,6 +45,10 @@ commands:
         description: Buy Prospector Pickaxes to mine tiered fuel crystals.
         usage: /minershop [buy <tier 1-4>]
         permission: linkbridge.mine
+    raid:
+        description: Purchase and manage siege breach charges for raiding private zones.
+        usage: /raid [buy|help]
+        permission: linkbridge.ps
 permissions:
     linkbridge.ps:
         description: Use private block protection commands after authentication.

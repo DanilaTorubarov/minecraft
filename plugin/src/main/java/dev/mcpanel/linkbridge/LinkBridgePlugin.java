@@ -27,6 +27,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -36,6 +37,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.text.Component;
+import org.bukkit.Color;
+import org.bukkit.Sound;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -243,6 +246,15 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     @Override
     public void onDisable() {
+        for (ActiveBreach breach : activeBreaches.values()) {
+            for (BreachedBlock bb : breach.restoredBlocks) {
+                if (bb.location.getWorld() != null) {
+                    bb.location.getBlock().setBlockData(bb.blockData, false);
+                }
+            }
+        }
+        activeBreaches.clear();
+
         // One last attempt so a restart does not lose this run's activity. A short
         // timeout keeps the shutdown quick when the panel is down.
         try {
@@ -382,6 +394,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return true;
             }
             minershopCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("raid")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Raid] Wait a few seconds and try again.");
+                return true;
+            }
+            raidCommand(player, args);
             return true;
         }
 
@@ -800,6 +820,48 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         public static String formatDuration(long seconds) {
             long s = Math.max(0L, seconds);
             return String.format("%02d:%02d", s / 60, s % 60);
+        }
+    }
+
+    public static final class RaidRules {
+        public static final long BREACH_DURATION_SECONDS = 300L; // 5 minutes
+        public static final int BREACH_RADIUS = 3; // 3 blocks
+        public static final int FUSE_SECONDS = 10; // 10 seconds
+        public static final long CHARGE_PRICE = 2500L;
+    }
+
+    public static final class BreachedBlock {
+        public final Location location;
+        public final org.bukkit.block.data.BlockData blockData;
+        public BreachedBlock(Location location, org.bukkit.block.data.BlockData blockData) {
+            this.location = location;
+            this.blockData = blockData;
+        }
+    }
+
+    public static final class ActiveBreach {
+        public final String coreKey;
+        public final long expiresAtMs;
+        public final List<BreachedBlock> restoredBlocks;
+        public ActiveBreach(String coreKey, long expiresAtMs, List<BreachedBlock> restoredBlocks) {
+            this.coreKey = coreKey;
+            this.expiresAtMs = expiresAtMs;
+            this.restoredBlocks = restoredBlocks;
+        }
+    }
+
+    public static final class PrimedCharge {
+        public final String zoneId;
+        public final Location location;
+        public final UUID planterUuid;
+        public final String planterName;
+        public int ticksRemaining;
+        public PrimedCharge(String zoneId, Location location, UUID planterUuid, String planterName, int ticksRemaining) {
+            this.zoneId = zoneId;
+            this.location = location;
+            this.planterUuid = planterUuid;
+            this.planterName = planterName;
+            this.ticksRemaining = ticksRemaining;
         }
     }
 
@@ -1433,6 +1495,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private final Map<UUID, net.kyori.adventure.bossbar.BossBar> expeditionBossBars = new ConcurrentHashMap<>();
     private final Map<Location, RegeneratingOreNode> regeneratingNodes = new ConcurrentHashMap<>();
     private final Map<UUID, PlacedPrivateBlock> activeCoreGuis = new ConcurrentHashMap<>();
+    private final Map<String, ActiveBreach> activeBreaches = new ConcurrentHashMap<>();
+    private final List<PrimedCharge> primedCharges = new CopyOnWriteArrayList<>();
 
     private static final class RegeneratingOreNode {
         final Material originalMaterial;
@@ -2975,13 +3039,23 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             getCommand("ps").setExecutor(this);
             getCommand("ps").setTabCompleter((sender, cmd, alias, args) -> {
                 if (args.length == 1) {
-                    return List.of("buy", "list", "claim", "add", "remove", "info").stream()
+                    return List.of("buy", "list", "claim", "add", "remove", "info", "raid").stream()
                         .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
                 }
                 return List.of();
             });
         }
         loadAllPlacedPrivateBlocks();
+        if (getCommand("raid") != null) {
+            getCommand("raid").setExecutor(this);
+            getCommand("raid").setTabCompleter((sender, cmd, alias, args) -> {
+                if (args.length == 1) {
+                    return List.of("buy", "help").stream()
+                        .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                }
+                return List.of();
+            });
+        }
         if (getCommand("mine") != null) {
             getCommand("mine").setExecutor(this);
             getCommand("mine").setTabCompleter((sender, cmd, alias, args) -> {
@@ -3070,6 +3144,32 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     pb.fuelSeconds--;
                 }
             }
+
+            // 4. Primed Breach Charges
+            for (PrimedCharge pc : primedCharges) {
+                pc.ticksRemaining--;
+                Location loc = pc.location;
+                if (loc.getWorld() != null) {
+                    loc.getWorld().spawnParticle(Particle.DUST, loc.clone().add(0, 0.5, 0), 6,
+                        new Particle.DustOptions(Color.RED, 1.5f));
+                    float pitch = 0.5f + (RaidRules.FUSE_SECONDS - Math.max(0, pc.ticksRemaining)) * 0.15f;
+                    loc.getWorld().playSound(loc, Sound.BLOCK_NOTE_BLOCK_HAT, 1.0f, pitch);
+                }
+                if (pc.ticksRemaining <= 0) {
+                    primedCharges.remove(pc);
+                    detonateBreachCharge(pc);
+                }
+            }
+
+            // 5. Active Breaches auto-reconstruction
+            var abIt = activeBreaches.entrySet().iterator();
+            while (abIt.hasNext()) {
+                var entry = abIt.next();
+                if (now >= entry.getValue().expiresAtMs) {
+                    reconstructBreachedZone(entry.getValue());
+                    abIt.remove();
+                }
+            }
         }, 20L, 20L);
     }
 
@@ -3135,6 +3235,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             if (pb.ownerUuid.equals(ownerUuid) && pb.blockIndex == blockIndex && pb.placed) {
                 return pb;
             }
+        }
+        return null;
+    }
+
+    private PlacedPrivateBlock getPlacedBlockById(String id) {
+        if (id == null) return null;
+        for (PlacedPrivateBlock pb : placedPrivateBlocks.values()) {
+            if (id.equals(pb.id)) return pb;
         }
         return null;
     }
@@ -3282,6 +3390,11 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             player.sendMessage("§e/ps add <player> §7— Add a trusted friend to current private block");
             player.sendMessage("§e/ps remove <player> §7— Remove friend from current private block");
             player.sendMessage("§e/ps info §7— View details of the private block where you stand");
+            player.sendMessage("§e/ps raid §7— Base raiding rules and breach charges");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("raid")) {
+            raidCommand(player, java.util.Arrays.copyOfRange(args, 1, args.length));
             return;
         }
         if (args[0].equalsIgnoreCase("claim") || args[0].equalsIgnoreCase("get") || args[0].equalsIgnoreCase("reclaim")) {
@@ -3465,6 +3578,191 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
         player.sendMessage("[Private] Unknown subcommand. Use /ps for help.");
+    }
+
+    public ItemStack createBreachChargeItem(int amount) {
+        ItemStack item = new ItemStack(Material.TNT, amount);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text("§c§lBreach Charge"));
+        meta.lore(List.of(
+            Component.text("§7Tactical breaching explosive."),
+            Component.text("§7Right-click on an enemy private zone to arm."),
+            Component.text("§7Detonates after 10s fuse:"),
+            Component.text("§7• Blasts an entry breach (3-block radius)"),
+            Component.text("§7• Unlocks containers for 5 minutes"),
+            Component.text("§a• 100% Auto-Regeneration when breach expires!")
+        ));
+        meta.getPersistentDataContainer().set(new NamespacedKey(this, "breach_charge"), org.bukkit.persistence.PersistentDataType.BYTE, (byte) 1);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private void detonateBreachCharge(PrimedCharge pc) {
+        Location center = pc.location;
+        World world = center.getWorld();
+        if (world == null) return;
+
+        world.spawnParticle(Particle.EXPLOSION_EMITTER, center, 1);
+        world.playSound(center, Sound.ENTITY_GENERIC_EXPLODE, 2.0f, 0.8f);
+
+        int radius = RaidRules.BREACH_RADIUS;
+        List<BreachedBlock> restoredBlocks = new ArrayList<>();
+
+        int cx = center.getBlockX();
+        int cy = center.getBlockY();
+        int cz = center.getBlockZ();
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (dx * dx + dy * dy + dz * dz > radius * radius) continue;
+                    Block b = world.getBlockAt(cx + dx, cy + dy, cz + dz);
+                    Material type = b.getType();
+                    if (type.isAir() || type == Material.CAVE_AIR || type == Material.VOID_AIR) continue;
+                    if (type == Material.BEDROCK) continue;
+                    if (type == Material.LODESTONE || getPlacedCoreAt(b.getLocation()) != null) continue;
+                    if (type.name().contains("CHEST")
+                        || type.name().contains("BARREL")
+                        || type.name().contains("SHULKER_BOX")
+                        || type.name().contains("HOPPER")
+                        || type.name().contains("FURNACE")
+                        || type.name().contains("SMOKER")
+                        || type.name().contains("DROPPER")
+                        || type.name().contains("DISPENSER")) {
+                        continue; // Protect containers so their loot is looted safely
+                    }
+
+                    restoredBlocks.add(new BreachedBlock(b.getLocation(), b.getBlockData().clone()));
+                    b.setType(Material.AIR, false);
+                }
+            }
+        }
+
+        ActiveBreach breach = new ActiveBreach(pc.zoneId, System.currentTimeMillis() + RaidRules.BREACH_DURATION_SECONDS * 1000L, restoredBlocks);
+        activeBreaches.put(pc.zoneId, breach);
+
+        Player planter = getServer().getPlayer(pc.planterUuid);
+        if (planter != null && planter.isOnline()) {
+            planter.sendMessage("§a§l[Raid] Zone breached! You have 5 minutes to raid containers before auto-reconstruction!");
+            planter.playSound(planter.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 1.0f, 1.2f);
+        }
+
+        PlacedPrivateBlock pb = getPlacedBlockById(pc.zoneId);
+        if (pb != null) {
+            Player owner = getServer().getPlayer(pb.ownerUuid);
+            if (owner != null && owner.isOnline()) {
+                owner.sendMessage(String.format(Locale.ROOT,
+                    "§4§l[RAID ALERT] §cYour base was breached by %s! Containers are vulnerable for 5 minutes!", pc.planterName));
+                owner.playSound(owner.getLocation(), Sound.ENTITY_WITHER_SPAWN, 1.0f, 1.0f);
+            }
+            for (UUID memberUuid : pb.members) {
+                Player member = getServer().getPlayer(memberUuid);
+                if (member != null && member.isOnline()) {
+                    member.sendMessage(String.format(Locale.ROOT,
+                        "§4§l[RAID ALERT] §cYour team base was breached by %s! Containers are vulnerable for 5 minutes!", pc.planterName));
+                }
+            }
+        }
+    }
+
+    private void reconstructBreachedZone(ActiveBreach breach) {
+        if (breach == null || breach.restoredBlocks == null) return;
+        List<BreachedBlock> sorted = new ArrayList<>(breach.restoredBlocks);
+        sorted.sort(Comparator.comparingInt(b -> b.location.getBlockY()));
+
+        World world = null;
+        Location center = null;
+        for (BreachedBlock bb : sorted) {
+            if (bb.location == null || bb.location.getWorld() == null) continue;
+            world = bb.location.getWorld();
+            if (center == null) center = bb.location;
+
+            Block current = bb.location.getBlock();
+            if (current.getType().name().contains("CHEST") || current.getType().name().contains("BARREL")) {
+                continue;
+            }
+
+            if (bb.blockData.getMaterial().isSolid()) {
+                int bx = bb.location.getBlockX();
+                int by = bb.location.getBlockY();
+                int bz = bb.location.getBlockZ();
+                for (Player p : world.getPlayers()) {
+                    Location ploc = p.getLocation();
+                    if (ploc.getBlockX() == bx && (ploc.getBlockY() == by || ploc.getBlockY() == by - 1) && ploc.getBlockZ() == bz) {
+                        p.teleport(ploc.clone().add(0, 1.2, 0));
+                    }
+                }
+            }
+
+            bb.location.getBlock().setBlockData(bb.blockData, false);
+            world.spawnParticle(Particle.BLOCK, bb.location.clone().add(0.5, 0.5, 0.5), 3, bb.blockData);
+        }
+
+        if (world != null && center != null) {
+            world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, 2.0f, 1.0f);
+            PlacedPrivateBlock pb = getPlacedBlockById(breach.coreKey);
+            if (pb != null) {
+                Player owner = getServer().getPlayer(pb.ownerUuid);
+                if (owner != null && owner.isOnline()) {
+                    owner.sendMessage("§a§l[Raid] Base breach expired. All blocks have been 100% auto-reconstructed!");
+                }
+                for (UUID memberUuid : pb.members) {
+                    Player member = getServer().getPlayer(memberUuid);
+                    if (member != null && member.isOnline()) {
+                        member.sendMessage("§a§l[Raid] Base breach expired. All blocks have been 100% auto-reconstructed!");
+                    }
+                }
+            }
+        }
+    }
+
+    private void raidCommand(Player player, String[] args) {
+        if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+            player.sendMessage("§6=== Base Raiding & Breach Charges ===");
+            player.sendMessage(String.format(Locale.ROOT, "§e/raid buy §7— Buy a Breach Charge (%,d coins)", RaidRules.CHARGE_PRICE));
+            player.sendMessage("§eHow it works:");
+            player.sendMessage("§7• Right-click Breach Charge onto an enemy private zone to arm.");
+            player.sendMessage("§7• 10-second countdown alert is sent to you and the base owner.");
+            player.sendMessage("§7• Blasts a 3-block breach hole and unlocks containers for 5 minutes.");
+            player.sendMessage("§a• 100% Auto-Regeneration: When 5m expires, all blasted blocks restore automatically!");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("buy")) {
+            UUID uuid = player.getUniqueId();
+            String username = player.getName();
+            player.sendMessage("[Raid] Purchasing Breach Charge...");
+            getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                var response = post(internalBase + "/raid/buy",
+                    "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\"}", requestTimeout);
+                getServer().getScheduler().runTask(this, () -> {
+                    if (response == null) {
+                        player.sendMessage("[Raid] Server did not respond. No coins charged.");
+                        return;
+                    }
+                    if (response.statusCode() == 200) {
+                        ItemStack charge = createBreachChargeItem(1);
+                        var leftovers = player.getInventory().addItem(charge);
+                        if (!leftovers.isEmpty()) {
+                            for (ItemStack leftover : leftovers.values()) {
+                                player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+                            }
+                        }
+                        player.playSound(player.getLocation(), Sound.ITEM_ARMOR_EQUIP_NETHERITE, 1.0f, 1.0f);
+                        player.sendMessage(String.format(Locale.ROOT,
+                            "§a[Raid] Purchased Breach Charge for %,d coins! Right-click on an enemy private zone to arm.",
+                            RaidRules.CHARGE_PRICE));
+                    } else if (response.statusCode() == 402) {
+                        player.sendMessage(String.format(Locale.ROOT,
+                            "§c[Raid] Insufficient coins! You need %,d coins and must keep at least 1,000 coins in reserve.",
+                            RaidRules.CHARGE_PRICE));
+                    } else {
+                        player.sendMessage("[Raid] Cannot purchase Breach Charge at this time (" + response.statusCode() + ").");
+                    }
+                });
+            });
+            return;
+        }
+        player.sendMessage("[Raid] Usage: /raid [buy|help]");
     }
 
     private void mineCommand(Player player, String[] args) {
@@ -3924,6 +4222,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         ItemStack item = event.getItemInHand();
         if (item != null && item.hasItemMeta()) {
             var pdc = item.getItemMeta().getPersistentDataContainer();
+            if (pdc.has(new NamespacedKey(this, "breach_charge"), org.bukkit.persistence.PersistentDataType.BYTE)) {
+                event.setCancelled(true);
+                return;
+            }
             var key = new NamespacedKey(this, "private_core");
             if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
                 int blockIndex = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
@@ -3985,9 +4287,59 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     @EventHandler(priority = EventPriority.NORMAL)
     public void onPrivateInteract(PlayerInteractEvent event) {
         if (event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) return;
+        if (event.getHand() != org.bukkit.inventory.EquipmentSlot.HAND) return;
         Block block = event.getClickedBlock();
         if (block == null) return;
         Player player = event.getPlayer();
+
+        ItemStack hand = player.getInventory().getItemInMainHand();
+        if (hand != null && hand.hasItemMeta()) {
+            var pdc = hand.getItemMeta().getPersistentDataContainer();
+            if (pdc.has(new NamespacedKey(this, "breach_charge"), org.bukkit.persistence.PersistentDataType.BYTE)) {
+                event.setCancelled(true);
+                PlacedPrivateBlock targetZone = getProtectingBlock(block.getLocation());
+                if (targetZone == null) {
+                    player.sendMessage("§c[Raid] Breach Charges can only be used on enemy protected zones!");
+                    return;
+                }
+                if (targetZone.ownerUuid.equals(player.getUniqueId()) || targetZone.members.contains(player.getUniqueId())) {
+                    player.sendMessage("§c[Raid] You cannot breach your own or your teammates' base!");
+                    return;
+                }
+                if (activeBreaches.containsKey(targetZone.id)) {
+                    player.sendMessage("§c[Raid] This zone is already breached!");
+                    return;
+                }
+                boolean alreadyPrimed = primedCharges.stream().anyMatch(pc -> pc.zoneId.equals(targetZone.id));
+                if (alreadyPrimed) {
+                    player.sendMessage("§c[Raid] A breach charge is already ticking on this zone!");
+                    return;
+                }
+
+                hand.setAmount(hand.getAmount() - 1);
+                Location armLoc = block.getLocation().clone().add(0.5, 0.5, 0.5);
+                primedCharges.add(new PrimedCharge(targetZone.id, armLoc, player.getUniqueId(), player.getName(), RaidRules.FUSE_SECONDS));
+                block.getWorld().playSound(armLoc, Sound.ENTITY_TNT_PRIMED, 1.0f, 1.0f);
+                player.sendMessage("§c§l[Raid] Breach Charge armed! Detonation in " + RaidRules.FUSE_SECONDS + " seconds! Stand back!");
+
+                Player owner = getServer().getPlayer(targetZone.ownerUuid);
+                if (owner != null && owner.isOnline()) {
+                    owner.sendMessage(String.format(Locale.ROOT,
+                        "§4§l[RAID ALERT] §cYour base at (%d, %d, %d) is being breached by %s! 10 seconds until breach!",
+                        targetZone.x, targetZone.y, targetZone.z, player.getName()));
+                    owner.playSound(owner.getLocation(), Sound.ENTITY_WITHER_SPAWN, 1.0f, 0.5f);
+                }
+                for (UUID memberUuid : targetZone.members) {
+                    Player member = getServer().getPlayer(memberUuid);
+                    if (member != null && member.isOnline()) {
+                        member.sendMessage(String.format(Locale.ROOT,
+                            "§4§l[RAID ALERT] §cYour team base at (%d, %d, %d) is being breached by %s! 10 seconds until breach!",
+                            targetZone.x, targetZone.y, targetZone.z, player.getName()));
+                    }
+                }
+                return;
+            }
+        }
 
         PlacedPrivateBlock core = getPlacedCoreAt(block.getLocation());
         if (core != null) {
@@ -4019,6 +4371,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (isProtectedInteractable) {
             PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
             if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+                if (activeBreaches.containsKey(pb.id)) {
+                    // Zone is breached! Raiders can access containers/doors!
+                    return;
+                }
                 event.setCancelled(true);
                 player.sendActionBar(Component.text("§c[Protected] You cannot use containers in " + pb.ownerName + "'s zone!"));
             }
