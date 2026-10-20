@@ -3,7 +3,7 @@
 
 ## Git & feature branch workflow convention — 2026-10-20
 
-- Documented project rule in `AGENTS.md`: never commit or push directly to `main`. Always create a feature branch related to the function, commit and push to the feature branch first, and then merge into `main`.
+- Documented project rule in `AGENTS.md`: never commit or push directly to `main`. Always create a feature branch related to the function and commit changes locally. Never push to remote or merge into `main` automatically; only push or merge when the user explicitly instructs to push or to merge.
 
 
 ## Marketplace pending delivery limit — 2026-10-20
