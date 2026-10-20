@@ -1912,11 +1912,34 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
         if (isAuthenticated(player)) {
             countersFor(player).deaths.incrementAndGet();
+        }
+
+        if (player.getWorld().getName().equals("mine_world") || activeMineExpeditions.containsKey(player.getUniqueId())) {
+            UUID u = player.getUniqueId();
+            activeMineExpeditions.remove(u);
+            var bar = expeditionBossBars.remove(u);
+            if (bar != null) {
+                player.hideBossBar(bar);
+            }
+            event.getDrops().clear();
+            event.setDroppedExp(0);
+            player.getInventory().clear();
+            player.sendMessage("§c[Mine] You perished in the Mining Caverns! All items were lost.");
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onPlayerRespawn(org.bukkit.event.player.PlayerRespawnEvent event) {
+        Player player = event.getPlayer();
+        if (event.getRespawnLocation().getWorld().getName().equals("mine_world")
+            || player.getWorld().getName().equals("mine_world")) {
+            World overworld = getServer().getWorlds().getFirst();
+            event.setRespawnLocation(overworld.getSpawnLocation());
         }
     }
 
@@ -3482,6 +3505,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                                 sanitizeMineChunk(mineWorld.getChunkAt(cx, cz));
                             }
                         }
+                        lightMineSpawnArea(mineWorld, spawn);
+                        clearHostileMobsNear(spawn, 30.0);
                         player.teleport(spawn);
                         long expires = System.currentTimeMillis() + 300_000L;
                         activeMineExpeditions.put(uuid, expires);
@@ -3744,6 +3769,41 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             && ground.getType() != Material.LAVA
             && ground.getType() != Material.WATER
             && ground.getType() != Material.BEDROCK;
+    }
+
+    private void lightMineSpawnArea(World world, Location spawn) {
+        if (world == null || spawn == null) return;
+        int sx = spawn.getBlockX();
+        int sy = spawn.getBlockY();
+        int sz = spawn.getBlockZ();
+
+        for (int dx = -5; dx <= 5; dx += 2) {
+            for (int dz = -5; dz <= 5; dz += 2) {
+                int x = sx + dx;
+                int z = sz + dz;
+                for (int y = sy - 2; y <= sy + 4; y++) {
+                    Block block = world.getBlockAt(x, y, z);
+                    Block below = world.getBlockAt(x, y - 1, z);
+                    if ((block.getType().isAir() || block.getType() == Material.CAVE_AIR)
+                        && below.getType().isSolid()
+                        && below.getType() != Material.LAVA
+                        && below.getType() != Material.TORCH
+                        && below.getType() != Material.LANTERN) {
+                        block.setType(Material.TORCH);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private void clearHostileMobsNear(Location loc, double radius) {
+        if (loc == null || loc.getWorld() == null) return;
+        for (org.bukkit.entity.Entity entity : loc.getWorld().getNearbyEntities(loc, radius, radius, radius)) {
+            if (entity instanceof org.bukkit.entity.Monster || entity instanceof org.bukkit.entity.Slime || entity instanceof org.bukkit.entity.Phantom) {
+                entity.remove();
+            }
+        }
     }
 
     private void sanitizeMineChunk(Chunk chunk) {
