@@ -246,6 +246,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             .runTaskTimerAsynchronously(this, this::flushInventories, 200L, 200L);
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, this::syncChat, 20L, 20L);
+        getServer().getScheduler()
+            .runTaskTimer(this, this::updateTabList, 20L, 20L);
     }
 
     @Override
@@ -3439,6 +3441,49 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 }
             });
         } catch (Throwable ignored) {
+        }
+    }
+
+    private void updateTabList() {
+        if (!isEnabled()) return;
+        var players = getServer().getOnlinePlayers();
+        if (players.isEmpty()) return;
+
+        net.kyori.adventure.text.minimessage.MiniMessage mm = net.kyori.adventure.text.minimessage.MiniMessage.miniMessage();
+        int online = players.size();
+        int max = getServer().getMaxPlayers();
+        String timeStr = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
+                .withZone(java.time.ZoneId.of("UTC"))
+                .format(java.time.Instant.now()) + " UTC";
+        String site = (panelUrl == null || panelUrl.isBlank() || panelUrl.contains("${"))
+                ? "https://localhost"
+                : panelUrl.replaceAll("/+$", "");
+
+        for (Player p : players) {
+            int ping = p.getPing();
+            String pingColor = ping < 60 ? "#4ade80" : (ping < 130 ? "#facc15" : "#f87171");
+
+            String headerText = "<newline>"
+                    + "<gradient:#38bdf8:#0284c7><bold>✦ OASIS AERO ✦</bold></gradient><newline>"
+                    + "<gradient:#7dd3fc:#38bdf8><i>Your world, connected.</i></gradient><newline>"
+                    + "<color:#334155>──────────────────────────────────────────</color><newline>"
+                    + "<color:#94a3b8>Online Players:</color> <color:#38bdf8><bold>" + online + "</bold></color><color:#475569>/</color><color:#94a3b8>" + max + "</color>   "
+                    + "<color:#475569>•</color>   "
+                    + "<color:#94a3b8>Realm:</color> <color:#38bdf8>Survival 3D</color><newline>";
+
+            String footerText = "<newline>"
+                    + "<color:#334155>──────────────────────────────────────────</color><newline>"
+                    + "<color:#94a3b8>Your Ping:</color> <color:" + pingColor + "><bold>" + ping + "ms</bold></color>   "
+                    + "<color:#475569>•</color>   "
+                    + "<color:#94a3b8>Server Time:</color> <color:#38bdf8>" + timeStr + "</color><newline>"
+                    + "<color:#94a3b8>Website & 3D Map:</color> <gradient:#38bdf8:#0284c7><u>" + site + "</u></gradient><newline>"
+                    + "<gradient:#bae6fd:#38bdf8>✦ Trade · Chat · Protect · Explore ✦</gradient><newline>";
+
+            p.sendPlayerListHeaderAndFooter(mm.deserialize(headerText), mm.deserialize(footerText));
+
+            // Format tab name with crisp aero styling and individual player ping
+            String nameFormat = "<color:#38bdf8>✦</color> <color:#f8fafc>" + p.getName() + "</color> <color:#475569>[</color><color:" + pingColor + ">" + ping + "ms</color><color:#475569>]</color>";
+            p.playerListName(mm.deserialize(nameFormat));
         }
     }
 
