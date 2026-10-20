@@ -491,3 +491,30 @@ export async function adjustAdminBalance(input: {
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as AdminBalanceResult
 }
+
+// --- Live Chat Integration --------------------------------------------------
+
+export type ChatMessage = {
+  id: number
+  sender_name: string
+  sender_uuid: string | null
+  text: string
+  source: 'game' | 'web' | 'system'
+  created_at: string
+}
+
+export async function getChatMessages(sinceId?: number, limit = 50): Promise<ChatMessage[]> {
+  const params = new URLSearchParams()
+  if (sinceId !== undefined) params.set('since_id', String(sinceId))
+  if (limit !== 50) params.set('limit', String(limit))
+  const url = `/api/chat/messages${params.toString() ? '?' + params.toString() : ''}`
+  const response = await fetch(url)
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatMessage[]
+}
+
+export async function sendChatMessage(text: string): Promise<ChatMessage> {
+  const response = await send('POST', '/api/chat/messages', { text })
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatMessage
+}

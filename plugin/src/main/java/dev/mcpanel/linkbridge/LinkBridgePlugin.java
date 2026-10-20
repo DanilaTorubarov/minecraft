@@ -242,6 +242,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             .runTaskTimer(this, this::snapshotInventories, 100L, 100L);
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, this::flushInventories, 200L, 200L);
+        getServer().getScheduler()
+            .runTaskTimerAsynchronously(this, this::syncChat, 20L, 20L);
     }
 
     @Override
@@ -4566,6 +4568,73 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onPlayerItemDamage(org.bukkit.event.player.PlayerItemDamageEvent event) {
         if (event.getPlayer().getWorld().getName().equals("mine_world")) {
             event.setCancelled(true);
+        }
+    }
+
+    // --- Live Web & In-Game Chat Integration ---
+
+    private final java.util.concurrent.ConcurrentLinkedQueue<ChatSyncItem> outgoingChatQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    record ChatSyncItem(String senderName, String uuid, String text) {}
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPlayerChat(io.papermc.paper.event.player.AsyncChatEvent event) {
+        if (event.getPlayer() == null) return;
+        String text = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
+        if (text.isEmpty() || text.length() > 256) return;
+        String username = event.getPlayer().getName();
+        String uuid = event.getPlayer().getUniqueId().toString();
+        if (outgoingChatQueue.size() < 200) {
+            outgoingChatQueue.add(new ChatSyncItem(username, uuid, text));
+        }
+    }
+
+    private void syncChat() {
+        if (internalBase == null || internalBase.isBlank() || serviceToken == null || serviceToken.isBlank()) return;
+        List<ChatSyncItem> batch = new ArrayList<>();
+        ChatSyncItem item;
+        while ((item = outgoingChatQueue.poll()) != null && batch.size() < 50) {
+            batch.add(item);
+        }
+
+        com.google.gson.JsonObject root = new com.google.gson.JsonObject();
+        com.google.gson.JsonArray incomingArr = new com.google.gson.JsonArray();
+        for (ChatSyncItem c : batch) {
+            com.google.gson.JsonObject obj = new com.google.gson.JsonObject();
+            obj.addProperty("sender_name", c.senderName());
+            obj.addProperty("uuid", c.uuid());
+            obj.addProperty("text", c.text());
+            incomingArr.add(obj);
+        }
+        root.add("incoming", incomingArr);
+
+        try {
+            HttpResponse<String> response = post(internalBase + "/chat/sync", root.toString(), requestTimeout);
+            if (response != null && response.statusCode() == 200) {
+                com.google.gson.JsonObject resObj = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                if (resObj.has("outgoing")) {
+                    com.google.gson.JsonArray outgoingArr = resObj.getAsJsonArray("outgoing");
+                    if (outgoingArr.size() > 0) {
+                        getServer().getScheduler().runTask(this, () -> {
+                            for (com.google.gson.JsonElement el : outgoingArr) {
+                                com.google.gson.JsonObject m = el.getAsJsonObject();
+                                String senderName = m.get("sender_name").getAsString();
+                                String text = m.get("text").getAsString();
+                                Component comp = Component.text("§8[§bWeb§8] §f" + senderName + "§7: §f" + text);
+                                getServer().broadcast(comp);
+                            }
+                        });
+                    }
+                }
+            } else {
+                if (outgoingChatQueue.size() < 100) {
+                    outgoingChatQueue.addAll(batch);
+                }
+            }
+        } catch (Exception e) {
+            if (outgoingChatQueue.size() < 100) {
+                outgoingChatQueue.addAll(batch);
+            }
         }
     }
 

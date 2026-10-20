@@ -19,6 +19,7 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   casino: ['Server Mini Games', 'Play and test your luck'],
   marketplace: ['Player marketplace', 'Items held by the server'],
   admin: ['Administration Center', 'Privileged operator controls'],
+  chat: ['Server Chat', 'Live bidirectional Minecraft realm bridge'],
 }
 
 type Gesture = {

@@ -99,6 +99,8 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/players/{uuid}/privates/{block_index}/fuel", post(deposit_player_private_fuel))
         .route("/api/admin/accounts", get(admin_get_accounts))
         .route("/api/admin/balance", post(admin_adjust_balance))
+        .route("/api/chat/messages", get(get_chat_messages).post(send_chat_message))
+        .route("/internal/chat/sync", post(sync_chat_messages))
         .route("/internal/skins/sync", post(sync_player_skins))
         .route("/internal/skins/report", post(report_player_skin))
         .route("/internal/inventory/report", post(report_inventory))
@@ -5810,6 +5812,236 @@ async fn admin_adjust_balance(
         previous_coins: prev_coins,
         new_coins,
     }))
+}
+
+// --- Live Chat Integration --------------------------------------------------
+
+const CHAT_MAX_TEXT_LEN: usize = 256;
+
+#[derive(serde::Serialize)]
+struct ChatMessageView {
+    id: i64,
+    sender_name: String,
+    sender_uuid: Option<String>,
+    text: String,
+    source: String,
+    created_at: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatMessagesQuery {
+    since_id: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct SendChatMessageInput {
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+struct InternalChatSyncRequest {
+    #[serde(default)]
+    incoming: Vec<InternalIncomingChatMessage>,
+}
+
+#[derive(serde::Deserialize)]
+struct InternalIncomingChatMessage {
+    sender_name: String,
+    uuid: Option<String>,
+    text: String,
+}
+
+#[derive(serde::Serialize)]
+struct InternalChatSyncResponse {
+    outgoing: Vec<InternalOutgoingChatMessage>,
+}
+
+#[derive(serde::Serialize)]
+struct InternalOutgoingChatMessage {
+    id: i64,
+    sender_name: String,
+    text: String,
+}
+
+async fn get_chat_messages(
+    State(pool): State<sqlx::PgPool>,
+    Query(query): Query<ChatMessagesQuery>,
+) -> Result<Json<Vec<ChatMessageView>>, StatusCode> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+
+    let rows = if let Some(since_id) = query.since_id {
+        sqlx::query(
+            "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+             FROM chat_messages
+             WHERE id > $1
+             ORDER BY id ASC
+             LIMIT $2"
+        )
+        .bind(since_id)
+        .bind(limit)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        sqlx::query(
+            "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+             FROM (
+                 SELECT id, sender_name, sender_uuid, text, source, created_at
+                 FROM chat_messages
+                 ORDER BY id DESC
+                 LIMIT $1
+             ) sub
+             ORDER BY id ASC"
+        )
+        .bind(limit)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    let mut messages = Vec::with_capacity(rows.len());
+    for row in rows {
+        messages.push(ChatMessageView {
+            id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            sender_name: row.try_get("sender_name").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            sender_uuid: row.try_get("sender_uuid").ok(),
+            text: row.try_get("text").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            source: row.try_get("source").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            created_at: row.try_get("created_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        });
+    }
+
+    Ok(Json(messages))
+}
+
+async fn send_chat_message(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<SendChatMessageInput>,
+) -> Result<(StatusCode, Json<ChatMessageView>), StatusCode> {
+    let text = input.text.trim();
+    if text.is_empty() || text.len() > CHAT_MAX_TEXT_LEN {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Resolve author name and uuid
+    let linked = sqlx::query("SELECT username, uuid FROM minecraft_accounts WHERE user_id = $1 ORDER BY linked_at ASC LIMIT 1")
+        .bind(user_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (sender_name, sender_uuid) = if let Some(row) = linked {
+        let name: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let uuid: String = row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        (name, Some(uuid))
+    } else {
+        let user_row = sqlx::query("SELECT displayed_nickname, login_displayed FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let name: String = user_row.try_get("displayed_nickname")
+            .or_else(|_| user_row.try_get("login_displayed"))
+            .unwrap_or_else(|_| "User".to_string());
+        (name, None)
+    };
+
+    let row = sqlx::query(
+        "INSERT INTO chat_messages (sender_name, sender_uuid, user_id, text, source, broadcasted_in_game)
+         VALUES ($1, $2, $3, $4, 'web', FALSE)
+         RETURNING id, sender_name, sender_uuid, text, source, created_at::text AS created_at"
+    )
+    .bind(&sender_name)
+    .bind(&sender_uuid)
+    .bind(user_id)
+    .bind(text)
+    .fetch_one(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let msg = ChatMessageView {
+        id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        sender_name: row.try_get("sender_name").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        sender_uuid: row.try_get("sender_uuid").ok(),
+        text: row.try_get("text").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        source: row.try_get("source").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        created_at: row.try_get("created_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    };
+
+    Ok((StatusCode::CREATED, Json(msg)))
+}
+
+async fn sync_chat_messages(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(input): Json<InternalChatSyncRequest>,
+) -> Result<Json<InternalChatSyncResponse>, StatusCode> {
+    require_service_token(&headers)?;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Store in-game messages
+    for msg in input.incoming {
+        let text = msg.text.trim();
+        let name = msg.sender_name.trim();
+        if text.is_empty() || text.len() > CHAT_MAX_TEXT_LEN || name.is_empty() || name.len() > 32 {
+            continue;
+        }
+        let uuid = msg.uuid.as_deref().map(str::trim).filter(|u| is_uuid(u));
+
+        let _ = sqlx::query(
+            "INSERT INTO chat_messages (sender_name, sender_uuid, text, source, broadcasted_in_game)
+             VALUES ($1, $2, $3, 'game', TRUE)"
+        )
+        .bind(name)
+        .bind(uuid)
+        .bind(text)
+        .execute(&mut *tx)
+        .await;
+    }
+
+    // Fetch up to 50 pending web messages to broadcast in-game
+    let rows = sqlx::query(
+        "SELECT id, sender_name, text
+         FROM chat_messages
+         WHERE source = 'web' AND broadcasted_in_game = FALSE
+         ORDER BY id ASC
+         LIMIT 50
+         FOR UPDATE"
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut outgoing = Vec::with_capacity(rows.len());
+    let mut ids_to_mark = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let id: i64 = row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let sender_name: String = row.try_get("sender_name").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let text: String = row.try_get("text").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        ids_to_mark.push(id);
+        outgoing.push(InternalOutgoingChatMessage {
+            id,
+            sender_name,
+            text,
+        });
+    }
+
+    if !ids_to_mark.is_empty() {
+        sqlx::query("UPDATE chat_messages SET broadcasted_in_game = TRUE WHERE id = ANY($1)")
+            .bind(&ids_to_mark)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(InternalChatSyncResponse { outgoing }))
 }
 // --- Player skins ----------------------------------------------------------
 
@@ -12227,6 +12459,102 @@ mod test {
 
         delete_user(&pool, &email_a).await?;
         delete_user(&pool, &email_b).await?;
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+    #[tokio::test]
+    async fn chat_integration_bidirectional_sync() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let token = test_service_token();
+        let random = random_id();
+
+        // 1. Unauthenticated send rejected
+        let unauth = send(&pool, "POST", "/api/chat/messages", None, Some(serde_json::json!({
+            "text": "Hello"
+        }))).await?;
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        // 2. Register user & login
+        let email = format!("chatter_{random}@example.com").to_lowercase();
+        let login = format!("chatter_{random}").to_lowercase();
+        register_request(&pool, "ChatterBox", &login, &email, "password12345").await?;
+        let cookie = login_cookie(&pool, &email, "password12345").await?;
+
+        // 3. Validation: empty text & over-length text
+        let empty_msg = send(&pool, "POST", "/api/chat/messages", Some(&cookie), Some(serde_json::json!({
+            "text": "   "
+        }))).await?;
+        assert_eq!(empty_msg.status(), StatusCode::BAD_REQUEST);
+
+        let long_text = "a".repeat(257);
+        let long_msg = send(&pool, "POST", "/api/chat/messages", Some(&cookie), Some(serde_json::json!({
+            "text": long_text
+        }))).await?;
+        assert_eq!(long_msg.status(), StatusCode::BAD_REQUEST);
+
+        // 4. Send valid message from web
+        let send_res = send(&pool, "POST", "/api/chat/messages", Some(&cookie), Some(serde_json::json!({
+            "text": "Greetings from the web panel!"
+        }))).await?;
+        assert_eq!(send_res.status(), StatusCode::CREATED);
+        let sent_json = body_json(send_res).await?;
+        let web_msg_id = sent_json["id"].as_i64().expect("id");
+        assert_eq!(sent_json["sender_name"], "ChatterBox");
+        assert_eq!(sent_json["text"], "Greetings from the web panel!");
+        assert_eq!(sent_json["source"], "web");
+
+        // 5. Query messages via GET /api/chat/messages
+        let get_res = send(&pool, "GET", "/api/chat/messages", None, None).await?;
+        assert_eq!(get_res.status(), StatusCode::OK);
+        let msgs = body_json(get_res).await?;
+        let msg_arr = msgs.as_array().expect("array");
+        assert_eq!(msg_arr.len(), 1);
+        assert_eq!(msg_arr[0]["id"], web_msg_id);
+
+        // 6. LinkBridge syncs: reports in-game chat and receives outgoing web message
+        let player_uuid = test_uuid(&random_ip());
+        let sync_req = serde_json::json!({
+            "incoming": [
+                {
+                    "sender_name": "SteveMiner",
+                    "uuid": player_uuid,
+                    "text": "Hello website from in-game!"
+                }
+            ]
+        });
+
+        let sync_res = post_internal(&pool, "/internal/chat/sync", Some(&token), sync_req, &random_ip()).await?;
+        assert_eq!(sync_res.status(), StatusCode::OK);
+        let sync_json = body_json(sync_res).await?;
+        let outgoing = sync_json["outgoing"].as_array().expect("outgoing array");
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0]["id"], web_msg_id);
+        assert_eq!(outgoing[0]["sender_name"], "ChatterBox");
+        assert_eq!(outgoing[0]["text"], "Greetings from the web panel!");
+
+        // 7. Subsequent sync returns no more outgoing (already marked broadcasted)
+        let sync_res2 = post_internal(&pool, "/internal/chat/sync", Some(&token), serde_json::json!({"incoming": []}), &random_ip()).await?;
+        let sync_json2 = body_json(sync_res2).await?;
+        assert_eq!(sync_json2["outgoing"].as_array().unwrap().len(), 0);
+
+        // 8. GET /api/chat/messages returns both web and game messages in order
+        let get_res2 = send(&pool, "GET", "/api/chat/messages", None, None).await?;
+        let msgs2 = body_json(get_res2).await?;
+        let arr2 = msgs2.as_array().expect("array");
+        assert_eq!(arr2.len(), 2);
+        assert_eq!(arr2[0]["source"], "web");
+        assert_eq!(arr2[1]["source"], "game");
+        assert_eq!(arr2[1]["sender_name"], "SteveMiner");
+        assert_eq!(arr2[1]["text"], "Hello website from in-game!");
+
+        // 9. since_id filter returns only newer messages
+        let since_res = send(&pool, "GET", &format!("/api/chat/messages?since_id={web_msg_id}"), None, None).await?;
+        let since_json = body_json(since_res).await?;
+        let since_arr = since_json.as_array().expect("array");
+        assert_eq!(since_arr.len(), 1);
+        assert_eq!(since_arr[0]["sender_name"], "SteveMiner");
+
+        delete_user(&pool, &email).await?;
         drop_budget_pool(admin, pool, schema).await
     }
 
