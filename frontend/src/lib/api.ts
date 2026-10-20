@@ -518,3 +518,30 @@ export async function sendChatMessage(text: string): Promise<ChatMessage> {
   if (!response.ok) throw new ApiError(response.status)
   return (await response.json()) as ChatMessage
 }
+
+// --- Hall of Fame & Leaderboards -------------------------------------------
+
+export type LeaderboardEntry = {
+  rank: number
+  uuid: string
+  username: string
+  value: number
+  formatted: string
+  skin_hash: string | null
+}
+
+export type LeaderboardResponse = {
+  category: string
+  category_label: string
+  entries: LeaderboardEntry[]
+}
+
+export async function getLeaderboards(category = 'balance', limit = 50): Promise<LeaderboardResponse> {
+  const params = new URLSearchParams()
+  if (category) params.set('category', category)
+  if (limit !== 50) params.set('limit', String(limit))
+  const url = `/api/leaderboards${params.toString() ? '?' + params.toString() : ''}`
+  const response = await fetch(url)
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as LeaderboardResponse
+}

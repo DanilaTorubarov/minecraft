@@ -21,6 +21,7 @@ import MinigamesPage from '../pages/MinigamesPage'
 import AdminPage from '../pages/AdminPage'
 import ChatPage from '../pages/ChatPage'
 import MapPage from '../pages/MapPage'
+import LeaderboardsPage from '../pages/LeaderboardsPage'
 
 function Shell() {
   const { user, signOut } = useAuth()
@@ -40,6 +41,7 @@ function Shell() {
   const [adminOpen, setAdminOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [mapOpen, setMapOpen] = useState(false)
+  const [leaderboardsOpen, setLeaderboardsOpen] = useState(false)
   const [active, setActive] = useState('account')
   const [accountActivation, setAccountActivation] = useState(0)
   const [settingsActivation, setSettingsActivation] = useState(0)
@@ -48,6 +50,7 @@ function Shell() {
   const [adminActivation, setAdminActivation] = useState(0)
   const [chatActivation, setChatActivation] = useState(0)
   const [mapActivation, setMapActivation] = useState(0)
+  const [leaderboardsActivation, setLeaderboardsActivation] = useState(0)
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
   const [playerOpen, setPlayerOpen] = useState(false)
@@ -62,6 +65,7 @@ function Shell() {
   const adminDock = useRef<HTMLButtonElement>(null)
   const chatDock = useRef<HTMLButtonElement>(null)
   const mapDock = useRef<HTMLButtonElement>(null)
+  const leaderboardsDock = useRef<HTMLButtonElement>(null)
   function openPlayer(uuid?: string) {
     if (uuid === 'all') { openStats(); return }
     if (uuid && user) setPlayerSelection({ userId: user.id, uuid })
@@ -86,6 +90,7 @@ function Shell() {
   function openAdmin() { setAdminOpen(true); setActive('admin'); setAdminActivation((value) => value + 1) }
   function openChat() { setChatOpen(true); setActive('chat'); setChatActivation((value) => value + 1) }
   function openMap() { setMapOpen(true); setActive('map'); setMapActivation((value) => value + 1) }
+  function openLeaderboards() { setLeaderboardsOpen(true); setActive('leaderboards'); setLeaderboardsActivation((value) => value + 1) }
   function hideAccount() { setAccountOpen(false); setActive('settings'); accountDock.current?.focus() }
   function hideSettings() { setSettingsOpen(false); setActive('account'); settingsDock.current?.focus() }
   function hideStats() { setStatsOpen(false); setActive('account'); statsDock.current?.focus() }
@@ -93,6 +98,7 @@ function Shell() {
   function hideAdmin() { setAdminOpen(false); setActive('account'); adminDock.current?.focus() }
   function hideChat() { setChatOpen(false); setActive('account'); chatDock.current?.focus() }
   function hideMap() { setMapOpen(false); setActive('account'); mapDock.current?.focus() }
+  function hideLeaderboards() { setLeaderboardsOpen(false); setActive('account'); leaderboardsDock.current?.focus() }
 
   async function handleSignOut() {
     setLeaving(true)
@@ -122,6 +128,7 @@ function Shell() {
         <nav className="desktop-menu" aria-label="Applications">
           <button onClick={openAccount} data-ui-sound={accountOpen ? 'click' : 'open'} aria-controls="account-window">Account</button>
           <button onClick={openStats} data-ui-sound={statsOpen ? 'click' : 'open'} aria-controls="stats-window">Global Statistics</button>
+          <button onClick={openLeaderboards} data-ui-sound={leaderboardsOpen ? 'click' : 'open'} aria-controls="leaderboards-window">Leaderboards</button>
           <button onClick={openCasino} data-ui-sound={casinoOpen ? 'click' : 'open'} aria-controls="casino-window">Minigames</button>
           <button onClick={openMarket} data-ui-sound={marketOpen ? 'click' : 'open'} aria-controls="marketplace-window">Marketplace</button>
           <button onClick={openChat} data-ui-sound={chatOpen ? 'click' : 'open'} aria-controls="chat-window">Chat</button>
@@ -231,10 +238,14 @@ function Shell() {
         <DesktopWindow id="map-window" title="Live 3D World Map" icon={globeIcon} kind="map" open={mapOpen} activation={mapActivation} active={active === 'map'} onFocus={() => setActive('map')} onClose={hideMap} onMinimize={hideMap}>
           <MapPage visible={mapOpen} />
         </DesktopWindow>
+        <DesktopWindow id="leaderboards-window" title="Hall of Fame & Leaderboards" icon={perfCenterIcon} kind="leaderboards" open={leaderboardsOpen} activation={leaderboardsActivation} active={active === 'leaderboards'} onFocus={() => setActive('leaderboards')} onClose={hideLeaderboards} onMinimize={hideLeaderboards}>
+          <LeaderboardsPage visible={leaderboardsOpen} onOpenPlayer={(uuid) => openPlayer(uuid)} linkedUuids={statsAccounts.map((a) => a.uuid)} />
+        </DesktopWindow>
       </div>
       <nav className="desktop-dock" aria-label="Dock">
         <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? active === 'account' ? 'close' : 'click' : 'open'} onClick={accountOpen && active === 'account' ? hideAccount : openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
         <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? active === 'stats' ? 'close' : 'click' : 'open'} onClick={statsOpen && active === 'stats' ? hideStats : openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Global Statistics</span></button>
+        <button ref={leaderboardsDock} className="dock-app" data-ui-sound={leaderboardsOpen ? active === 'leaderboards' ? 'close' : 'click' : 'open'} onClick={leaderboardsOpen && active === 'leaderboards' ? hideLeaderboards : openLeaderboards} aria-controls="leaderboards-window" aria-expanded={leaderboardsOpen} data-open={leaderboardsOpen}><img src={perfCenterIcon} alt="" /><span>Hall of Fame</span></button>
         <button ref={casinoDock} className="dock-app" data-ui-sound={casinoOpen ? active === 'casino' ? 'close' : 'click' : 'open'} onClick={casinoOpen && active === 'casino' ? hideCasino : openCasino} aria-controls="casino-window" aria-expanded={casinoOpen} data-open={casinoOpen}><img src={minigamesIcon} alt="" /><span>Minigames</span></button>
         <button ref={marketDock} className="dock-app" data-ui-sound={marketOpen ? active === 'market' ? 'close' : 'click' : 'open'} onClick={marketOpen && active === 'market' ? hideMarket : openMarket} aria-controls="marketplace-window" aria-expanded={marketOpen} data-open={marketOpen}><img src={globeIcon} alt="" /><span>Marketplace</span></button>
         <button ref={chatDock} className="dock-app" data-ui-sound={chatOpen ? active === 'chat' ? 'close' : 'click' : 'open'} onClick={chatOpen && active === 'chat' ? hideChat : openChat} aria-controls="chat-window" aria-expanded={chatOpen} data-open={chatOpen}><img src={globeIcon} alt="" /><span>Chat</span></button>

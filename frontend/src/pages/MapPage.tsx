@@ -2,6 +2,30 @@ import { useState, useRef, useEffect } from 'react'
 
 type CameraMode = 'perspective' | 'free' | 'flat'
 
+interface BlueMapBridge {
+  setPerspectiveView?: (animationDuration: number) => void
+  setFreeFlight?: (animationDuration: number, startDistance?: number) => void
+  setFlatView?: (animationDuration: number) => void
+  resetCamera?: () => void
+  loadPageAddress?: () => void
+  updatePageAddress?: () => void
+  mapViewer?: {
+    controlsManager?: {
+      position?: { set: (x: number, y: number, z: number) => void }
+      distance?: number
+      rotation?: number
+      angle?: number
+      tilt?: number
+    }
+    clearTileCache?: () => void
+    updateLoadedMapArea?: () => void
+  }
+}
+
+type BlueMapWindow = Window & {
+  bluemap?: BlueMapBridge
+}
+
 type Props = {
   visible: boolean
 }
@@ -26,7 +50,7 @@ export default function MapPage({ visible }: Props) {
   const setView = (mode: CameraMode) => {
     setCameraMode(mode)
     try {
-      const win = iframeRef.current?.contentWindow as any
+      const win = iframeRef.current?.contentWindow as BlueMapWindow | null
       if (win?.bluemap) {
         if (mode === 'perspective' && typeof win.bluemap.setPerspectiveView === 'function') {
           win.bluemap.setPerspectiveView(0)
@@ -41,7 +65,9 @@ export default function MapPage({ visible }: Props) {
           return
         }
       }
-    } catch {}
+    } catch {
+      /* cross-origin fallback */
+    }
     if (iframeRef.current) {
       iframeRef.current.src = getMapUrl(mode)
     }
@@ -49,7 +75,7 @@ export default function MapPage({ visible }: Props) {
 
   const handleCenter = () => {
     try {
-      const win = iframeRef.current?.contentWindow as any
+      const win = iframeRef.current?.contentWindow as BlueMapWindow | null
       if (win?.bluemap) {
         if (typeof win.bluemap.resetCamera === 'function') {
           win.bluemap.resetCamera()
@@ -73,7 +99,9 @@ export default function MapPage({ visible }: Props) {
         }
         return
       }
-    } catch {}
+    } catch {
+      /* cross-origin fallback */
+    }
     if (iframeRef.current) {
       iframeRef.current.src = getMapUrl(cameraMode)
     }
@@ -81,7 +109,7 @@ export default function MapPage({ visible }: Props) {
 
   const handleRefresh = () => {
     try {
-      const win = iframeRef.current?.contentWindow as any
+      const win = iframeRef.current?.contentWindow as BlueMapWindow | null
       if (win?.bluemap?.mapViewer) {
         if (typeof win.bluemap.mapViewer.clearTileCache === 'function') {
           win.bluemap.mapViewer.clearTileCache()
@@ -91,7 +119,9 @@ export default function MapPage({ visible }: Props) {
         }
         return
       }
-    } catch {}
+    } catch {
+      /* cross-origin fallback */
+    }
     setLoading(true)
     setIframeKey((k) => k + 1)
   }

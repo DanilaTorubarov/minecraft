@@ -70,6 +70,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/link/start", post(start_link))
         .route("/api/link/{uuid}", delete(unlink_account))
         .route("/api/stats", get(stats_for_user))
+        .route("/api/leaderboards", get(get_leaderboards))
         .route("/api/economy", get(public_economy))
         .route("/internal/economy/session", post(economy_session))
         .route("/internal/economy/report", post(report_economy))
@@ -3066,6 +3067,178 @@ async fn stats_for_user(
         accounts.push(StatsAccount { coins, uuid, username, linked_at, stats, skin_hash: row.try_get("skin_hash").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? });
     }
     Ok(Json(StatsView { accounts, summary }))
+}
+
+// --- Hall of Fame & Leaderboards -------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct LeaderboardsQuery {
+    category: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct LeaderboardEntry {
+    pub rank: i64,
+    pub uuid: String,
+    pub username: String,
+    pub value: i64,
+    pub formatted: String,
+    pub skin_hash: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct LeaderboardResponse {
+    pub category: String,
+    pub category_label: String,
+    pub entries: Vec<LeaderboardEntry>,
+}
+
+fn format_number_commas(n: i64) -> String {
+    let s = n.abs().to_string();
+    let rem = s.len() % 3;
+    let mut out = String::with_capacity(s.len() + s.len() / 3 + 1);
+    if n < 0 {
+        out.push('-');
+    }
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (i % 3 == rem || (rem == 0 && i % 3 == 0)) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn format_leaderboard_playtime(seconds: i64) -> String {
+    let s = seconds.max(0);
+    let days = s / 86400;
+    let hours = (s % 86400) / 3600;
+    let minutes = (s % 3600) / 60;
+    if days > 0 {
+        format!("{}d {}h", days, hours)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, minutes)
+    } else {
+        format!("{}m", minutes)
+    }
+}
+
+fn format_leaderboard_distance(distance_cm: i64) -> String {
+    let blocks = (distance_cm.max(0) as f64) / 100.0;
+    if blocks < 1000.0 {
+        format!("{} blocks", blocks.round() as i64)
+    } else {
+        format!("{:.1} km", blocks / 1000.0)
+    }
+}
+
+async fn get_leaderboards(
+    State(pool): State<sqlx::PgPool>,
+    Query(query): Query<LeaderboardsQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let cat_input = query.category.as_deref().unwrap_or("balance").to_lowercase();
+    let (cat_key, cat_label, sql) = match cat_input.as_str() {
+        "playtime" | "time" => (
+            "playtime",
+            "Play Time",
+            "SELECT ps.uuid, ps.username, ps.play_seconds AS score, sk.texture_hash \
+             FROM player_stats ps \
+             LEFT JOIN player_skins sk ON sk.uuid = ps.uuid \
+             ORDER BY ps.play_seconds DESC, ps.username ASC LIMIT $1",
+        ),
+        "kills" | "mobs" => (
+            "kills",
+            "Mob Slayers",
+            "SELECT ps.uuid, ps.username, ps.mobs_killed AS score, sk.texture_hash \
+             FROM player_stats ps \
+             LEFT JOIN player_skins sk ON sk.uuid = ps.uuid \
+             ORDER BY ps.mobs_killed DESC, ps.username ASC LIMIT $1",
+        ),
+        "mining" | "blocks" | "broken" => (
+            "mining",
+            "Master Miners",
+            "SELECT ps.uuid, ps.username, ps.blocks_broken AS score, sk.texture_hash \
+             FROM player_stats ps \
+             LEFT JOIN player_skins sk ON sk.uuid = ps.uuid \
+             ORDER BY ps.blocks_broken DESC, ps.username ASC LIMIT $1",
+        ),
+        "placed" | "building" => (
+            "placed",
+            "Builders",
+            "SELECT ps.uuid, ps.username, ps.blocks_placed AS score, sk.texture_hash \
+             FROM player_stats ps \
+             LEFT JOIN player_skins sk ON sk.uuid = ps.uuid \
+             ORDER BY ps.blocks_placed DESC, ps.username ASC LIMIT $1",
+        ),
+        "distance" | "travel" => (
+            "distance",
+            "Adventurers",
+            "SELECT ps.uuid, ps.username, ps.distance_cm AS score, sk.texture_hash \
+             FROM player_stats ps \
+             LEFT JOIN player_skins sk ON sk.uuid = ps.uuid \
+             ORDER BY ps.distance_cm DESC, ps.username ASC LIMIT $1",
+        ),
+        "advancements" | "achievements" => (
+            "advancements",
+            "Achievements",
+            "SELECT ps.uuid, ps.username, ps.advancements AS score, sk.texture_hash \
+             FROM player_stats ps \
+             LEFT JOIN player_skins sk ON sk.uuid = ps.uuid \
+             ORDER BY ps.advancements DESC, ps.username ASC LIMIT $1",
+        ),
+        _ => (
+            "balance",
+            "Wealth",
+            "SELECT ps.uuid, ps.username, ps.coins AS score, sk.texture_hash \
+             FROM player_stats ps \
+             LEFT JOIN player_skins sk ON sk.uuid = ps.uuid \
+             ORDER BY ps.coins DESC, ps.username ASC LIMIT $1",
+        ),
+    };
+
+    let rows = sqlx::query(sql)
+        .bind(limit)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut entries = Vec::with_capacity(rows.len());
+    for (idx, row) in rows.into_iter().enumerate() {
+        let uuid: String = row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let username: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let score: i64 = row.try_get("score").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let skin_hash: Option<String> = row.try_get("texture_hash").ok().flatten();
+
+        let formatted = match cat_key {
+            "playtime" => format_leaderboard_playtime(score),
+            "kills" => format!("{} kills", format_number_commas(score)),
+            "mining" => format!("{} blocks", format_number_commas(score)),
+            "placed" => format!("{} blocks", format_number_commas(score)),
+            "distance" => format_leaderboard_distance(score),
+            "advancements" => format!("{} advancements", score),
+            _ => format!("{} coins", format_number_commas(score)),
+        };
+
+        entries.push(LeaderboardEntry {
+            rank: (idx + 1) as i64,
+            uuid,
+            username,
+            value: score,
+            formatted,
+            skin_hash,
+        });
+    }
+
+    Ok((
+        [(header::CACHE_CONTROL, "no-cache")],
+        Json(LeaderboardResponse {
+            category: cat_key.to_string(),
+            category_label: cat_label.to_string(),
+            entries,
+        }),
+    ))
 }
 
 // --- Minigames -------------------------------------------------------------
@@ -8883,6 +9056,68 @@ mod test {
         let invalid = get_with_cookie(&pool, "/api/stats", Some("session=deadbeef")).await?.status();
         assert_eq!(missing, StatusCode::UNAUTHORIZED);
         assert_eq!(invalid, StatusCode::UNAUTHORIZED);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn leaderboards_returns_ranked_entries() -> TestResult {
+        let pool = connect().await?;
+        let id = random_ip();
+        let uuid_top = test_uuid(&format!("lb-top-{id}"));
+        let uuid_sub = test_uuid(&format!("lb-sub-{id}"));
+
+        report_stats(
+            &pool,
+            Some(&test_service_token()),
+            vec![
+                stats_player_with(&uuid_top, "TopPlayer", 7200, 100, 500, serde_json::json!({
+                    "mobs_killed": 80,
+                    "distance_cm": 350_000,
+                })),
+                stats_player_with(&uuid_sub, "SubPlayer", 1800, 20, 100, serde_json::json!({
+                    "mobs_killed": 15,
+                    "distance_cm": 50_000,
+                })),
+            ],
+        ).await?;
+
+        sqlx::query("UPDATE player_stats SET coins = 9999 WHERE uuid = $1")
+            .bind(&uuid_top)
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE player_stats SET coins = 120 WHERE uuid = $1")
+            .bind(&uuid_sub)
+            .execute(&pool)
+            .await?;
+
+        let res = get_with_cookie(&pool, "/api/leaderboards?category=balance", None).await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await?;
+        assert_eq!(body["category"], "balance");
+        let entries = body["entries"].as_array().cloned().unwrap_or_default();
+        let top_entry = entries.iter().find(|e| e["uuid"] == uuid_top);
+        assert!(top_entry.is_some());
+        assert_eq!(top_entry.unwrap()["value"], 9999);
+        assert_eq!(top_entry.unwrap()["formatted"], "9,999 coins");
+
+        let res_kills = get_with_cookie(&pool, "/api/leaderboards?category=kills", None).await?;
+        let body_kills = body_json(res_kills).await?;
+        let entries_kills = body_kills["entries"].as_array().cloned().unwrap_or_default();
+        let top_kill = entries_kills.iter().find(|e| e["uuid"] == uuid_top).unwrap();
+        let sub_kill = entries_kills.iter().find(|e| e["uuid"] == uuid_sub).unwrap();
+        assert!(top_kill["rank"].as_i64().unwrap() < sub_kill["rank"].as_i64().unwrap());
+        assert_eq!(top_kill["value"], 80);
+        assert_eq!(top_kill["formatted"], "80 kills");
+
+        let res_dist = get_with_cookie(&pool, "/api/leaderboards?category=distance", None).await?;
+        let body_dist = body_json(res_dist).await?;
+        let entries_dist = body_dist["entries"].as_array().cloned().unwrap_or_default();
+        let top_dist = entries_dist.iter().find(|e| e["uuid"] == uuid_top).unwrap();
+        assert_eq!(top_dist["value"], 350_000);
+        assert_eq!(top_dist["formatted"], "3.5 km");
+
+        delete_player_stats(&pool, &uuid_top).await?;
+        delete_player_stats(&pool, &uuid_sub).await?;
         Ok(())
     }
 

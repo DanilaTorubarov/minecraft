@@ -223,3 +223,32 @@ test('damaged items preserve damage values and format durability correctly', asy
   assert.match(desc, /sharpness 5/)
 })
 
+test('getLeaderboards fetches category rankings and parses entries', async () => {
+  const { getLeaderboards } = await import('../src/lib/api.ts')
+  const mockResponse = {
+    category: 'balance',
+    category_label: 'Wealth',
+    entries: [
+      {
+        rank: 1,
+        uuid: '00000000-0000-0000-0000-000000000001',
+        username: 'KingMidas',
+        value: 50000,
+        formatted: '50,000 coins',
+        skin_hash: 'midashash',
+      },
+    ],
+  }
+  let requestedUrl = ''
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    requestedUrl = String(input)
+    return new Response(JSON.stringify(mockResponse), { status: 200 })
+  }
+  const result = await getLeaderboards('balance', 25)
+  assert.equal(requestedUrl, '/api/leaderboards?category=balance&limit=25')
+  assert.equal(result.category, 'balance')
+  assert.equal(result.entries.length, 1)
+  assert.equal(result.entries[0].username, 'KingMidas')
+  assert.equal(result.entries[0].rank, 1)
+})
+

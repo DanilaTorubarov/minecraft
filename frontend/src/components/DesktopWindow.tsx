@@ -21,6 +21,7 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   admin: ['Administration Center', 'Privileged operator controls'],
   chat: ['Server Chat', 'Live bidirectional Minecraft realm bridge'],
   map: ['Live 3D World', '2000×2000 Core Terrain Radar'],
+  leaderboards: ['Hall of Fame', 'Top server champions & rankings'],
 }
 
 type Gesture = {
