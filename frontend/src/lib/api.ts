@@ -5,6 +5,7 @@ export type Me = {
   displayed_nickname: string
   email: string
   login_displayed: string
+  is_admin?: boolean
 }
 
 export type LinkedAccount = {
@@ -456,4 +457,37 @@ export async function cashOutMines(roundId: string): Promise<MinesRound> {
   const response = await send('POST', '/api/minigames/mines/cashout', { round_id: roundId })
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as MinesRound
+}
+
+// --- Admin Endpoints --------------------------------------------------------
+
+export type AdminAccount = {
+  uuid: string
+  username: string
+  user_id: number | null
+  coins: number
+  is_self: boolean
+}
+
+export type AdminBalanceResult = {
+  uuid: string
+  username: string
+  previous_coins: number
+  new_coins: number
+}
+
+export async function getAdminAccounts(): Promise<AdminAccount[]> {
+  const response = await fetch('/api/admin/accounts')
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as AdminAccount[]
+}
+
+export async function adjustAdminBalance(input: {
+  uuid: string
+  operation: 'set' | 'add' | 'subtract'
+  amount: number
+}): Promise<AdminBalanceResult> {
+  const response = await send('POST', '/api/admin/balance', input)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as AdminBalanceResult
 }

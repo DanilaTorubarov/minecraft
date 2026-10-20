@@ -97,6 +97,8 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/players/{uuid}/inventory", get(player_inventory))
         .route("/api/players/{uuid}/privates", get(get_player_privates))
         .route("/api/players/{uuid}/privates/{block_index}/fuel", post(deposit_player_private_fuel))
+        .route("/api/admin/accounts", get(admin_get_accounts))
+        .route("/api/admin/balance", post(admin_adjust_balance))
         .route("/internal/skins/sync", post(sync_player_skins))
         .route("/internal/skins/report", post(report_player_skin))
         .route("/internal/inventory/report", post(report_inventory))
@@ -621,6 +623,37 @@ struct Me {
     displayed_nickname: String,
     email: String,
     login_displayed: String,
+    is_admin: bool,
+}
+
+fn check_admin_env(email: &str, login: &str) -> bool {
+    if let Ok(admin_emails) = std::env::var("ADMIN_EMAILS") {
+        if admin_emails.split(',').any(|e| e.trim().eq_ignore_ascii_case(email)) {
+            return true;
+        }
+    }
+    if let Ok(admin_logins) = std::env::var("ADMIN_LOGINS") {
+        if admin_logins.split(',').any(|l| l.trim().eq_ignore_ascii_case(login)) {
+            return true;
+        }
+    }
+    false
+}
+
+async fn is_user_admin(pool: &sqlx::PgPool, user_id: i64) -> Result<bool, StatusCode> {
+    let row = sqlx::query("SELECT is_admin, email, login FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else { return Ok(false); };
+    let db_admin: bool = row.try_get("is_admin").unwrap_or(false);
+    if db_admin {
+        return Ok(true);
+    }
+    let email: String = row.try_get("email").unwrap_or_default();
+    let login: String = row.try_get("login").unwrap_or_default();
+    Ok(check_admin_env(&email, &login))
 }
 
 async fn current_user(
@@ -628,19 +661,24 @@ async fn current_user(
     SessionUser { user_id }: SessionUser
 ) -> Result<Json<Me>, StatusCode> {
     let row = sqlx
-        ::query("SELECT id, displayed_nickname, email, login_displayed FROM users WHERE id = $1")
+        ::query("SELECT id, displayed_nickname, email, login_displayed, is_admin, login FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_optional(&pool).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
+    let db_admin: bool = row.try_get("is_admin").unwrap_or(false);
+    let email: String = row.try_get("email").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let login: String = row.try_get("login").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let is_admin = db_admin || check_admin_env(&email, &login);
     Ok(
         Json(Me {
             id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
             displayed_nickname: row.try_get("displayed_nickname").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-            email: row.try_get("email").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            email,
             login_displayed: row
                 .try_get("login_displayed")
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            is_admin,
         })
     )
 }
@@ -5612,6 +5650,166 @@ async fn mine_status(
         "cooldown_remaining": remaining,
         "duration_seconds": MINE_EXPEDITION_DURATION_SECONDS
     })))
+}
+
+// --- Admin endpoints -------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct AdminAccountView {
+    uuid: String,
+    username: String,
+    user_id: Option<i64>,
+    coins: i64,
+    is_self: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct AdminBalanceRequest {
+    uuid: String,
+    operation: String, // "set", "add", "subtract"
+    amount: i64,
+}
+
+#[derive(serde::Serialize)]
+struct AdminBalanceResponse {
+    uuid: String,
+    username: String,
+    previous_coins: i64,
+    new_coins: i64,
+}
+
+async fn admin_get_accounts(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<Vec<AdminAccountView>>, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let rows = sqlx::query(
+        "SELECT ma.uuid, ma.username, ma.user_id, COALESCE(ps.coins, 0) AS coins
+         FROM minecraft_accounts ma
+         LEFT JOIN player_stats ps ON ps.uuid = ma.uuid
+         ORDER BY (ma.user_id = $1) DESC, ma.username ASC"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut accounts = Vec::with_capacity(rows.len());
+    for row in rows {
+        let uuid: String = row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let username: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let row_user_id: Option<i64> = row.try_get("user_id").ok();
+        let coins: i64 = row.try_get("coins").unwrap_or(0);
+        let is_self = row_user_id == Some(user_id);
+        accounts.push(AdminAccountView {
+            uuid,
+            username,
+            user_id: row_user_id,
+            coins,
+            is_self,
+        });
+    }
+
+    Ok(Json(accounts))
+}
+
+async fn admin_adjust_balance(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AdminBalanceRequest>,
+) -> Result<Json<AdminBalanceResponse>, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let uuid = input.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if input.amount < 0 || input.amount > 1_000_000_000_000 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let op = input.operation.trim().to_lowercase();
+    if !matches!(op.as_str(), "set" | "add" | "subtract") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let _ = sqlx::query("SELECT set_config('economy.reason', 'admin_balance_adjustment', true), set_config('economy.reference', $1, true)")
+        .bind(format!("admin:{}", user_id))
+        .execute(&mut *tx)
+        .await;
+
+    let account = sqlx::query("SELECT username FROM minecraft_accounts WHERE uuid = $1")
+        .bind(&uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let username = match account {
+        Some(row) => row.try_get::<String, _>("username").unwrap_or_else(|_| "Player".to_string()),
+        None => {
+            let stat_row = sqlx::query("SELECT username FROM player_stats WHERE uuid = $1")
+                .bind(&uuid)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            match stat_row {
+                Some(r) => r.try_get::<String, _>("username").unwrap_or_else(|_| "Player".to_string()),
+                None => return Err(StatusCode::NOT_FOUND),
+            }
+        }
+    };
+
+    let prev_coins: i64 = sqlx::query_scalar("SELECT COALESCE(coins, 0) FROM player_stats WHERE uuid = $1")
+        .bind(&uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .unwrap_or(0);
+
+    let new_coins = match op.as_str() {
+        "set" => input.amount,
+        "add" => (prev_coins.saturating_add(input.amount)).min(1_000_000_000_000),
+        "subtract" => prev_coins.saturating_sub(input.amount).max(0),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    sqlx::query(
+        "INSERT INTO player_stats(uuid, username, coins)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (uuid) DO UPDATE SET coins = EXCLUDED.coins, username = EXCLUDED.username"
+    )
+    .bind(&uuid)
+    .bind(&username)
+    .bind(new_coins)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let ip = client_ip(&headers);
+    let _ = audit(
+        &pool,
+        "admin_balance_adjustment",
+        Some(user_id),
+        Some(&format!("{}: {} -> {} (op={})", uuid, prev_coins, new_coins, op)),
+        Some(&ip),
+    ).await;
+
+    Ok(Json(AdminBalanceResponse {
+        uuid,
+        username,
+        previous_coins: prev_coins,
+        new_coins,
+    }))
 }
 // --- Player skins ----------------------------------------------------------
 
@@ -11928,6 +12126,107 @@ mod test {
 
         delete_user(&pool, &email).await?;
 
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+    #[tokio::test]
+    async fn admin_panel_balance_management() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let random = random_id();
+
+        // User A: Regular user
+        let email_a = format!("user_{random}@example.com").to_lowercase();
+        let login_a = format!("user_{random}").to_lowercase();
+        register_request(&pool, "NormalUser", &login_a, &email_a, "password12345").await?;
+        let cookie_a = login_cookie(&pool, &email_a, "password12345").await?;
+
+        // User B: Admin user
+        let email_b = format!("admin_{random}@example.com").to_lowercase();
+        let login_b = format!("admin_{random}").to_lowercase();
+        register_request(&pool, "AdminUser", &login_b, &email_b, "password12345").await?;
+        sqlx::query("UPDATE users SET is_admin = true WHERE email = $1")
+            .bind(&email_b)
+            .execute(&pool)
+            .await?;
+        let cookie_b = login_cookie(&pool, &email_b, "password12345").await?;
+
+        // Verify /api/me shows is_admin accurately
+        let me_a = body_json(get_with_cookie(&pool, "/api/me", Some(&cookie_a)).await?).await?;
+        assert_eq!(me_a["is_admin"], false);
+        let me_b = body_json(get_with_cookie(&pool, "/api/me", Some(&cookie_b)).await?).await?;
+        assert_eq!(me_b["is_admin"], true);
+
+        // Link account to admin
+        let uuid_b = test_uuid(&random_ip());
+        sqlx::query("INSERT INTO minecraft_accounts(user_id, uuid, username) VALUES((SELECT id FROM users WHERE email=$1), $2, 'AdminPlayer')")
+            .bind(&email_b).bind(&uuid_b).execute(&pool).await?;
+        sqlx::query("INSERT INTO player_stats(uuid, username, coins) VALUES($1, 'AdminPlayer', 1000)")
+            .bind(&uuid_b).execute(&pool).await?;
+
+        // Regular user cannot access admin accounts
+        let res_acc_a = send(&pool, "GET", "/api/admin/accounts", Some(&cookie_a), None).await?;
+        assert_eq!(res_acc_a.status(), StatusCode::FORBIDDEN);
+
+        // Admin can access admin accounts
+        let res_acc_b = send(&pool, "GET", "/api/admin/accounts", Some(&cookie_b), None).await?;
+        assert_eq!(res_acc_b.status(), StatusCode::OK);
+        let accounts_json = body_json(res_acc_b).await?;
+        let list = accounts_json.as_array().expect("accounts array");
+        assert!(!list.is_empty());
+        assert_eq!(list[0]["uuid"], uuid_b);
+        assert_eq!(list[0]["username"], "AdminPlayer");
+        assert_eq!(list[0]["coins"], 1000);
+        assert_eq!(list[0]["is_self"], true);
+
+        // Regular user cannot adjust balance
+        let res_adj_a = send(&pool, "POST", "/api/admin/balance", Some(&cookie_a), Some(serde_json::json!({
+            "uuid": uuid_b,
+            "operation": "add",
+            "amount": 5000
+        }))).await?;
+        assert_eq!(res_adj_a.status(), StatusCode::FORBIDDEN);
+
+        // Admin adds coins
+        let res_add = send(&pool, "POST", "/api/admin/balance", Some(&cookie_b), Some(serde_json::json!({
+            "uuid": uuid_b,
+            "operation": "add",
+            "amount": 50000
+        }))).await?;
+        assert_eq!(res_add.status(), StatusCode::OK);
+        let add_json = body_json(res_add).await?;
+        assert_eq!(add_json["previous_coins"], 1000);
+        assert_eq!(add_json["new_coins"], 51000);
+
+        let cur_coins: i64 = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid=$1").bind(&uuid_b).fetch_one(&pool).await?;
+        assert_eq!(cur_coins, 51000);
+
+        // Admin sets coins
+        let res_set = send(&pool, "POST", "/api/admin/balance", Some(&cookie_b), Some(serde_json::json!({
+            "uuid": uuid_b,
+            "operation": "set",
+            "amount": 1000000
+        }))).await?;
+        assert_eq!(res_set.status(), StatusCode::OK);
+        let set_json = body_json(res_set).await?;
+        assert_eq!(set_json["previous_coins"], 51000);
+        assert_eq!(set_json["new_coins"], 1000000);
+
+        // Admin subtracts coins
+        let res_sub = send(&pool, "POST", "/api/admin/balance", Some(&cookie_b), Some(serde_json::json!({
+            "uuid": uuid_b,
+            "operation": "subtract",
+            "amount": 250000
+        }))).await?;
+        assert_eq!(res_sub.status(), StatusCode::OK);
+        let sub_json = body_json(res_sub).await?;
+        assert_eq!(sub_json["previous_coins"], 1000000);
+        assert_eq!(sub_json["new_coins"], 750000);
+
+        let final_coins: i64 = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid=$1").bind(&uuid_b).fetch_one(&pool).await?;
+        assert_eq!(final_coins, 750000);
+
+        delete_user(&pool, &email_a).await?;
+        delete_user(&pool, &email_b).await?;
         drop_budget_pool(admin, pool, schema).await
     }
 

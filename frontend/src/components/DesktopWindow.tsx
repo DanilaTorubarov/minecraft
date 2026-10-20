@@ -18,6 +18,7 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   player: ['Minecraft player', 'Statistics, inventory & skin'],
   casino: ['Server Mini Games', 'Play and test your luck'],
   marketplace: ['Player marketplace', 'Items held by the server'],
+  admin: ['Administration Center', 'Privileged operator controls'],
 }
 
 type Gesture = {

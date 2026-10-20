@@ -18,6 +18,7 @@ import perfCenterIcon from '../assets/icons/vista-perf-center.png'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
 import minigamesIcon from '../assets/icons/minigames-gamepad.png'
 import MinigamesPage from '../pages/MinigamesPage'
+import AdminPage from '../pages/AdminPage'
 
 function Shell() {
   const { user, signOut } = useAuth()
@@ -34,11 +35,13 @@ function Shell() {
   const [inventoryLaunch, setInventoryLaunch] = useState<{ uuid: string; activation: number } | null>(null)
   const [statsOpen, setStatsOpen] = useState(false)
   const [casinoOpen, setCasinoOpen] = useState(false)
+  const [adminOpen, setAdminOpen] = useState(false)
   const [active, setActive] = useState('account')
   const [accountActivation, setAccountActivation] = useState(0)
   const [settingsActivation, setSettingsActivation] = useState(0)
   const [statsActivation, setStatsActivation] = useState(0)
   const [casinoActivation, setCasinoActivation] = useState(0)
+  const [adminActivation, setAdminActivation] = useState(0)
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
   const [playerOpen, setPlayerOpen] = useState(false)
@@ -50,6 +53,7 @@ function Shell() {
   const statsDock = useRef<HTMLButtonElement>(null)
   const playerDock = useRef<HTMLButtonElement>(null)
   const casinoDock = useRef<HTMLButtonElement>(null)
+  const adminDock = useRef<HTMLButtonElement>(null)
   function openPlayer(uuid?: string) {
     if (uuid === 'all') { openStats(); return }
     if (uuid && user) setPlayerSelection({ userId: user.id, uuid })
@@ -71,10 +75,12 @@ function Shell() {
   function openSettings() { setSettingsOpen(true); setActive('settings'); setSettingsActivation((value) => value + 1) }
   function openStats() { setStatsOpen(true); setActive('stats'); setStatsActivation((value) => value + 1) }
   function openCasino() { setCasinoOpen(true); setActive('casino'); setCasinoActivation((value) => value + 1) }
+  function openAdmin() { setAdminOpen(true); setActive('admin'); setAdminActivation((value) => value + 1) }
   function hideAccount() { setAccountOpen(false); setActive('settings'); accountDock.current?.focus() }
   function hideSettings() { setSettingsOpen(false); setActive('account'); settingsDock.current?.focus() }
   function hideStats() { setStatsOpen(false); setActive('account'); statsDock.current?.focus() }
   function hideCasino() { setCasinoOpen(false); setActive('account'); casinoDock.current?.focus() }
+  function hideAdmin() { setAdminOpen(false); setActive('account'); adminDock.current?.focus() }
 
   async function handleSignOut() {
     setLeaving(true)
@@ -108,6 +114,9 @@ function Shell() {
           <button onClick={openMarket} data-ui-sound={marketOpen ? 'click' : 'open'} aria-controls="marketplace-window">Marketplace</button>
           <button onClick={() => openPlayer()} data-ui-sound={playerOpen ? 'click' : 'open'} aria-controls="player-controls-window">Player Controls</button>
           <button onClick={openSettings} data-ui-sound={settingsOpen ? 'click' : 'open'} aria-controls="settings-window">Settings</button>
+          {user?.is_admin && (
+            <button onClick={openAdmin} data-ui-sound={adminOpen ? 'click' : 'open'} aria-controls="admin-window">Admin Panel</button>
+          )}
         </nav>
         <span className="desktop-menu-caption">Your world, connected.</span>
         {user !== null && <button className="menu-logout" onClick={handleSignOut} disabled={leaving}>{leaving ? 'Logging out…' : 'Log out'}</button>}
@@ -197,6 +206,11 @@ function Shell() {
             <p className="settings-footnote">Your choices are saved automatically in this browser.</p>
           </div>
         </DesktopWindow>
+        {user?.is_admin && (
+          <DesktopWindow id="admin-window" title="Admin Panel" icon={firewallOnIcon} kind="admin" open={adminOpen} activation={adminActivation} active={active === 'admin'} onFocus={() => setActive('admin')} onClose={hideAdmin} onMinimize={hideAdmin}>
+            <AdminPage visible={adminOpen} />
+          </DesktopWindow>
+        )}
       </div>
       <nav className="desktop-dock" aria-label="Dock">
         <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? active === 'account' ? 'close' : 'click' : 'open'} onClick={accountOpen && active === 'account' ? hideAccount : openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
@@ -204,6 +218,9 @@ function Shell() {
         <button ref={casinoDock} className="dock-app" data-ui-sound={casinoOpen ? active === 'casino' ? 'close' : 'click' : 'open'} onClick={casinoOpen && active === 'casino' ? hideCasino : openCasino} aria-controls="casino-window" aria-expanded={casinoOpen} data-open={casinoOpen}><img src={minigamesIcon} alt="" /><span>Minigames</span></button>
         <button ref={marketDock} className="dock-app" data-ui-sound={marketOpen ? active === 'market' ? 'close' : 'click' : 'open'} onClick={marketOpen && active === 'market' ? hideMarket : openMarket} aria-controls="marketplace-window" aria-expanded={marketOpen} data-open={marketOpen}><img src={globeIcon} alt="" /><span>Marketplace</span></button>
         <button ref={playerDock} className="dock-app" onClick={playerOpen && active === 'player' ? hidePlayer : () => openPlayer()} aria-controls="player-controls-window" aria-expanded={playerOpen} data-open={playerOpen} data-ui-sound={playerOpen ? active === 'player' ? 'close' : 'click' : 'open'}>{selectedPlayer ? <PlayerHead username={selectedPlayer.username} textureHash={selectedPlayer.skin_hash} /> : <img src={perfCenterIcon} alt="" />}<span>Player Controls</span></button>
+        {user?.is_admin && (
+          <button ref={adminDock} className="dock-app" data-ui-sound={adminOpen ? active === 'admin' ? 'close' : 'click' : 'open'} onClick={adminOpen && active === 'admin' ? hideAdmin : openAdmin} aria-controls="admin-window" aria-expanded={adminOpen} data-open={adminOpen}><img src={firewallOnIcon} alt="" /><span>Admin Panel</span></button>
+        )}
         <span className="dock-divider" />
         <button ref={settingsDock} className="dock-app" data-ui-sound={settingsOpen ? active === 'settings' ? 'close' : 'click' : 'open'} onClick={settingsOpen && active === 'settings' ? hideSettings : openSettings} aria-controls="settings-window" aria-expanded={settingsOpen} data-open={settingsOpen}><img src={personalizationIcon} alt="" /><span>Settings</span></button>
       </nav>
