@@ -159,6 +159,54 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.MarketRules.formatInventoryTitle(1, 3, "").equals("Marketplace (Page 1/3)"), "Default title formatted cleanly");
         check(LinkBridgePlugin.MarketRules.formatInventoryTitle(2, 5, "diamond").equals("Market (diamond) P.2/5"), "Filter title formatted cleanly");
 
+        // Equipment repair rules and tier pricing
+        // 1. Iron equipment (tools, weapons, armor)
+        check(LinkBridgePlugin.RepairRules.isIronEquipment("IRON_SWORD"), "Iron sword qualifies");
+        check(LinkBridgePlugin.RepairRules.isIronEquipment("IRON_PICKAXE"), "Iron pickaxe qualifies");
+        check(LinkBridgePlugin.RepairRules.isIronEquipment("IRON_CHESTPLATE"), "Iron chestplate qualifies");
+        check(LinkBridgePlugin.RepairRules.isRepairableMaterial("IRON_HELMET"), "Iron helmet is repairable");
+        check(LinkBridgePlugin.RepairRules.unitPrice("IRON_SWORD") == 10L, "Iron repair price is 10 coins");
+
+        // 2. Golden armor
+        check(LinkBridgePlugin.RepairRules.isGoldenArmor("GOLDEN_HELMET"), "Golden helmet qualifies");
+        check(LinkBridgePlugin.RepairRules.isGoldenArmor("GOLDEN_CHESTPLATE"), "Golden chestplate qualifies");
+        check(LinkBridgePlugin.RepairRules.isGoldenArmor("GOLDEN_LEGGINGS"), "Golden leggings qualifies");
+        check(LinkBridgePlugin.RepairRules.isGoldenArmor("GOLDEN_BOOTS"), "Golden boots qualifies");
+        check(!LinkBridgePlugin.RepairRules.isGoldenArmor("GOLDEN_SWORD"), "Golden sword is not armor");
+        check(!LinkBridgePlugin.RepairRules.isGoldenArmor("GOLDEN_PICKAXE"), "Golden pickaxe is not armor");
+        check(LinkBridgePlugin.RepairRules.isRepairableMaterial("GOLDEN_CHESTPLATE"), "Golden chestplate is repairable");
+        check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("GOLDEN_AXE"), "Golden axe is not repairable");
+        check(LinkBridgePlugin.RepairRules.unitPrice("GOLDEN_CHESTPLATE") == 15L, "Golden armor repair price is 15 coins");
+
+        // 3. Diamond armor
+        check(LinkBridgePlugin.RepairRules.isDiamondArmor("DIAMOND_HELMET"), "Diamond helmet qualifies");
+        check(LinkBridgePlugin.RepairRules.isDiamondArmor("DIAMOND_CHESTPLATE"), "Diamond chestplate qualifies");
+        check(LinkBridgePlugin.RepairRules.isDiamondArmor("DIAMOND_LEGGINGS"), "Diamond leggings qualifies");
+        check(LinkBridgePlugin.RepairRules.isDiamondArmor("DIAMOND_BOOTS"), "Diamond boots qualifies");
+        check(!LinkBridgePlugin.RepairRules.isDiamondArmor("DIAMOND_SWORD"), "Diamond sword is not armor");
+        check(!LinkBridgePlugin.RepairRules.isDiamondArmor("DIAMOND_SHOVEL"), "Diamond shovel is not armor");
+        check(LinkBridgePlugin.RepairRules.isRepairableMaterial("DIAMOND_BOOTS"), "Diamond boots is repairable");
+        check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("DIAMOND_HOE"), "Diamond hoe is not repairable");
+        check(LinkBridgePlugin.RepairRules.unitPrice("DIAMOND_LEGGINGS") == 60L, "Diamond armor repair price is 60 coins");
+
+        // 4. Netherite armor
+        check(LinkBridgePlugin.RepairRules.isNetheriteArmor("NETHERITE_HELMET"), "Netherite helmet qualifies");
+        check(LinkBridgePlugin.RepairRules.isNetheriteArmor("NETHERITE_CHESTPLATE"), "Netherite chestplate qualifies");
+        check(LinkBridgePlugin.RepairRules.isNetheriteArmor("NETHERITE_LEGGINGS"), "Netherite leggings qualifies");
+        check(LinkBridgePlugin.RepairRules.isNetheriteArmor("NETHERITE_BOOTS"), "Netherite boots qualifies");
+        check(!LinkBridgePlugin.RepairRules.isNetheriteArmor("NETHERITE_SWORD"), "Netherite sword is not armor");
+        check(!LinkBridgePlugin.RepairRules.isNetheriteArmor("NETHERITE_PICKAXE"), "Netherite pickaxe is not armor");
+        check(LinkBridgePlugin.RepairRules.isRepairableMaterial("NETHERITE_HELMET"), "Netherite helmet is repairable");
+        check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("NETHERITE_SWORD"), "Netherite sword is not repairable");
+        check(LinkBridgePlugin.RepairRules.unitPrice("NETHERITE_HELMET") == 175L, "Netherite armor repair price is 175 coins");
+
+        // 5. Other unrepairable materials
+        check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("LEATHER_CHESTPLATE"), "Leather chestplate is not repairable");
+        check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("CHAINMAIL_HELMET"), "Chainmail is not repairable");
+        check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("BOW"), "Bow is not repairable");
+        check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("DIRT"), "Dirt is not repairable");
+        check(LinkBridgePlugin.RepairRules.unitPrice("LEATHER_CHESTPLATE") == null, "Unrepairable item has null unit price");
+
         System.out.println("Inventory NBT regression checks passed");
     }
 }

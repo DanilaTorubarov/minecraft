@@ -1,6 +1,34 @@
 # Project checkpoint — 2026-10-20
 
 
+## Tiered equipment repairs (Iron, Golden, Diamond, Netherite armor) — 2026-10-20
+
+- Added support for repairing Golden, Diamond, and Netherite armor pieces via `/services repair [confirm]` in game alongside existing iron equipment.
+- Economic balancing:
+  - Iron equipment: 10 coins / quarter durability unit (`ECONOMY_REPAIR_PRICE = 10`, full repair 40 coins vs ~60–80 coins new).
+  - Golden armor (`golden_helmet`, `golden_chestplate`, `golden_leggings`, `golden_boots`): 15 coins / quarter durability unit (`ECONOMY_GOLD_REPAIR_PRICE = 15`, full repair 60 coins vs ~100 coins new).
+  - Diamond armor (`diamond_helmet`, `diamond_chestplate`, `diamond_leggings`, `diamond_boots`): 60 coins / quarter durability unit (`ECONOMY_DIAMOND_REPAIR_PRICE = 60`, full repair 240 coins vs ~400 coins new).
+  - Netherite armor (`netherite_helmet`, `netherite_chestplate`, `netherite_leggings`, `netherite_boots`): 175 coins / quarter durability unit (`ECONOMY_NETHERITE_REPAIR_PRICE = 175`, full repair 700 coins vs ~1,800 coins new).
+  - Repairs remain limited to at most 3 units per UTC day with a 1,000-coin wallet reserve requirement.
+- Backend implementation (`src/main.rs`):
+  - Added constants and helper functions: `iron_repair_key`, `golden_armor_repair_key`, `diamond_armor_repair_key`, `netherite_armor_repair_key`, `repair_unit_price`, and `is_repairable_key`.
+  - Updated `validate_repair` to validate all repairable tiers.
+  - Updated `repair_quote` and `buy_repair` to quote and charge using the dynamic item tier unit price.
+  - Updated `public_economy` (`GET /api/economy`) to expose `repair_unit_prices` mapping while preserving backwards compatibility on `repair_unit_price`.
+- Database schema (`migrations/0019_tier_armor_repair.sql`):
+  - Updated `economy_tasks_check` constraint on `economy_tasks` table to allow positive prices for tiered equipment repairs instead of hardcoding `price = repair_units * 10`.
+- Minecraft plugin (`LinkBridgePlugin.java`):
+  - Added `RepairRules` helper class with material validation and tier price lookups.
+  - Updated `serviceCommand` to accept golden, diamond, and netherite armor items alongside iron equipment, with updated usage and quote messages.
+  - Generic execution in `applyEconomyTask` applies durability repairs seamlessly across all tiers.
+- Test coverage & verification:
+  - Added Rust integration test `tiered_armor_repairs_and_validation` in `src/main.rs` covering quotes, purchases, balance deductions, unrepairable equipment rejection, and public economy API info.
+  - Added Java unit test cases in `InventoryNbtTest.java` verifying `RepairRules` material qualification and unit price resolution across all tiers and invalid items.
+  - Passed all backend tests: 140 passed; 0 failed (`docker compose run --rm tests`).
+  - Passed plugin build and unit tests: `./scripts/build-plugin.sh`.
+  - Passed frontend tests (60/60) and production build: `npm test`, `npm run build`.
+
+
 ## In-game `/market` & `/ah` auction house GUI and purchasing — 2026-10-20
 
 - Implemented `/market` (alias `/ah`) command in Minecraft via LinkBridge plugin (`plugin.yml` and `LinkBridgePlugin.java`).

@@ -4064,7 +4064,24 @@ where
 }
 async fn public_economy(State(pool): State<sqlx::PgPool>) -> Result<impl IntoResponse, StatusCode> {
     let policy=economy_policy(&pool).await?;
-    Ok(([(header::CACHE_CONTROL,"no-store")],Json(serde_json::json!({"level":policy.level,"commission_bps":policy.commission_bps,"target_per_player":policy.target_per_player,"recovery_days":ECONOMY_RECOVERY_DAYS,"newcomer_days":ECONOMY_NEWCOMER_DAYS,"newcomer_reserve_percent":20,"max_daily_allowance":ECONOMY_MAX_ALLOWANCE,"repair_unit_price":ECONOMY_REPAIR_PRICE,"private_block_travel_available":false,"private_block_travel_price":ECONOMY_TRAVEL_PRICE}))))
+    Ok(([(header::CACHE_CONTROL,"no-store")],Json(serde_json::json!({
+        "level":policy.level,
+        "commission_bps":policy.commission_bps,
+        "target_per_player":policy.target_per_player,
+        "recovery_days":ECONOMY_RECOVERY_DAYS,
+        "newcomer_days":ECONOMY_NEWCOMER_DAYS,
+        "newcomer_reserve_percent":20,
+        "max_daily_allowance":ECONOMY_MAX_ALLOWANCE,
+        "repair_unit_price":ECONOMY_REPAIR_PRICE,
+        "repair_unit_prices":{
+            "iron":ECONOMY_REPAIR_PRICE,
+            "gold":ECONOMY_GOLD_REPAIR_PRICE,
+            "diamond":ECONOMY_DIAMOND_REPAIR_PRICE,
+            "netherite":ECONOMY_NETHERITE_REPAIR_PRICE
+        },
+        "private_block_travel_available":false,
+        "private_block_travel_price":ECONOMY_TRAVEL_PRICE
+    }))))
 }
 
 /// Defaults shared by the production activity query and virtual players.
@@ -4105,6 +4122,9 @@ const ECONOMY_NEWCOMER_DAYS: i64 = 14;
 const ECONOMY_MAX_ALLOWANCE: i64 = 1200;
 const ECONOMY_TRAVEL_PRICE: i64 = 25;
 const ECONOMY_REPAIR_PRICE: i64 = 10;
+const ECONOMY_GOLD_REPAIR_PRICE: i64 = 15;
+const ECONOMY_DIAMOND_REPAIR_PRICE: i64 = 60;
+const ECONOMY_NETHERITE_REPAIR_PRICE: i64 = 175;
 const ECONOMY_SERVICE_RESERVE: i64 = 1000;
 #[cfg(test)]
 const ECONOMY_STARTER_BREAD: i32 = 16;
@@ -4198,6 +4218,49 @@ fn iron_repair_key(key: &str) -> bool {
             | "minecraft:iron_leggings"
             | "minecraft:iron_boots"
     )
+}
+fn golden_armor_repair_key(key: &str) -> bool {
+    matches!(
+        key,
+        "minecraft:golden_helmet"
+            | "minecraft:golden_chestplate"
+            | "minecraft:golden_leggings"
+            | "minecraft:golden_boots"
+    )
+}
+fn diamond_armor_repair_key(key: &str) -> bool {
+    matches!(
+        key,
+        "minecraft:diamond_helmet"
+            | "minecraft:diamond_chestplate"
+            | "minecraft:diamond_leggings"
+            | "minecraft:diamond_boots"
+    )
+}
+fn netherite_armor_repair_key(key: &str) -> bool {
+    matches!(
+        key,
+        "minecraft:netherite_helmet"
+            | "minecraft:netherite_chestplate"
+            | "minecraft:netherite_leggings"
+            | "minecraft:netherite_boots"
+    )
+}
+fn repair_unit_price(key: &str) -> Option<i64> {
+    if iron_repair_key(key) {
+        Some(ECONOMY_REPAIR_PRICE)
+    } else if golden_armor_repair_key(key) {
+        Some(ECONOMY_GOLD_REPAIR_PRICE)
+    } else if diamond_armor_repair_key(key) {
+        Some(ECONOMY_DIAMOND_REPAIR_PRICE)
+    } else if netherite_armor_repair_key(key) {
+        Some(ECONOMY_NETHERITE_REPAIR_PRICE)
+    } else {
+        None
+    }
+}
+fn is_repairable_key(key: &str) -> bool {
+    repair_unit_price(key).is_some()
 }
 async fn lock_economy(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), StatusCode> {
     sqlx::query("SELECT singleton FROM economy_policy WHERE singleton FOR UPDATE")
@@ -4753,7 +4816,7 @@ fn validate_repair(body: &EconomyRepair) -> Result<(), StatusCode> {
         || !is_uuid(&body.id)
         || !is_minecraft_username(&body.username)
         || !(0..=40).contains(&body.slot)
-        || !iron_repair_key(&body.key)
+        || !is_repairable_key(&body.key)
         || body.fingerprint.len() != 64
         || !body
             .fingerprint
@@ -4781,6 +4844,7 @@ async fn repair_quote(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     require_service_token(&headers)?;
     validate_repair(&body)?;
+    let unit_price = repair_unit_price(&body.key).ok_or(StatusCode::BAD_REQUEST)?;
     let mut tx = pool.begin().await.map_err(market_db)?;
     lock_economy(&mut tx).await?;
     let units = repair_units(
@@ -4797,7 +4861,7 @@ async fn repair_quote(
         .map_err(market_db)?;
     tx.commit().await.map_err(market_db)?;
     Ok(Json(
-        serde_json::json!({"price":i64::from(units)*ECONOMY_REPAIR_PRICE,"units":units,"quote_expires":expires,"wallet_reserve":ECONOMY_SERVICE_RESERVE}),
+        serde_json::json!({"price":i64::from(units)*unit_price,"unit_price":unit_price,"units":units,"quote_expires":expires,"wallet_reserve":ECONOMY_SERVICE_RESERVE}),
     ))
 }
 async fn buy_repair(
@@ -4807,6 +4871,7 @@ async fn buy_repair(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     require_service_token(&headers)?;
     validate_repair(&body)?;
+    let unit_price = repair_unit_price(&body.key).ok_or(StatusCode::BAD_REQUEST)?;
     let hash = hash_token(&serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?);
     let mut tx = pool.begin().await.map_err(market_db)?;
     lock_economy(&mut tx).await?;
@@ -4843,7 +4908,7 @@ async fn buy_repair(
     if !valid
         || units == 0
         || units != body.expected_units
-        || body.expected_price != i64::from(units) * ECONOMY_REPAIR_PRICE
+        || body.expected_price != i64::from(units) * unit_price
     {
         return Err(StatusCode::PRECONDITION_FAILED);
     }
@@ -10937,6 +11002,153 @@ mod test {
             1029,
             "unavailable private-block travel cannot debit"
         );
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[tokio::test]
+    async fn tiered_armor_repairs_and_validation() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let uuid = test_uuid(&random_ip());
+        budget_identity(&pool, &uuid).await?;
+        sqlx::query("UPDATE player_stats SET coins=5000 WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        let token = test_service_token();
+        let ip = random_ip();
+
+        let unrepairable_keys = [
+            "minecraft:diamond_sword",
+            "minecraft:diamond_pickaxe",
+            "minecraft:golden_axe",
+            "minecraft:netherite_shovel",
+            "minecraft:leather_chestplate",
+            "minecraft:chainmail_helmet",
+        ];
+        for key in unrepairable_keys {
+            let body = serde_json::json!({
+                "id": test_uuid(&random_ip()),
+                "uuid": uuid,
+                "username": "BudgetHunter",
+                "slot": 0,
+                "key": key,
+                "fingerprint": "a".repeat(64),
+                "damage": 50,
+                "max_damage": 100
+            });
+            let res = post_internal(
+                &pool,
+                "/internal/economy/repair/quote",
+                Some(&token),
+                body,
+                &ip,
+            ).await?;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "Key {key} must not be repairable");
+        }
+
+        let gold_body = serde_json::json!({
+            "id": test_uuid(&random_ip()),
+            "uuid": uuid,
+            "username": "BudgetHunter",
+            "slot": 0,
+            "key": "minecraft:golden_chestplate",
+            "fingerprint": "b".repeat(64),
+            "damage": 80,
+            "max_damage": 112
+        });
+        let gold_quote = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/repair/quote",
+                Some(&token),
+                gold_body.clone(),
+                &ip,
+            ).await?,
+        ).await?;
+        assert_eq!(gold_quote["units"], 3);
+        assert_eq!(gold_quote["unit_price"], 15);
+        assert_eq!(gold_quote["price"], 45);
+
+        let mut gold_buy = gold_body.clone();
+        gold_buy["expected_price"] = gold_quote["price"].clone();
+        gold_buy["expected_units"] = gold_quote["units"].clone();
+        gold_buy["quote_expires"] = gold_quote["quote_expires"].clone();
+        let res = post_internal(&pool, "/internal/economy/repair", Some(&token), gold_buy, &ip).await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(coins_of(&pool, &uuid).await?, 4955);
+
+        sqlx::query("DELETE FROM economy_tasks WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
+
+        let diamond_body = serde_json::json!({
+            "id": test_uuid(&random_ip()),
+            "uuid": uuid,
+            "username": "BudgetHunter",
+            "slot": 1,
+            "key": "minecraft:diamond_chestplate",
+            "fingerprint": "c".repeat(64),
+            "damage": 400,
+            "max_damage": 528
+        });
+        let diamond_quote = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/repair/quote",
+                Some(&token),
+                diamond_body.clone(),
+                &ip,
+            ).await?,
+        ).await?;
+        assert_eq!(diamond_quote["units"], 3);
+        assert_eq!(diamond_quote["unit_price"], 60);
+        assert_eq!(diamond_quote["price"], 180);
+
+        let mut diamond_buy = diamond_body.clone();
+        diamond_buy["expected_price"] = diamond_quote["price"].clone();
+        diamond_buy["expected_units"] = diamond_quote["units"].clone();
+        diamond_buy["quote_expires"] = diamond_quote["quote_expires"].clone();
+        let res = post_internal(&pool, "/internal/economy/repair", Some(&token), diamond_buy, &ip).await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(coins_of(&pool, &uuid).await?, 4955 - 180);
+
+        sqlx::query("DELETE FROM economy_tasks WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
+
+        let netherite_body = serde_json::json!({
+            "id": test_uuid(&random_ip()),
+            "uuid": uuid,
+            "username": "BudgetHunter",
+            "slot": 2,
+            "key": "minecraft:netherite_chestplate",
+            "fingerprint": "d".repeat(64),
+            "damage": 450,
+            "max_damage": 592
+        });
+        let netherite_quote = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/repair/quote",
+                Some(&token),
+                netherite_body.clone(),
+                &ip,
+            ).await?,
+        ).await?;
+        assert_eq!(netherite_quote["units"], 3);
+        assert_eq!(netherite_quote["unit_price"], 175);
+        assert_eq!(netherite_quote["price"], 525);
+
+        let mut netherite_buy = netherite_body.clone();
+        netherite_buy["expected_price"] = netherite_quote["price"].clone();
+        netherite_buy["expected_units"] = netherite_quote["units"].clone();
+        netherite_buy["quote_expires"] = netherite_quote["quote_expires"].clone();
+        let res = post_internal(&pool, "/internal/economy/repair", Some(&token), netherite_buy, &ip).await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(coins_of(&pool, &uuid).await?, 4955 - 180 - 525);
+
+        let eco = body_json(get_with_cookie(&pool, "/api/economy", None).await?).await?;
+        assert_eq!(eco["repair_unit_price"], 10);
+        assert_eq!(eco["repair_unit_prices"]["iron"], 10);
+        assert_eq!(eco["repair_unit_prices"]["gold"], 15);
+        assert_eq!(eco["repair_unit_prices"]["diamond"], 60);
+        assert_eq!(eco["repair_unit_prices"]["netherite"], 175);
+
         drop_budget_pool(admin, pool, schema).await
     }
 

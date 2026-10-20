@@ -605,6 +605,44 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         } catch (Exception ignored) {}
     }
 
+    public static final class RepairRules {
+        public static boolean isIronEquipment(String materialName) {
+            if (materialName == null) return false;
+            return materialName.startsWith("IRON_");
+        }
+
+        public static boolean isGoldenArmor(String materialName) {
+            if (materialName == null) return false;
+            return materialName.equals("GOLDEN_HELMET") || materialName.equals("GOLDEN_CHESTPLATE")
+                || materialName.equals("GOLDEN_LEGGINGS") || materialName.equals("GOLDEN_BOOTS");
+        }
+
+        public static boolean isDiamondArmor(String materialName) {
+            if (materialName == null) return false;
+            return materialName.equals("DIAMOND_HELMET") || materialName.equals("DIAMOND_CHESTPLATE")
+                || materialName.equals("DIAMOND_LEGGINGS") || materialName.equals("DIAMOND_BOOTS");
+        }
+
+        public static boolean isNetheriteArmor(String materialName) {
+            if (materialName == null) return false;
+            return materialName.equals("NETHERITE_HELMET") || materialName.equals("NETHERITE_CHESTPLATE")
+                || materialName.equals("NETHERITE_LEGGINGS") || materialName.equals("NETHERITE_BOOTS");
+        }
+
+        public static boolean isRepairableMaterial(String materialName) {
+            return isIronEquipment(materialName) || isGoldenArmor(materialName)
+                || isDiamondArmor(materialName) || isNetheriteArmor(materialName);
+        }
+
+        public static Long unitPrice(String materialName) {
+            if (isIronEquipment(materialName)) return 10L;
+            if (isGoldenArmor(materialName)) return 15L;
+            if (isDiamondArmor(materialName)) return 60L;
+            if (isNetheriteArmor(materialName)) return 175L;
+            return null;
+        }
+    }
+
     public static final class MarketRules {
         public static int parsePage(String input) {
             if (input == null || input.isBlank()) return 1;
@@ -1449,7 +1487,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         });}catch(Exception ignored){}
     }
     private void serviceCommand(Player player,String[] args) {
-        if(args.length==0) {player.sendMessage("[Economy] /services repair shows a quote for the held iron item. Repairs cost 10 coins per quarter durability, at most three units per UTC day; keep 1,000 coins. Private-block travel is not available yet.");return;}
+        if(args.length==0) {player.sendMessage("[Economy] /services repair shows a quote for the held iron equipment or golden/diamond/netherite armor. Repairs cost 10 coins (iron), 15 coins (gold), 60 coins (diamond), or 175 coins (netherite) per quarter durability, at most three units per UTC day; keep 1,000 coins. Private-block travel is not available yet.");return;}
         if(args.length==1 && args[0].equalsIgnoreCase("travel")) {player.sendMessage("[Economy] Private-block travel will be available when private blocks are added. No coins were charged.");return;}
         if(!args[0].equalsIgnoreCase("repair")||args.length>2||(args.length==2&&!args[1].equalsIgnoreCase("confirm"))) {player.sendMessage("[Economy] Usage: /services repair [confirm] or /services travel");return;}
         UUID uuid=player.getUniqueId();
@@ -1466,7 +1504,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
         ItemStack item=player.getInventory().getItemInMainHand();
-        if(item.isEmpty()||item.getAmount()!=1||!item.getType().name().startsWith("IRON_")||!(item.getItemMeta() instanceof org.bukkit.inventory.meta.Damageable damage)||damage.getDamage()<=0) {player.sendMessage("[Economy] Hold a damaged iron tool, weapon or armor item.");return;}
+        if(item.isEmpty()||item.getAmount()!=1||!RepairRules.isRepairableMaterial(item.getType().name())||!(item.getItemMeta() instanceof org.bukkit.inventory.meta.Damageable damage)||damage.getDamage()<=0) {player.sendMessage("[Economy] Hold a damaged iron tool, weapon or armor item, or a golden/diamond/netherite armor item.");return;}
         int max=damage.hasMaxDamage()?damage.getMaxDamage():item.getType().getMaxDurability();
         var body=new com.google.gson.JsonObject();body.addProperty("uuid",uuid.toString());body.addProperty("username",player.getName());body.addProperty("id",UUID.randomUUID().toString());body.addProperty("slot",player.getInventory().getHeldItemSlot());
         try {body.addProperty("fingerprint",InventoryNbt.fingerprint(item.serializeAsBytes()));}
