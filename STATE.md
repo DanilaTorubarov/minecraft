@@ -1,6 +1,11 @@
 # Project checkpoint — 2026-10-20
 
 
+## Git & feature branch workflow convention — 2026-10-20
+
+- Documented project rule in `AGENTS.md`: never commit or push directly to `main`. Always create a feature branch related to the function, commit and push to the feature branch first, and then merge into `main`.
+
+
 ## Marketplace pending delivery limit — 2026-10-20
 
 - Added a 5-item limit (`MARKET_MAX_PENDING_DELIVERIES = 5`) on pending inventory deliveries per player UUID.
