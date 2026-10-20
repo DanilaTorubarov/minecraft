@@ -247,7 +247,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, this::syncChat, 20L, 20L);
         getServer().getScheduler()
-            .runTaskTimer(this, this::updateTabList, 20L, 20L);
+            .runTaskTimer(this, this::updateTabList, 10L, 3L);
     }
 
     @Override
@@ -3444,45 +3444,118 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
     }
 
+    private long tabTick = 0;
+
+    private static final String[] AERO_PALETTE = {
+        "#38bdf8", "#0ea5e9", "#0284c7", "#2563eb",
+        "#3b82f6", "#60a5fa", "#38bdf8", "#06b6d4",
+        "#14b8a6", "#0ea5e9"
+    };
+
+    private static final String[] SPARKLES = {
+        "✦", "✧", "★", "✧", "✦", "✶", "✷", "✸"
+    };
+
+    private static final String[] AERO_MOTDS = {
+        "Your world, connected.",
+        "Interactive 2000×2000 3D Web Map",
+        "Live Marketplace & Auction House",
+        "Craftable Breach Charges & Raiding",
+        "Tiered Base Protection Cores",
+        "Regenerating Fuel Ores in the Mine Dimension",
+        "Live Web & Server Bidirectional Chat"
+    };
+
+    private String buildAeroDivider(long step, int width) {
+        StringBuilder sb = new StringBuilder();
+        int wavePos = (int) (step % width);
+        for (int i = 0; i < width; i++) {
+            int dist = Math.abs(i - wavePos);
+            if (dist == 0) {
+                sb.append("<color:#ffffff><bold>═</bold></color>");
+            } else if (dist == 1) {
+                sb.append("<color:#7dd3fc><bold>─</bold></color>");
+            } else if (dist == 2) {
+                sb.append("<color:#0284c7>─</color>");
+            } else {
+                sb.append("<color:#1e293b>─</color>");
+            }
+        }
+        return sb.toString();
+    }
+
     private void updateTabList() {
         if (!isEnabled()) return;
         var players = getServer().getOnlinePlayers();
         if (players.isEmpty()) return;
 
+        tabTick++;
         net.kyori.adventure.text.minimessage.MiniMessage mm = net.kyori.adventure.text.minimessage.MiniMessage.miniMessage();
         int online = players.size();
         int max = getServer().getMaxPlayers();
-        String timeStr = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
+
+        // 1. Shifting animated title gradient
+        int colorIdx1 = (int) (tabTick % AERO_PALETTE.length);
+        int colorIdx2 = (int) ((tabTick + 4) % AERO_PALETTE.length);
+        String titleColor1 = AERO_PALETTE[colorIdx1];
+        String titleColor2 = AERO_PALETTE[colorIdx2];
+
+        // 2. Animated twinkling star sparks
+        String sparkL = SPARKLES[(int) (tabTick % SPARKLES.length)];
+        String sparkR = SPARKLES[(int) ((tabTick + 4) % SPARKLES.length)];
+
+        // 3. Rotating MOTD slogan
+        int motdIdx = (int) ((tabTick / 25) % AERO_MOTDS.length);
+        String motd = AERO_MOTDS[motdIdx];
+        String motdColor = (tabTick % 8 < 4) ? "#7dd3fc" : "#bae6fd";
+
+        // 4. Moving reflection shimmer across glass divider line
+        String divider = buildAeroDivider(tabTick, 36);
+
+        // 5. Pulsing live online status indicator
+        String pulseDot = (tabTick % 6 < 3) ? "<color:#4ade80>●</color>" : "<color:#22c55e>○</color>";
+
+        // 6. Blinking colon clock
+        boolean colonBlink = (tabTick % 4 < 2);
+        String timeFormat = colonBlink ? "HH:mm:ss" : "HH mm ss";
+        String timeStr = java.time.format.DateTimeFormatter.ofPattern(timeFormat)
                 .withZone(java.time.ZoneId.of("UTC"))
                 .format(java.time.Instant.now()) + " UTC";
+
         String site = (panelUrl == null || panelUrl.isBlank() || panelUrl.contains("${"))
                 ? "https://localhost"
                 : panelUrl.replaceAll("/+$", "");
 
+        // 7. Shimmering website link
+        int siteColorIdx = (int) ((tabTick + 2) % AERO_PALETTE.length);
+        String siteColor = AERO_PALETTE[siteColorIdx];
+
+        String headerText = "<newline>"
+                + "<gradient:" + titleColor1 + ":" + titleColor2 + "><bold>" + sparkL + " OASIS AERO " + sparkR + "</bold></gradient><newline>"
+                + "<color:" + motdColor + "><i>✦ " + motd + " ✦</i></color><newline>"
+                + divider + "<newline>"
+                + "<color:#94a3b8>Online Players:</color> " + pulseDot + " <color:#38bdf8><bold>" + online + "</bold></color><color:#475569>/</color><color:#94a3b8>" + max + "</color>   "
+                + "<color:#475569>•</color>   "
+                + "<color:#94a3b8>Realm:</color> <color:#38bdf8>Survival 3D</color><newline>";
+
         for (Player p : players) {
             int ping = p.getPing();
             String pingColor = ping < 60 ? "#4ade80" : (ping < 130 ? "#facc15" : "#f87171");
-
-            String headerText = "<newline>"
-                    + "<gradient:#38bdf8:#0284c7><bold>✦ OASIS AERO ✦</bold></gradient><newline>"
-                    + "<gradient:#7dd3fc:#38bdf8><i>Your world, connected.</i></gradient><newline>"
-                    + "<color:#334155>──────────────────────────────────────────</color><newline>"
-                    + "<color:#94a3b8>Online Players:</color> <color:#38bdf8><bold>" + online + "</bold></color><color:#475569>/</color><color:#94a3b8>" + max + "</color>   "
-                    + "<color:#475569>•</color>   "
-                    + "<color:#94a3b8>Realm:</color> <color:#38bdf8>Survival 3D</color><newline>";
+            String pingDot = ping < 60 ? "<color:#4ade80>●</color>" : "<color:#facc15>▲</color>";
 
             String footerText = "<newline>"
-                    + "<color:#334155>──────────────────────────────────────────</color><newline>"
-                    + "<color:#94a3b8>Your Ping:</color> <color:" + pingColor + "><bold>" + ping + "ms</bold></color>   "
+                    + divider + "<newline>"
+                    + "<color:#94a3b8>Your Ping:</color> " + pingDot + " <color:" + pingColor + "><bold>" + ping + "ms</bold></color>   "
                     + "<color:#475569>•</color>   "
                     + "<color:#94a3b8>Server Time:</color> <color:#38bdf8>" + timeStr + "</color><newline>"
-                    + "<color:#94a3b8>Website & 3D Map:</color> <gradient:#38bdf8:#0284c7><u>" + site + "</u></gradient><newline>"
+                    + "<color:#94a3b8>Website & 3D Map:</color> <gradient:" + siteColor + ":#38bdf8><u>" + site + "</u></gradient><newline>"
                     + "<gradient:#bae6fd:#38bdf8>✦ Trade · Chat · Protect · Explore ✦</gradient><newline>";
 
             p.sendPlayerListHeaderAndFooter(mm.deserialize(headerText), mm.deserialize(footerText));
 
-            // Format tab name with crisp aero styling and individual player ping
-            String nameFormat = "<color:#38bdf8>✦</color> <color:#f8fafc>" + p.getName() + "</color> <color:#475569>[</color><color:" + pingColor + ">" + ping + "ms</color><color:#475569>]</color>";
+            // Animated asynchronous twinkling star next to each player's nickname
+            String playerStar = SPARKLES[(int) ((tabTick + Math.abs(p.getName().hashCode())) % SPARKLES.length)];
+            String nameFormat = "<color:#38bdf8>" + playerStar + "</color> <color:#f8fafc>" + p.getName() + "</color> <color:#475569>[</color><color:" + pingColor + ">" + ping + "ms</color><color:#475569>]</color>";
             p.playerListName(mm.deserialize(nameFormat));
         }
     }
