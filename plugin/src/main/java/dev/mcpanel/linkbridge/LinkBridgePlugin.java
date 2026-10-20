@@ -36,6 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.text.Component;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -739,6 +740,22 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             if (materialName.contains("REDSTONE")) return 3;
             if (materialName.contains("AMETHYST") || materialName.contains("EMERALD") || materialName.contains("ECHO")) return 4;
             return 0;
+        }
+
+        public static boolean isNonFuelOre(String materialName) {
+            if (materialName == null) return false;
+            String name = materialName.toUpperCase(Locale.ROOT);
+            if (name.contains("COPPER") || name.contains("LAPIS") || name.contains("REDSTONE")
+                || name.contains("EMERALD") || name.contains("AMETHYST") || name.contains("ECHO")) {
+                return false;
+            }
+            return name.contains("COAL")
+                || name.contains("IRON")
+                || name.contains("GOLD")
+                || name.contains("DIAMOND")
+                || name.contains("NETHERITE")
+                || name.contains("QUARTZ")
+                || name.contains("DEBRIS");
         }
     }
 
@@ -2973,7 +2990,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             }
             if (mineWorld != null) {
                 mineWorld.setGameRule(org.bukkit.GameRule.DO_MOB_SPAWNING, true);
-                mineWorld.setSpawnLocation(0, 40, 0);
+                getSafeCaveSpawn(mineWorld);
+                for (Chunk c : mineWorld.getLoadedChunks()) {
+                    sanitizeMineChunk(c);
+                }
             }
         } catch (Exception error) {
             getLogger().warning("Could not initialize mine_world: " + error.getMessage());
@@ -3266,7 +3286,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                             player.sendMessage("[Mine] Mining world is not loaded. Contact operator.");
                             return;
                         }
-                        Location spawn = mineWorld.getSpawnLocation();
+                        Location spawn = getSafeCaveSpawn(mineWorld);
+                        int spawnChunkX = spawn.getBlockX() >> 4;
+                        int spawnChunkZ = spawn.getBlockZ() >> 4;
+                        for (int cx = spawnChunkX - 1; cx <= spawnChunkX + 1; cx++) {
+                            for (int cz = spawnChunkZ - 1; cz <= spawnChunkZ + 1; cz++) {
+                                sanitizeMineChunk(mineWorld.getChunkAt(cx, cz));
+                            }
+                        }
                         player.teleport(spawn);
                         long expires = System.currentTimeMillis() + 300_000L;
                         activeMineExpeditions.put(uuid, expires);
@@ -3393,7 +3420,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         int size = PrivateRules.radiusToSize(core.radius);
         String title = "Core #" + core.blockIndex + " (" + size + "x" + size + ")";
         org.bukkit.inventory.Inventory inv = org.bukkit.Bukkit.createInventory(null, 27, Component.text(title));
+        updateCoreGuiItems(inv, core);
+        player.openInventory(inv);
+        activeCoreGuis.put(player.getUniqueId(), core);
+    }
 
+    private void updateCoreGuiItems(org.bukkit.inventory.Inventory inv, PlacedPrivateBlock core) {
+        int size = PrivateRules.radiusToSize(core.radius);
         ItemStack info = new ItemStack(Material.LODESTONE);
         ItemMeta im = info.getItemMeta();
         im.displayName(Component.text("§6§lProtection Core Info"));
@@ -3411,12 +3444,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         ItemMeta fm = fuelSlot.getItemMeta();
         fm.displayName(Component.text("§e§lDeposit Fuel Crystal"));
         fm.lore(List.of(
-            Component.text("§7Click here with a fuel crystal in hand"),
-            Component.text("§7to deposit fuel and expand your zone:"),
-            Component.text("§6• Ember Shard (T1): §7+2h (3x3)"),
-            Component.text("§b• Cobalt Crystal (T2): §7+3h (7x7)"),
-            Component.text("§c• Crimson Core (T3): §7+4h (11x11)"),
-            Component.text("§d• Astral Void Crystal (T4): §7+6h (15x15)")
+            Component.text("§7• Click with a fuel crystal on your cursor"),
+            Component.text("§7• Or click this hopper to use one from inventory"),
+            Component.text("§7• Or shift-click any fuel crystal below:"),
+            Component.text("§6  - Ember Shard (T1): §7+2h (3x3)"),
+            Component.text("§b  - Cobalt Crystal (T2): §7+3h (7x7)"),
+            Component.text("§c  - Crimson Core (T3): §7+4h (11x11)"),
+            Component.text("§d  - Astral Void Crystal (T4): §7+6h (15x15)")
         ));
         fuelSlot.setItemMeta(fm);
         inv.setItem(13, fuelSlot);
@@ -3430,9 +3464,123 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         ));
         dismantle.setItemMeta(dm);
         inv.setItem(22, dismantle);
+    }
 
-        player.openInventory(inv);
-        activeCoreGuis.put(player.getUniqueId(), core);
+    private int getFuelCrystalTier(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) return 0;
+        var pdc = item.getItemMeta().getPersistentDataContainer();
+        var key = new NamespacedKey(this, "fuel_tier");
+        if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
+            Integer val = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
+            return val != null ? val : 0;
+        }
+        return 0;
+    }
+
+    private void applyFuelDeposit(Player player, PlacedPrivateBlock core, int fuelTier, org.bukkit.inventory.Inventory topInv) {
+        core.fuelTier = FuelRules.calculateNewTier(core.fuelTier, fuelTier);
+        core.radius = FuelRules.fuelRadius(core.fuelTier);
+        core.fuelSeconds = FuelRules.calculateNewFuel(core.fuelSeconds, fuelTier);
+        syncPrivateBlockAsync(core);
+        player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_BEACON_POWER_SELECT, 1.0f, 1.0f);
+        int size = PrivateRules.radiusToSize(core.radius);
+        player.sendMessage(String.format(Locale.ROOT,
+            "§a[Private] Deposited fuel! New size: %dx%d | Fuel remaining: %s",
+            size, size, ExpeditionRules.formatDuration(core.fuelSeconds)));
+        if (topInv != null) {
+            updateCoreGuiItems(topInv, core);
+        }
+    }
+
+    private Location getSafeCaveSpawn(World world) {
+        Location existing = world.getSpawnLocation();
+        if (isSafeCaveSpot(existing) && existing.getBlockY() < world.getHighestBlockYAt(existing.getBlockX(), existing.getBlockZ()) - 5) {
+            return existing.clone().add(0.5, 0.0, 0.5);
+        }
+
+        int[] offsets = {0, 16, -16, 32, -32, 48, -48, 64, -64, 80, -80};
+        for (int x : offsets) {
+            for (int z : offsets) {
+                for (int y = 40; y >= -40; y--) {
+                    Block feet = world.getBlockAt(x, y, z);
+                    Block head = world.getBlockAt(x, y + 1, z);
+                    Block ground = world.getBlockAt(x, y - 1, z);
+
+                    if ((feet.getType().isAir() || feet.getType() == Material.CAVE_AIR)
+                        && (head.getType().isAir() || head.getType() == Material.CAVE_AIR)
+                        && ground.getType().isSolid()
+                        && ground.getType() != Material.LAVA
+                        && ground.getType() != Material.WATER
+                        && ground.getType() != Material.BEDROCK) {
+                        int surfaceY = world.getHighestBlockYAt(x, z);
+                        if (y < surfaceY - 5) {
+                            world.setSpawnLocation(x, y, z);
+                            return new Location(world, x + 0.5, y, z + 0.5);
+                        }
+                    }
+                }
+            }
+        }
+
+        int cx = 0, cy = 15, cz = 0;
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dz = -3; dz <= 3; dz++) {
+                world.getBlockAt(cx + dx, cy - 1, cz + dz).setType(Material.COBBLESTONE);
+                for (int dy = 0; dy <= 3; dy++) {
+                    world.getBlockAt(cx + dx, cy + dy, cz + dz).setType(Material.AIR);
+                }
+                world.getBlockAt(cx + dx, cy + 4, cz + dz).setType(Material.STONE);
+            }
+        }
+        world.getBlockAt(cx - 3, cy + 1, cz).setType(Material.TORCH);
+        world.getBlockAt(cx + 3, cy + 1, cz).setType(Material.TORCH);
+        world.getBlockAt(cx, cy + 1, cz - 3).setType(Material.TORCH);
+        world.getBlockAt(cx, cy + 1, cz + 3).setType(Material.TORCH);
+
+        world.setSpawnLocation(cx, cy, cz);
+        return new Location(world, cx + 0.5, cy, cz + 0.5);
+    }
+
+    private boolean isSafeCaveSpot(Location loc) {
+        if (loc == null || loc.getWorld() == null) return false;
+        World w = loc.getWorld();
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        Block feet = w.getBlockAt(x, y, z);
+        Block head = w.getBlockAt(x, y + 1, z);
+        Block ground = w.getBlockAt(x, y - 1, z);
+        return (feet.getType().isAir() || feet.getType() == Material.CAVE_AIR)
+            && (head.getType().isAir() || head.getType() == Material.CAVE_AIR)
+            && ground.getType().isSolid()
+            && ground.getType() != Material.LAVA
+            && ground.getType() != Material.WATER
+            && ground.getType() != Material.BEDROCK;
+    }
+
+    private void sanitizeMineChunk(Chunk chunk) {
+        if (chunk == null || !chunk.getWorld().getName().equals("mine_world")) return;
+        var pdc = chunk.getPersistentDataContainer();
+        var key = new NamespacedKey(this, "ores_sanitized");
+        if (pdc.has(key, org.bukkit.persistence.PersistentDataType.BYTE)) {
+            return;
+        }
+        pdc.set(key, org.bukkit.persistence.PersistentDataType.BYTE, (byte) 1);
+
+        int minHeight = Math.max(chunk.getWorld().getMinHeight(), -64);
+        int maxHeight = Math.min(chunk.getWorld().getMaxHeight(), 80);
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                for (int y = minHeight; y <= maxHeight; y++) {
+                    Block b = chunk.getBlock(x, y, z);
+                    Material type = b.getType();
+                    if (FuelRules.isNonFuelOre(type.name())) {
+                        boolean deep = type.name().contains("DEEPSLATE") || y < 0;
+                        b.setType(deep ? Material.DEEPSLATE : Material.STONE, false);
+                    }
+                }
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.NORMAL)
@@ -3474,10 +3622,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 regeneratingNodes.put(block.getLocation(), new RegeneratingOreNode(orig, System.currentTimeMillis() + cooldownMs));
                 return;
             }
-            if (block.getType() == Material.BEDROCK) {
-                event.setCancelled(true);
-                return;
-            }
+            event.setCancelled(true);
+            player.sendActionBar(Component.text("§c[Mine] Only fuel crystal ores can be harvested in this dimension!"));
+            return;
         }
 
         PlacedPrivateBlock core = getPlacedCoreAt(block.getLocation());
@@ -3603,44 +3750,105 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (!(event.getWhoClicked() instanceof Player player)) return;
         PlacedPrivateBlock core = activeCoreGuis.get(player.getUniqueId());
         if (core == null) return;
-        event.setCancelled(true);
-        int slot = event.getRawSlot();
-        if (slot == 13) {
-            ItemStack cursor = event.getCursor();
-            int fuelTier = 0;
-            if (cursor != null && cursor.hasItemMeta()) {
-                var pdc = cursor.getItemMeta().getPersistentDataContainer();
-                var key = new NamespacedKey(this, "fuel_tier");
-                if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
-                    fuelTier = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
+
+        var clickedInv = event.getClickedInventory();
+        var topInv = event.getView().getTopInventory();
+        var bottomInv = event.getView().getBottomInventory();
+
+        if (clickedInv == bottomInv) {
+            if (event.isShiftClick()) {
+                ItemStack item = event.getCurrentItem();
+                int fuelTier = getFuelCrystalTier(item);
+                if (fuelTier > 0) {
+                    event.setCancelled(true);
+                    item.setAmount(item.getAmount() - 1);
+                    applyFuelDeposit(player, core, fuelTier, topInv);
+                    return;
                 }
             }
-            if (fuelTier > 0) {
-                cursor.setAmount(cursor.getAmount() - 1);
-                core.fuelTier = FuelRules.calculateNewTier(core.fuelTier, fuelTier);
-                core.radius = FuelRules.fuelRadius(core.fuelTier);
-                core.fuelSeconds = FuelRules.calculateNewFuel(core.fuelSeconds, fuelTier);
+            return;
+        }
+
+        if (clickedInv == topInv) {
+            event.setCancelled(true);
+            int slot = event.getSlot();
+
+            if (slot == 13) {
+                ItemStack cursor = event.getCursor();
+                int fuelTier = getFuelCrystalTier(cursor);
+                if (fuelTier > 0) {
+                    cursor.setAmount(cursor.getAmount() - 1);
+                    applyFuelDeposit(player, core, fuelTier, topInv);
+                    return;
+                }
+
+                var inv = player.getInventory();
+                for (int i = 0; i < inv.getSize(); i++) {
+                    ItemStack it = inv.getItem(i);
+                    int itTier = getFuelCrystalTier(it);
+                    if (itTier > 0) {
+                        it.setAmount(it.getAmount() - 1);
+                        applyFuelDeposit(player, core, itTier, topInv);
+                        return;
+                    }
+                }
+
+                player.sendMessage("§e[Private] Pick up a fuel crystal (Ember, Cobalt, Crimson, Void) or have one in inventory, then click the hopper!");
+                player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 0.5f);
+            } else if (slot == 22) {
+                player.closeInventory();
+                Location loc = new Location(getServer().getWorld(core.world), core.x, core.y, core.z);
+                if (loc.getBlock().getType() == Material.LODESTONE) {
+                    loc.getBlock().setType(Material.AIR);
+                }
+                placedPrivateBlocks.remove(blockKey(loc));
+                core.placed = false;
                 syncPrivateBlockAsync(core);
-                player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_BEACON_POWER_SELECT, 1.0f, 1.0f);
-                int size = PrivateRules.radiusToSize(core.radius);
-                player.sendMessage(String.format(Locale.ROOT,
-                    "§a[Private] Deposited fuel! New size: %dx%d | Fuel remaining: %s",
-                    size, size, ExpeditionRules.formatDuration(core.fuelSeconds)));
-                openCoreGui(player, core);
-            } else {
-                player.sendMessage("§e[Private] Pick up a fuel crystal (Ember, Cobalt, Crimson, Void) and click the hopper!");
+                player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
+                player.sendMessage("§a[Private] Protection core dismantled and returned to inventory.");
             }
-        } else if (slot == 22) {
-            player.closeInventory();
-            Location loc = new Location(getServer().getWorld(core.world), core.x, core.y, core.z);
-            if (loc.getBlock().getType() == Material.LODESTONE) {
-                loc.getBlock().setType(Material.AIR);
+        }
+    }
+
+    @EventHandler
+    public void onPrivateGuiDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        PlacedPrivateBlock core = activeCoreGuis.get(player.getUniqueId());
+        if (core == null) return;
+        for (int rawSlot : event.getRawSlots()) {
+            if (rawSlot < 27) {
+                event.setCancelled(true);
+                return;
             }
-            placedPrivateBlocks.remove(blockKey(loc));
-            core.placed = false;
-            syncPrivateBlockAsync(core);
-            player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
-            player.sendMessage("§a[Private] Protection core dismantled and returned to inventory.");
+        }
+    }
+
+    @EventHandler
+    public void onMineChunkLoad(org.bukkit.event.world.ChunkLoadEvent event) {
+        if (event.getWorld().getName().equals("mine_world")) {
+            sanitizeMineChunk(event.getChunk());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onMineBucketEmpty(org.bukkit.event.player.PlayerBucketEmptyEvent event) {
+        if (event.getBlock().getWorld().getName().equals("mine_world")) {
+            event.setCancelled(true);
+            event.getPlayer().sendActionBar(Component.text("§c[Mine] You cannot place liquids in the Mining Dimension!"));
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onMineEntityExplode(org.bukkit.event.entity.EntityExplodeEvent event) {
+        if (event.getLocation().getWorld().getName().equals("mine_world")) {
+            event.blockList().clear();
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onMineBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
+        if (event.getBlock().getWorld().getName().equals("mine_world")) {
+            event.blockList().clear();
         }
     }
 

@@ -240,6 +240,15 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.FuelRules.oreTier("REDSTONE_ORE") == 3, "Redstone is Tier 3");
         check(LinkBridgePlugin.FuelRules.oreTier("DEEPSLATE_EMERALD_ORE") == 4, "Emerald is Tier 4");
         check(LinkBridgePlugin.FuelRules.oreTier("STONE") == 0, "Stone is Tier 0");
+        check(LinkBridgePlugin.FuelRules.isNonFuelOre("COAL_ORE"), "Coal ore is non-fuel");
+        check(LinkBridgePlugin.FuelRules.isNonFuelOre("DEEPSLATE_IRON_ORE"), "Deepslate iron ore is non-fuel");
+        check(LinkBridgePlugin.FuelRules.isNonFuelOre("GOLD_ORE"), "Gold ore is non-fuel");
+        check(LinkBridgePlugin.FuelRules.isNonFuelOre("DIAMOND_ORE"), "Diamond ore is non-fuel");
+        check(!LinkBridgePlugin.FuelRules.isNonFuelOre("COPPER_ORE"), "Copper ore is fuel");
+        check(!LinkBridgePlugin.FuelRules.isNonFuelOre("LAPIS_ORE"), "Lapis ore is fuel");
+        check(!LinkBridgePlugin.FuelRules.isNonFuelOre("REDSTONE_ORE"), "Redstone ore is fuel");
+        check(!LinkBridgePlugin.FuelRules.isNonFuelOre("EMERALD_ORE"), "Emerald ore is fuel");
+        check(!LinkBridgePlugin.FuelRules.isNonFuelOre("STONE"), "Stone is not an ore");
 
         // Prospector pickaxe rules
         check(LinkBridgePlugin.PickaxeRules.pickaxePrice(1) == 150L, "Tier 1 pickaxe price is 150");
