@@ -146,6 +146,13 @@ test('market purchase preserves the exact quote and idempotency key across retri
   await buyMarketListing('listing/id', quote)
 })
 
+test('market purchase rejects when pending delivery queue is full', async () => {
+  const { buyMarketListing } = await import('../src/lib/api.ts')
+  const quote = { request_id: 'full-id', buyer_uuid: 'player-id', quantity: 1, pricing: 'unit' as const, expected_total: 10, expected_remaining: 5 }
+  globalThis.fetch = async () => new Response(null, { status: 429 })
+  await assert.rejects(buyMarketListing('listing/id', quote), (e) => e instanceof ApiError && e.status === 429)
+})
+
 test('marketplace reads encode search and pagination and cancellation requires a confirmed response', async () => {
   const { getMarketplace, cancelMarketListing } = await import('../src/lib/api.ts')
   globalThis.fetch = async (path) => {

@@ -45,6 +45,10 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
   }, [visible, version, mine, search, cursor])
   const selected = purchase ? selection : market?.listings.find((listing) => listing.id === selection?.id) ?? selection
   const buyerAccount = accounts.find((account) => account.uuid === buyer) ?? accounts[0]
+  const buyerPending = market?.deliveries.filter((d) => d.username === buyerAccount?.username && d.status === 'pending').length ?? 0
+  const buyerQueueFull = buyerPending >= 5
+  const sellerPending = selected?.mine ? (market?.deliveries.filter((d) => d.username === selected.seller && d.status === 'pending').length ?? 0) : 0
+  const sellerQueueFull = sellerPending >= 5
   const amount = pricing === 'lot' ? selected?.remaining ?? 0 : Number(quantity)
   const total = selected ? pricing === 'lot' ? selected.lot_price : selected.unit_price === null ? null : selected.unit_price * amount : null
   const valid = selected?.status === 'active' && amount >= 1 && amount <= selected.remaining && Number.isInteger(amount) && total !== null
@@ -70,6 +74,7 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
       const status = problem instanceof ApiError ? problem.status : 0
       if (status !== 0 && status < 500) setPurchase(null)
       setError(status === 422 ? 'This player does not have enough coins. Choose another player or a smaller quantity.'
+        : status === 429 ? 'This player already has 5 items queued for delivery. Free inventory space in-game before adding more.'
         : status === 409 ? 'This listing changed or the request is already being processed. Refresh and select it again.'
         : 'Could not confirm the request. Retry to check the same purchase safely.')
     } finally { setBusy(false); setVersion((value) => value + 1) }
@@ -93,7 +98,9 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
       <p>{slotDescription(selected.item)} · Seller: {selected.seller}</p>
       <p>Seller commission: {selected.commission_bps / 100}%, included in the displayed price. {selected.mine && `${selected.gross_sold.toLocaleString()} coins sold · ${selected.fee_paid.toLocaleString()} coins commission charged.`}</p>
       {selected.status !== 'active' ? <p>{selected.status === 'pending' ? 'Waiting for the game server to transfer these items.' : selected.status === 'conflict' ? 'The stack changed or could not be transferred. Nothing was listed.' : 'This listing is closed.'}</p>
-        : selected.mine ? <><p>{selected.remaining} unsold items. Cancel this listing to return them to {selected.seller}’s inventory. Delivery waits for an empty storage slot.</p><button className="btn" disabled={busy} onClick={() => { void trade(true) }}>{busy ? 'Cancelling…' : 'Cancel listing & return items'}</button></>
+        : selected.mine ? <><p>{selected.remaining} unsold items. Cancel this listing to return them to {selected.seller}’s inventory. Delivery waits for an empty storage slot.</p>
+          {sellerQueueFull && <p className="note" data-tone="error" role="alert">{selected.seller} already has 5 items queued for delivery. Free inventory space in-game before returning more items.</p>}
+          <button className="btn" disabled={busy || sellerQueueFull} onClick={() => { void trade(true) }}>{busy ? 'Cancelling…' : 'Cancel listing & return items'}</button></>
         : <form onSubmit={(event) => { event.preventDefault(); void trade() }}>
           <fieldset disabled={busy || purchase !== null} className="market-buy-fields">
             <div className="market-fields">
@@ -107,7 +114,8 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
           </fieldset>
           <p className="market-total">{purchase ? `Retrying the same purchase: ${purchase.body.quantity} items for ${purchase.body.expected_total.toLocaleString()} coins.` : valid ? `${amount} ${amount === 1 ? 'item' : 'items'} · ${total?.toLocaleString()} coins total` : 'Choose a valid quantity.'}</p>
           <p>Coins transfer immediately after purchase. Items arrive in {buyerAccount?.username ?? 'your player'}’s inventory once a storage slot is free, online or offline.</p>
-          <button className="btn btn-primary" type="submit" disabled={busy || (!purchase && (!valid || !buyerAccount))}>{busy ? 'Confirming…' : purchase ? 'Retry purchase' : 'Confirm purchase'}</button>
+          {buyerQueueFull && <p className="note" data-tone="error" role="alert">{buyerAccount?.username} already has 5 items queued for delivery. Free inventory space in-game before buying more.</p>}
+          <button className="btn btn-primary" type="submit" disabled={busy || buyerQueueFull || (!purchase && (!valid || !buyerAccount))}>{busy ? 'Confirming…' : purchase ? 'Retry purchase' : 'Confirm purchase'}</button>
         </form>}
       <button className="btn market-dismiss" disabled={busy} onClick={dismiss}>Close details</button>
       {error && <p role="alert">{error}</p>}

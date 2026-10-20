@@ -16,6 +16,7 @@ const SESSION_TTL_HOURS: i32 = 24;
 const MAX_LINKED_ACCOUNTS: i64 = 4;
 const ECONOMY_STARTER_GRANT: i64 = 100;
 const ECONOMY_DAILY_CONTRACT_LIMIT: i64 = 4;
+const MARKET_MAX_PENDING_DELIVERIES: i64 = 5;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1995,6 +1996,16 @@ async fn buy_market_listing(
             Err(StatusCode::CONFLICT)
         };
     }
+    let pending_deliveries: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM market_tasks WHERE uuid=$1 AND kind='deliver' AND status='pending'",
+    )
+    .bind(&body.buyer_uuid)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    if pending_deliveries >= MARKET_MAX_PENDING_DELIVERIES {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     let listing = sqlx::query("SELECT * FROM market_listings WHERE id=$1 FOR UPDATE")
         .bind(&id)
         .fetch_optional(&mut *tx)
@@ -2125,6 +2136,16 @@ async fn cancel_market_listing(
         .ok_or(StatusCode::NOT_FOUND)?;
     let row = sqlx::query("SELECT item_bytes,username,remaining AS returning_quantity FROM market_listings WHERE id=$1 AND user_id=$2 AND status='active' FOR UPDATE")
         .bind(&id).bind(user_id).fetch_optional(&mut *tx).await.map_err(market_db)?.ok_or(StatusCode::CONFLICT)?;
+    let pending_deliveries: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM market_tasks WHERE uuid=$1 AND kind='deliver' AND status='pending'",
+    )
+    .bind(&uuid)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    if pending_deliveries >= MARKET_MAX_PENDING_DELIVERIES {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     sqlx::query("UPDATE market_listings SET remaining=0,status='closed' WHERE id=$1")
         .bind(&id)
         .execute(&mut *tx)
@@ -7806,6 +7827,109 @@ mod test {
             market_eq!(market_ack(&pool,&buyer,"done",snapshot["slots"].clone()).await?,StatusCode::OK);
             market_eq!(send(&pool,"DELETE",&format!("/api/link/{seller}"),Some(&cookie),None).await?.status(),StatusCode::NO_CONTENT);
             Ok::<_,Box<dyn std::error::Error>>(())
+        }.await;
+        clear_market(&pool, &[seller.clone(), buyer.clone()]).await?;
+        delete_user(&pool, &email).await?;
+        delete_user(&pool, &buyer_email).await?;
+        delete_player_inventory(&pool, &seller).await?;
+        delete_player_inventory(&pool, &buyer).await?;
+        outcome
+    }
+
+    #[tokio::test]
+    async fn marketplace_caps_pending_deliveries_at_five() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let (buyer_email, buyer_cookie) = fresh_user(&pool).await?;
+        let seller = test_uuid(&random_ip());
+        let buyer = test_uuid(&random_ip());
+        let outcome = async {
+            claim(&pool, &start_code(&pool, &cookie).await?, &seller, "SellerQueue").await?;
+            claim(&pool, &start_code(&pool, &buyer_cookie).await?, &buyer, "BuyerQueue").await?;
+            let mut snapshot = seed_market_inventory(&pool, &seller).await?;
+            snapshot["slots"][0]["amount"] = serde_json::json!(20);
+            post_inventory(&pool, Some(&test_service_token()), snapshot.clone()).await?;
+            market_eq!(
+                market_request(
+                    &pool,
+                    &format!("/api/players/{seller}/inventory/marketplace"),
+                    Some(&cookie),
+                    market_input(20),
+                    true
+                ).await?,
+                StatusCode::ACCEPTED
+            );
+            market_eq!(market_ack(&pool, &seller, "done", snapshot["slots"].clone()).await?, StatusCode::OK);
+            let id: String = sqlx::query_scalar("SELECT id FROM market_listings WHERE uuid=$1")
+                .bind(&seller)
+                .fetch_one(&pool)
+                .await?;
+            sqlx::query("INSERT INTO player_stats(uuid,username,coins) VALUES($1,'BuyerQueue',1000)")
+                .bind(&buyer)
+                .execute(&pool)
+                .await?;
+            let path = format!("/api/marketplace/{id}/buy");
+            let mut order_ids = Vec::new();
+            for i in 0..5 {
+                let req_id = test_uuid(&random_ip());
+                order_ids.push(req_id.clone());
+                let remaining = 20 - i;
+                let buy = serde_json::json!({
+                    "request_id": req_id,
+                    "buyer_uuid": buyer,
+                    "quantity": 1,
+                    "pricing": "unit",
+                    "expected_total": 10,
+                    "expected_remaining": remaining
+                });
+                market_eq!(
+                    market_request(&pool, &path, Some(&buyer_cookie), buy, true).await?,
+                    StatusCode::ACCEPTED
+                );
+            }
+            // 6th purchase must be rejected with 429
+            let req_sixth = test_uuid(&random_ip());
+            let sixth_buy = serde_json::json!({
+                "request_id": req_sixth,
+                "buyer_uuid": buyer,
+                "quantity": 1,
+                "pricing": "unit",
+                "expected_total": 10,
+                "expected_remaining": 15
+            });
+            market_eq!(
+                market_request(&pool, &path, Some(&buyer_cookie), sixth_buy, true).await?,
+                StatusCode::TOO_MANY_REQUESTS
+            );
+            // Idempotent retry of one of the 5 accepted orders still returns ACCEPTED
+            let retry = serde_json::json!({
+                "request_id": order_ids[0],
+                "buyer_uuid": buyer,
+                "quantity": 1,
+                "pricing": "unit",
+                "expected_total": 10,
+                "expected_remaining": 20
+            });
+            market_eq!(
+                market_request(&pool, &path, Some(&buyer_cookie), retry, true).await?,
+                StatusCode::ACCEPTED
+            );
+            // Completing one delivery drops the count below 5, allowing a new purchase
+            market_eq!(market_ack(&pool, &buyer, "done", snapshot["slots"].clone()).await?, StatusCode::OK);
+            let req_seventh = test_uuid(&random_ip());
+            let seventh_buy = serde_json::json!({
+                "request_id": req_seventh,
+                "buyer_uuid": buyer,
+                "quantity": 1,
+                "pricing": "unit",
+                "expected_total": 10,
+                "expected_remaining": 15
+            });
+            market_eq!(
+                market_request(&pool, &path, Some(&buyer_cookie), seventh_buy, true).await?,
+                StatusCode::ACCEPTED
+            );
+            Ok::<_, Box<dyn std::error::Error>>(())
         }.await;
         clear_market(&pool, &[seller.clone(), buyer.clone()]).await?;
         delete_user(&pool, &email).await?;

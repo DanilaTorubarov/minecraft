@@ -1,6 +1,15 @@
 # Project checkpoint — 2026-10-20
 
 
+## Marketplace pending delivery limit — 2026-10-20
+
+- Added a 5-item limit (`MARKET_MAX_PENDING_DELIVERIES = 5`) on pending inventory deliveries per player UUID.
+  When a player already has 5 items queued in escrow waiting for inventory space (`market_tasks` with `kind='deliver' AND status='pending'`), further purchases and listing cancellations return `429 Too Many Requests`.
+- Updated `MarketplacePage.tsx` with user-friendly warnings for full delivery queues and disabled Buy/Cancel buttons when a player's delivery queue is saturated.
+- Added backend integration test `marketplace_caps_pending_deliveries_at_five` in `src/main.rs` and frontend unit test in `frontend/tests/api.test.ts`.
+- Verified `cargo check --tests`, 18 operator script tests, and 58 frontend unit tests.
+
+
 ## Non-strict economy simulation in CI — 2026-10-20
 
 - Updated `.github/workflows/deploy.yml` to run `./scripts/simulate-economy.sh` in report mode without `--strict`.
