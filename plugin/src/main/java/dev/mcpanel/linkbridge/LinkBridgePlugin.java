@@ -1641,9 +1641,11 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         StringBuilder slot = new StringBuilder("{\"fingerprint\":\"").append(fingerprint).append("\",\"key\":\"")
             .append(jsonEscape(item.getType().key().asString()))
             .append("\",\"amount\":").append(item.getAmount());
-        if (item instanceof Damageable damageable) {
-            slot.append(",\"damage\":").append(damageable.getDamage())
-                .append(",\"max_damage\":").append(damageable.getMaxDamage());
+        if (item.getItemMeta() instanceof Damageable damageable && item.getType().getMaxDurability() > 0) {
+            int max = damageable.hasMaxDamage() ? damageable.getMaxDamage() : item.getType().getMaxDurability();
+            int damage = Math.min(Math.max(0, damageable.getDamage()), max);
+            slot.append(",\"damage\":").append(damage)
+                .append(",\"max_damage\":").append(max);
         } else {
             slot.append(",\"damage\":null,\"max_damage\":null");
         }

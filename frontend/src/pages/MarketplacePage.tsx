@@ -125,7 +125,14 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
     <ul className="market-listings" aria-label={mine ? 'Your listings' : 'Items for sale'}>
       {listings.map((listing) => <li className="market-listing" key={listing.id}>
         <ItemBubble slot={listing.item} onSelect={() => choose(listing)} />
-        <div className="market-listing-copy"><button className="market-item-name" onClick={() => choose(listing)}>{itemName(listing.item)}</button><span>{listing.remaining} available · {listing.mine ? 'Your listing' : listing.seller}</span>
+        <div className="market-listing-copy">
+          <button className="market-item-name" onClick={() => choose(listing)}>
+            {itemName(listing.item)}
+            {listing.item.damage !== null && listing.item.max_damage !== null && listing.item.damage > 0 && (
+              <span className="market-durability-pill"> ({Math.max(0, Math.round(((listing.item.max_damage - listing.item.damage) / listing.item.max_damage) * 100))}% durability)</span>
+            )}
+          </button>
+          <span>{listing.remaining} available · {listing.mine ? 'Your listing' : listing.seller}</span>
           {listing.status === 'active' ? <span className="market-prices">{listing.unit_price !== null && <span>{listing.unit_price.toLocaleString()} coins / item</span>}{listing.lot_price !== null && <span>{listing.lot_price.toLocaleString()} coins / whole lot</span>}</span> : <span>{listing.status === 'pending' ? 'Awaiting server transfer' : listing.status === 'conflict' ? 'Transfer unsuccessful' : 'Closed'}</span>}
         </div>
       </li>)}

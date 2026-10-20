@@ -206,3 +206,20 @@ test('marketplace listing with unit and lot pricing is loaded from api', async (
   assert.equal(result.listings[0].lot_price, 500)
   assert.equal(result.listings[0].seller, 'IngameSeller')
 })
+
+test('damaged items preserve damage values and format durability correctly', async () => {
+  const { slotDescription } = await import('../src/lib/inventory.ts')
+  const damagedSword = {
+    key: 'minecraft:diamond_sword',
+    amount: 1,
+    display_name: 'Diamond Sword',
+    enchantments: { 'minecraft:sharpness': 5 },
+    damage: 390,
+    max_damage: 1561,
+    icon: null,
+  }
+  const desc = slotDescription(damagedSword)
+  assert.match(desc, /75% durability left/)
+  assert.match(desc, /sharpness 5/)
+})
+

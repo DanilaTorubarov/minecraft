@@ -1,6 +1,17 @@
 # Project checkpoint — 2026-10-20
 
 
+## Item durability serialization fix & marketplace durability visibility — 2026-10-20
+
+- Fixed weapon/tool durability serialization in `LinkBridgePlugin.java`:
+  - `ItemStack` in Paper does not implement `org.bukkit.inventory.meta.Damageable`. The serialization check `item instanceof Damageable` was previously evaluated as false for all items, resulting in `damage: null, max_damage: null` being sent for damaged items.
+  - Corrected to `item.getItemMeta() instanceof Damageable damageable && item.getType().getMaxDurability() > 0`, properly populating `damage` and `max_damage` in inventory and marketplace sync payloads.
+- Enhanced Marketplace UI:
+  - Added an explicit `(${durability}% durability)` pill directly beside item names on listing rows in `MarketplacePage.tsx` and styled in `App.css` (golden/amber in light and dark mode), ensuring buyers immediately see when a listed weapon, tool, or armor piece is damaged.
+  - Verified frontend `ItemBubble` durability wear bar and inspection tooltips correctly display calculated percentage wear.
+  - Added frontend test `damaged items preserve damage values and format durability correctly` in `frontend/tests/api.test.ts`.
+
+
 ## In-game `/sell` marketplace command — 2026-10-20
 
 - Implemented `/sell <price> [price for stack]` command in Minecraft via LinkBridge plugin (`plugin.yml` and `LinkBridgePlugin.java`).

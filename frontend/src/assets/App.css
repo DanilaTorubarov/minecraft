@@ -576,6 +576,8 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
 .market-listing > .inv-cell { flex: 0 0 64px; }
 .market-listing-copy { min-width: 0; display: grid; gap: 4px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .market-item-name { padding: 0; border: 0; background: transparent; color: var(--link); text-align: left; font-weight: 600; font-size: 14px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.market-durability-pill { font-size: 12px; font-weight: 500; color: #c9930a; text-decoration: none; }
+:root[data-theme='dark'] .market-durability-pill { color: #f0c34a; }
 .market-prices { display: grid; color: var(--text); font-variant-numeric: tabular-nums; }
 .market-deliveries { margin-top: 28px; }
 .market-deliveries h2 { font-size: 16px; margin-bottom: 6px; }
