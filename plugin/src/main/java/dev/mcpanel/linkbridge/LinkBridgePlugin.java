@@ -230,6 +230,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         initializeEconomy();
         initializeEconomyServices();
         initializePrivateAndMining();
+        setupOverworldBorder();
+        initBlueMapIntegration();
         lastTickAt = System.currentTimeMillis();
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, this::tickPlayTime, PLAY_TICK_TICKS, PLAY_TICK_TICKS);
@@ -3250,6 +3252,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         body.add("members", arr);
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
             post(internalBase + "/private/sync", body.toString(), requestTimeout);
+            updateBlueMapMarkers();
         });
     }
 
@@ -3336,11 +3339,107 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         loaded++;
                     }
                     getLogger().info("[Private] Loaded " + loaded + " active placed private block(s) from database.");
+                    updateBlueMapMarkers();
                 } catch (Exception e) {
                     getLogger().warning("[Private] Could not parse placed private blocks: " + e.getMessage());
                 }
             }
         });
+    }
+
+    private void setupOverworldBorder() {
+        getServer().getScheduler().runTask(this, () -> {
+            for (org.bukkit.World world : getServer().getWorlds()) {
+                if (world.getEnvironment() == org.bukkit.World.Environment.NORMAL && !world.getName().contains("mining")) {
+                    org.bukkit.WorldBorder border = world.getWorldBorder();
+                    border.setCenter(0, 0);
+                    border.setSize(5000);
+                    getLogger().info("[Map] Overworld world border configured to 5000x5000 blocks.");
+                }
+            }
+        });
+    }
+
+    private void initBlueMapIntegration() {
+        try {
+            if (getServer().getPluginManager().getPlugin("BlueMap") != null) {
+                de.bluecolored.bluemap.api.BlueMapAPI.onEnable(api -> {
+                    getLogger().info("[BlueMap] BlueMap detected, initializing territory markers.");
+                    updateBlueMapMarkers();
+                });
+            }
+        } catch (Throwable t) {
+            getLogger().info("[BlueMap] BlueMap integration deferred: " + t.getMessage());
+        }
+    }
+
+    public void updateBlueMapMarkers() {
+        try {
+            de.bluecolored.bluemap.api.BlueMapAPI.getInstance().ifPresent(api -> {
+                de.bluecolored.bluemap.api.markers.MarkerSet markerSet = de.bluecolored.bluemap.api.markers.MarkerSet.builder()
+                        .label("Private Territories")
+                        .toggleable(true)
+                        .defaultHidden(false)
+                        .build();
+
+                for (PlacedPrivateBlock pb : placedPrivateBlocks.values()) {
+                    if (!pb.placed) continue;
+                    String markerId = "core_" + pb.id;
+                    String shapeId = "zone_" + pb.id;
+
+                    int size = pb.radius * 2 + 1;
+                    long hours = pb.fuelSeconds / 3600;
+                    long mins = (pb.fuelSeconds % 3600) / 60;
+                    String fuelText = pb.fuelSeconds > 0 ? (hours + "h " + mins + "m") : "<span style='color:#ef4444'>DEPLETED</span>";
+
+                    String detail = "<div style='font-family:sans-serif;padding:6px;min-width:180px;'>"
+                            + "<b style='color:#0284c7;font-size:1.1em;'>Protection Core #" + pb.blockIndex + "</b><br>"
+                            + "<b>Owner:</b> " + pb.ownerName + "<br>"
+                            + "<b>Shield Area:</b> " + size + "×" + size + " (Tier " + pb.fuelTier + ")<br>"
+                            + "<b>Fuel Remaining:</b> " + fuelText + "<br>"
+                            + "<b>Coordinates:</b> " + pb.x + ", " + pb.y + ", " + pb.z
+                            + "</div>";
+
+                    de.bluecolored.bluemap.api.markers.POIMarker poi = de.bluecolored.bluemap.api.markers.POIMarker.builder()
+                            .label("Core #" + pb.blockIndex + " (" + pb.ownerName + ")")
+                            .position(new com.flowpowered.math.vector.Vector3d(pb.x + 0.5, pb.y + 1.2, pb.z + 0.5))
+                            .detail(detail)
+                            .build();
+                    markerSet.getMarkers().put(markerId, poi);
+
+                    if (pb.radius > 0) {
+                        de.bluecolored.bluemap.api.math.Shape shape = de.bluecolored.bluemap.api.math.Shape.createRect(
+                                pb.x - pb.radius, pb.z - pb.radius,
+                                pb.x + pb.radius + 1, pb.z + pb.radius + 1
+                        );
+                        de.bluecolored.bluemap.api.math.Color lineColor = pb.fuelSeconds > 0
+                                ? new de.bluecolored.bluemap.api.math.Color(2, 132, 199, 0.9f)
+                                : new de.bluecolored.bluemap.api.math.Color(239, 68, 68, 0.9f);
+                        de.bluecolored.bluemap.api.math.Color fillColor = pb.fuelSeconds > 0
+                                ? new de.bluecolored.bluemap.api.math.Color(56, 189, 248, 0.25f)
+                                : new de.bluecolored.bluemap.api.math.Color(239, 68, 68, 0.2f);
+
+                        de.bluecolored.bluemap.api.markers.ShapeMarker zone = de.bluecolored.bluemap.api.markers.ShapeMarker.builder()
+                                .label("Territory: " + pb.ownerName + " (" + size + "×" + size + ")")
+                                .shape(shape, pb.y)
+                                .lineColor(lineColor)
+                                .fillColor(fillColor)
+                                .lineWidth(2)
+                                .depthTestEnabled(false)
+                                .detail(detail)
+                                .build();
+                        markerSet.getMarkers().put(shapeId, zone);
+                    }
+                }
+
+                for (de.bluecolored.bluemap.api.BlueMapMap map : api.getMaps()) {
+                    if (map.getWorld().getId().endsWith("overworld") || map.getId().contains("world")) {
+                        map.getMarkerSets().put("private-territories", markerSet);
+                    }
+                }
+            });
+        } catch (Throwable ignored) {
+        }
     }
 
     private void reclaimPrivateBlocks(Player player) {

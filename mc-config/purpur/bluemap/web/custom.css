@@ -1,0 +1,65 @@
+/* Frutiger Aero / Aqua theme styling for BlueMap */
+:root {
+  --theme-bg: rgba(240, 246, 252, 0.78);
+  --theme-fg: #1d2b3a;
+  --theme-bg-light: rgba(220, 235, 250, 0.65);
+  --theme-bg-hover: rgba(200, 225, 255, 0.85);
+  --theme-fg-light: #486581;
+  font-family: 'Open Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --theme-bg: rgba(16, 24, 38, 0.82);
+    --theme-fg: #e2e8f0;
+    --theme-bg-light: rgba(30, 45, 66, 0.75);
+    --theme-bg-hover: rgba(45, 70, 105, 0.88);
+    --theme-fg-light: #94a3b8;
+  }
+}
+
+.control-bar {
+  border-radius: 12px;
+  overflow: hidden;
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 8px 32px rgba(0, 30, 60, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(225, 240, 255, 0.15) 100%), var(--theme-bg);
+}
+
+.side-menu {
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+  border-right: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 4px 0 24px rgba(0, 20, 50, 0.2);
+  background: var(--theme-bg);
+}
+
+.svg-button {
+  transition: all 0.18s ease-in-out;
+  background: transparent;
+}
+
+.svg-button:hover {
+  background: var(--theme-bg-hover);
+  filter: brightness(1.08);
+}
+
+.svg-button.active {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  color: #fff !important;
+}
+
+.svg-button.active svg {
+  fill: #fff !important;
+}
+
+.bm-marker-popup, .bm-marker-poi-label {
+  border-radius: 10px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 6px 20px rgba(0, 25, 50, 0.3);
+  font-weight: 500;
+}

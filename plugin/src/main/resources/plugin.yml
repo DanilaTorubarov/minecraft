@@ -1,10 +1,11 @@
 name: LinkBridge
-version: '1.10.0'
+version: '1.11.0'
 main: dev.mcpanel.linkbridge.LinkBridgePlugin
 description: Links a Minecraft account to a web panel account and reports per-player statistics and inventory snapshots to the panel.
 api-version: '1.21'
 # Hard dependency: the plugin calls AuthMeApi, and AuthMe must be enabled first.
 depend: [AuthMe, SkinsRestorer]
+softdepend: [BlueMap]
 commands:
     services:
         description: Quote or confirm an optional iron-item repair after login.

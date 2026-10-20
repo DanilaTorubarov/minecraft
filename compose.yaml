@@ -121,6 +121,7 @@ services:
       PLUGINS: |
         https://github.com/AuthMe/AuthMeReloaded/releases/download/6.0.1/AuthMe-6.0.1-Paper.jar
         https://github.com/SkinsRestorer/SkinsRestorer/releases/download/15.12.6/SkinsRestorer.jar
+        https://github.com/BlueMap-Minecraft/BlueMap/releases/download/v5.29/bluemap-5.29-paper.jar
       # Consumed by paper-global.yml's ${CFG_VELOCITY_SECRET} placeholder.
       CFG_VELOCITY_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
       # Consumed by the link plugin's config.yml placeholder.

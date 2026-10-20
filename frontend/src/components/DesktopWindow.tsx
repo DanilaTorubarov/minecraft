@@ -20,6 +20,7 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   marketplace: ['Player marketplace', 'Items held by the server'],
   admin: ['Administration Center', 'Privileged operator controls'],
   chat: ['Server Chat', 'Live bidirectional Minecraft realm bridge'],
+  map: ['Live 3D World', '2000×2000 Core Terrain Radar'],
 }
 
 type Gesture = {

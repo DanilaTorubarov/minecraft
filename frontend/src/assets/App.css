@@ -596,3 +596,187 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
 .player-account-picker select:hover { background: var(--surface-soft); border-color: var(--frame); }
 .player-account-picker select option { color: var(--text); background: var(--surface); }
 .player-account-content:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+
+/* Live 3D World Map Application */
+.map-page-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 480px;
+  gap: 8px;
+  min-width: 0;
+}
+.map-hud-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  border: 1px solid var(--frame);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.map-hud-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.map-hud-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-right: 2px;
+}
+.map-hud-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 5px;
+  background: var(--field);
+  border: 1px solid var(--frame);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.map-hud-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--muted);
+}
+.map-hud-btn.active {
+  background: linear-gradient(var(--primary-top), var(--primary-bottom));
+  color: var(--primary-text);
+  border-color: var(--primary-edge);
+  box-shadow: 0 2px 8px rgba(0, 110, 222, 0.35);
+}
+.map-hud-btn.popout {
+  color: var(--link);
+}
+.map-hud-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  margin: 0 4px;
+}
+.map-hud-badges {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.map-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: rgba(2, 132, 199, 0.14);
+  color: #0284c7;
+  border: 1px solid rgba(2, 132, 199, 0.32);
+}
+:root[data-theme='dark'] .map-badge {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+}
+.map-badge .badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0284c7;
+  box-shadow: 0 0 6px #0284c7;
+}
+:root[data-theme='dark'] .map-badge .badge-dot {
+  background: #38bdf8;
+  box-shadow: 0 0 6px #38bdf8;
+}
+.map-badge.secondary {
+  background: var(--field);
+  color: var(--muted);
+  border-color: var(--line);
+}
+.map-frame-wrapper {
+  flex: 1;
+  min-height: 420px;
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--frame);
+  background: #0b111e;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.map-iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  position: absolute;
+  inset: 0;
+}
+.map-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(11, 17, 30, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #f8fafc;
+  pointer-events: none;
+}
+.map-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(56, 189, 248, 0.25);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: map-spin 0.8s linear infinite;
+}
+@keyframes map-spin {
+  to { transform: rotate(360deg); }
+}
+.map-loading-text {
+  text-align: center;
+}
+.map-loading-text h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.map-loading-text p {
+  margin: 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+.map-hud-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 6px;
+  border-top: 1px solid var(--line);
+}
+@container (max-width: 600px) {
+  .map-hud-badges {
+    margin-left: 0;
+    width: 100%;
+  }
+  .map-hud-footer {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+}

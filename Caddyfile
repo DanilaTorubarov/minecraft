@@ -16,7 +16,7 @@
 
 	header {
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
+		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 	}
@@ -29,6 +29,12 @@
 	# never be reachable from the internet, so block them before the reverse proxy.
 	handle /internal/* {
 		respond 404
+	}
+
+	# Live 3D Map (BlueMap) reverse proxy
+	redir /map /map/ 308
+	handle_path /map/* {
+		reverse_proxy purpur:8100
 	}
 
 	handle {

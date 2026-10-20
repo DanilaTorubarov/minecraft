@@ -55,6 +55,7 @@ version = findProperty('pluginVersion') ?: '0.0.0'
 repositories {
     mavenCentral()
     maven { url = uri('https://repo.papermc.io/repository/maven-public/') }
+    maven { url = uri('https://repo.bluecolored.de/releases') }
 }
 
 dependencies {
@@ -63,10 +64,11 @@ dependencies {
     // Keep in step with MC_VERSION in .env.docker.
     compileOnly 'io.papermc.paper:paper-api:26.3.build.193-stable'
 
-    // AuthMe's API only — the plugin declares `depend: [AuthMe]`, so the classes
-    // are supplied by AuthMe at runtime. AuthMe publishes no stable Maven artifact
-    // for the plugin jar, so scripts/build-plugin.sh downloads the pinned release
-    // into .plugin-build/lib and we compile against it here.
+    // BlueMap API for live 3D web map markers & territory integration
+    compileOnly 'de.bluecolored:bluemap-api:2.8.2'
+    compileOnly 'com.flowpowered:flow-math:1.0.3'
+
+    // AuthMe and SkinsRestorer APIs
     compileOnly fileTree('../.plugin-build/lib') { include 'AuthMe-*.jar', 'SkinsRestorer-*.jar' }
 }
 
