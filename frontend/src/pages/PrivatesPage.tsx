@@ -1,0 +1,384 @@
+import { useEffect, useState } from 'react'
+import {
+  ApiError,
+  depositPrivateFuel,
+  getPlayerInventory,
+  getPlayerPrivates,
+  type InventorySlot,
+  type InventoryView,
+  type PrivateBlockView,
+} from '../lib/api'
+import {
+  detectFuelCrystal,
+  formatFuelTime,
+  PRIVATE_BLOCK_PRICES,
+  type FuelCrystalInfo,
+} from '../lib/fuel'
+import { playSound } from '../lib/sounds'
+import firewallWarningIcon from '../assets/icons/vista-firewall-warning.png'
+import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
+import firewallOffIcon from '../assets/icons/vista-firewall-off.png'
+import searchGlobeIcon from '../assets/icons/vista-search-globe.png'
+
+interface Props {
+  uuid: string
+  username: string
+  visible: boolean
+  onOpenMarketplace?: () => void
+}
+
+interface InventoryCrystal {
+  slot: number
+  item: NonNullable<InventorySlot>
+  info: FuelCrystalInfo
+}
+
+export default function PrivatesPage({ uuid, username, visible, onOpenMarketplace }: Props) {
+  const [blocks, setBlocks] = useState<PrivateBlockView[] | null>(null)
+  const [inventory, setInventory] = useState<InventoryView | null>(null)
+  const [loadError, setLoadError] = useState('')
+  const [actionError, setActionError] = useState('')
+  const [actionMessage, setActionMessage] = useState('')
+  const [submittingSlot, setSubmittingSlot] = useState<number | null>(null)
+
+  const refreshData = async () => {
+    try {
+      const [privates, inv] = await Promise.all([
+        getPlayerPrivates(uuid),
+        getPlayerInventory(uuid),
+      ])
+      setBlocks(privates)
+      setInventory(inv)
+      setLoadError('')
+    } catch {
+      setLoadError('Could not load private blocks. Try again shortly.')
+    }
+  }
+
+  useEffect(() => {
+    if (!visible) return
+    let active = true
+    const load = async () => {
+      try {
+        const [privates, inv] = await Promise.all([
+          getPlayerPrivates(uuid),
+          getPlayerInventory(uuid),
+        ])
+        if (active) {
+          setBlocks(privates)
+          setInventory(inv)
+          setLoadError('')
+        }
+      } catch {
+        if (active) setLoadError('Could not load private blocks. Try again shortly.')
+      }
+    }
+    void load()
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load()
+    }, 5000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [uuid, visible])
+
+  // Extract all fuel crystals currently present in the player's inventory
+  const fuelCrystals: InventoryCrystal[] = []
+  if (inventory?.slots) {
+    for (let i = 0; i < 36; i++) {
+      const it = inventory.slots[i]
+      if (it) {
+        const info = detectFuelCrystal(it)
+        if (info) {
+          fuelCrystals.push({ slot: i, item: it, info })
+        }
+      }
+    }
+  }
+
+  const handleDeposit = async (blockIndex: number, slotIndex: number, crystalName: string, hours: number) => {
+    if (submittingSlot !== null) return
+    setSubmittingSlot(slotIndex)
+    setActionError('')
+    setActionMessage('')
+    try {
+      const result = await depositPrivateFuel(uuid, blockIndex, slotIndex)
+      playSound('done')
+      setActionMessage(
+        `Successfully deposited ${crystalName} into Protection Core #${blockIndex}! Added ${hours} hours of fuel (+${Math.round(result.added_seconds / 3600)}h). Active size: ${result.size}×${result.size}.`
+      )
+      await refreshData()
+    } catch (err) {
+      playSound('click')
+      if (err instanceof ApiError && err.status === 400) {
+        setActionError('The selected slot no longer contains a valid fuel crystal or the core is not placed.')
+      } else {
+        setActionError('Failed to deposit fuel. Please try again.')
+      }
+    } finally {
+      setSubmittingSlot(null)
+    }
+  }
+
+  if (loadError) {
+    return (
+      <div className="note" data-tone="error" role="alert">
+        <p>{loadError}</p>
+        <button className="btn" onClick={() => void refreshData()}>Retry</button>
+      </div>
+    )
+  }
+
+  if (blocks === null || inventory === null) {
+    return <p className="loading">Loading private blocks and fuel status…</p>
+  }
+
+  const ownedMap = new Map<number, PrivateBlockView>()
+  for (const b of blocks) {
+    ownedMap.set(b.block_index, b)
+  }
+
+  return (
+    <div className="privates-page" style={{ display: 'grid', gap: '20px', paddingBottom: '24px' }}>
+      <header className="privates-header" style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+        <div>
+          <h2 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <img src={firewallOnIcon} alt="" style={{ width: '24px', height: '24px', objectFit: 'contain' }} />
+            Private Territory Cores
+          </h2>
+          <p style={{ margin: 0, color: 'var(--muted)', fontSize: '13px' }}>
+            Manage private zones, boundaries, and fuel levels for <strong>{username}</strong>.
+          </p>
+        </div>
+        <div style={{ padding: '6px 14px', background: 'var(--content-glass)', border: '1px solid var(--line)', borderRadius: '20px', fontWeight: 600, fontSize: '13px' }}>
+          Owned: {blocks.length} / 3 Cores
+        </div>
+      </header>
+
+      {actionMessage && (
+        <div className="note" data-tone="success" role="status" style={{ margin: 0 }}>
+          <p>{actionMessage}</p>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="note" data-tone="error" role="alert" style={{ margin: 0 }}>
+          <p>{actionError}</p>
+        </div>
+      )}
+
+      {/* Fuel Inventory Section */}
+      <section className="fuel-inventory-panel" style={{ background: 'var(--content-glass)', border: '1px solid var(--line)', borderRadius: '8px', padding: '16px', display: 'grid', gap: '12px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+          <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>⚡ Available Fuel Crystals</span>
+            <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--muted)' }}>
+              ({fuelCrystals.reduce((sum, c) => sum + (c.item.amount || 1), 0)} in inventory)
+            </span>
+          </h3>
+          {onOpenMarketplace && (
+            <button className="btn btn-quiet" onClick={onOpenMarketplace} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <img src={searchGlobeIcon} alt="" style={{ width: '16px', height: '16px', objectFit: 'contain' }} />
+              <span>Marketplace</span>
+            </button>
+          )}
+        </div>
+
+        {fuelCrystals.length === 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '14px', padding: '14px', background: 'var(--surface-soft)', borderRadius: '6px', border: '1px solid var(--line)' }}>
+            <img src={firewallWarningIcon} alt="" style={{ width: '36px', height: '36px', flexShrink: 0, objectFit: 'contain' }} />
+            <div style={{ flex: '1 1 240px' }}>
+              <p style={{ margin: '0 0 4px', fontWeight: 600, fontSize: '13px' }}>No fuel crystals in inventory</p>
+              <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>
+                Fuel crystals power your Protection Cores and expand your territory from 3×3 up to 15×15. Mine them in the Mining Dimension (<strong>/mine</strong>) or purchase them from players on the Marketplace.
+              </p>
+            </div>
+            {onOpenMarketplace && (
+              <button className="btn" onClick={onOpenMarketplace} style={{ flexShrink: 0, fontWeight: 600 }}>
+                Buy Fuel on Marketplace
+              </button>
+            )}
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px' }}>
+            {fuelCrystals.map(({ slot, item, info }) => (
+              <div key={slot} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '6px' }}>
+                {item.icon ? (
+                  <img src={item.icon} alt="" style={{ width: '28px', height: '28px', imageRendering: 'pixelated' }} />
+                ) : (
+                  <div style={{ width: '28px', height: '28px', borderRadius: '4px', background: 'var(--line)' }} />
+                )}
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {info.name} <span style={{ color: 'var(--muted)', fontSize: '12px' }}>×{item.amount || 1}</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                    Tier {info.tier} (+{info.hours}h · {info.footprint})
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Private Blocks Slots 1, 2, 3 */}
+      <section className="private-blocks-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', gap: '16px' }}>
+        {[1, 2, 3].map((index) => {
+          const block = ownedMap.get(index)
+          if (block) {
+            const isActive = block.placed && block.fuel_seconds > 0
+            const isPlaced = block.placed
+            return (
+              <article
+                key={index}
+                style={{
+                  background: 'var(--content-glass)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '8px',
+                  padding: '16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '14px',
+                  boxShadow: 'var(--shadow)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--line)', paddingBottom: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <img
+                      src={isActive ? firewallOnIcon : firewallOffIcon}
+                      alt=""
+                      style={{ width: '20px', height: '20px', objectFit: 'contain' }}
+                    />
+                    <strong style={{ fontSize: '15px' }}>Protection Core #{index}</strong>
+                  </div>
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      background: isActive ? 'var(--success-bg)' : isPlaced ? 'var(--danger-bg)' : 'var(--surface-soft)',
+                      color: isActive ? 'var(--success)' : isPlaced ? 'var(--danger)' : 'var(--muted)',
+                      border: '1px solid currentColor',
+                    }}
+                  >
+                    {isActive ? 'Active' : isPlaced ? 'Dormant (No Fuel)' : 'Not Placed'}
+                  </span>
+                </div>
+
+                <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', fontSize: '13px' }}>
+                  <dt style={{ color: 'var(--muted)' }}>Footprint:</dt>
+                  <dd style={{ margin: 0, fontWeight: 600 }}>
+                    {block.size}×{block.size} blocks <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(Radius: {block.radius})</span>
+                  </dd>
+
+                  <dt style={{ color: 'var(--muted)' }}>Fuel Level:</dt>
+                  <dd style={{ margin: 0, fontWeight: 600, color: isActive ? 'var(--success)' : 'var(--danger)' }}>
+                    {formatFuelTime(block.fuel_seconds)}
+                  </dd>
+
+                  <dt style={{ color: 'var(--muted)' }}>Fuel Tier:</dt>
+                  <dd style={{ margin: 0, fontWeight: 600 }}>Tier {block.fuel_tier}</dd>
+
+                  <dt style={{ color: 'var(--muted)' }}>Location:</dt>
+                  <dd style={{ margin: 0, wordBreak: 'break-all' }}>
+                    {isPlaced ? `${block.world} (${block.x}, ${block.y}, ${block.z})` : 'In Inventory or Unplaced'}
+                  </dd>
+
+                  <dt style={{ color: 'var(--muted)' }}>Members:</dt>
+                  <dd style={{ margin: 0, color: 'var(--muted)' }}>
+                    {Array.isArray(block.members) && block.members.length > 0
+                      ? `${block.members.length} trusted player(s)`
+                      : 'None (Owner only)'}
+                  </dd>
+                </dl>
+
+                {/* Fuel Deposit Area */}
+                {isPlaced ? (
+                  <div style={{ marginTop: 'auto', paddingTop: '12px', borderTop: '1px solid var(--line)', display: 'grid', gap: '8px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
+                      Deposit Fuel Crystal:
+                    </span>
+                    {fuelCrystals.length > 0 ? (
+                      <div style={{ display: 'grid', gap: '6px' }}>
+                        {fuelCrystals.map(({ slot, info }) => (
+                          <button
+                            key={slot}
+                            className="btn btn-quiet"
+                            disabled={submittingSlot !== null}
+                            onClick={() => void handleDeposit(block.block_index, slot, info.name, info.hours)}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              padding: '6px 10px',
+                              fontSize: '12px',
+                              textAlign: 'left',
+                            }}
+                          >
+                            <span>
+                              <strong>+ {info.hours}h</strong> {info.name}
+                            </span>
+                            <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                              {submittingSlot === slot ? 'Depositing…' : 'Deposit'}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', fontSize: '12px' }}>
+                        <span style={{ color: 'var(--muted)' }}>No crystals in inventory</span>
+                        {onOpenMarketplace && (
+                          <button className="btn btn-quiet" onClick={onOpenMarketplace} style={{ fontSize: '11px' }}>
+                            Buy on Marketplace
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--line)', fontSize: '12px', color: 'var(--muted)' }}>
+                    Place this Protection Core in-game to activate territory. If lost, type <strong>/ps claim</strong> in chat to recover it for free.
+                  </div>
+                )}
+              </article>
+            )
+          }
+
+          // Unpurchased Slot
+          const price = PRIVATE_BLOCK_PRICES[index] || 500
+          return (
+            <article
+              key={index}
+              style={{
+                background: 'var(--surface-soft)',
+                border: '1px dashed var(--line)',
+                borderRadius: '8px',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+                opacity: 0.88,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <strong style={{ fontSize: '15px', color: 'var(--muted)' }}>Protection Core #{index}</strong>
+                <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: 'var(--line)', color: 'var(--muted)' }}>
+                  Unpurchased
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: '13px', color: 'var(--muted)' }}>
+                Unlock Private Block #{index} for <strong>{price.toLocaleString()} coins</strong>.
+              </p>
+              <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>
+                Type <strong>/ps buy</strong> in-game to purchase. Requires maintaining at least 1,000 coins in reserve.
+              </p>
+            </article>
+          )
+        })}
+      </section>
+    </div>
+  )
+}

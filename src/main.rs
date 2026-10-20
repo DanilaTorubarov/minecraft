@@ -95,6 +95,8 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/players/{uuid}/skin", get(player_skin).post(upload_player_skin)
             .layer(axum::extract::DefaultBodyLimit::max(300 * 1024)))
         .route("/api/players/{uuid}/inventory", get(player_inventory))
+        .route("/api/players/{uuid}/privates", get(get_player_privates))
+        .route("/api/players/{uuid}/privates/{block_index}/fuel", post(deposit_player_private_fuel))
         .route("/internal/skins/sync", post(sync_player_skins))
         .route("/internal/skins/report", post(report_player_skin))
         .route("/internal/inventory/report", post(report_inventory))
@@ -5201,6 +5203,222 @@ async fn sync_private_block(
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(StatusCode::OK)
+}
+
+async fn get_player_privates(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Path(uuid): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let uuid = uuid.to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM minecraft_accounts WHERE uuid=$1 AND user_id=$2)",
+    )
+    .bind(&uuid)
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(market_db)?;
+    if !exists {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let rows = sqlx::query(
+        "SELECT p.id::text AS id, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.members, p.updated_at::text AS updated_at FROM private_blocks p WHERE p.uuid=$1 ORDER BY p.block_index ASC",
+    )
+    .bind(&uuid)
+    .fetch_all(&pool)
+    .await
+    .map_err(market_db)?;
+
+    let mut blocks = Vec::new();
+    for r in rows {
+        let radius: i32 = r.get("radius");
+        let size = 2 * radius + 1;
+        blocks.push(serde_json::json!({
+            "id": r.get::<String, _>("id"),
+            "block_index": r.get::<i32, _>("block_index"),
+            "world": r.get::<String, _>("world"),
+            "x": r.get::<i32, _>("x"),
+            "y": r.get::<i32, _>("y"),
+            "z": r.get::<i32, _>("z"),
+            "placed": r.get::<bool, _>("placed"),
+            "radius": radius,
+            "size": size,
+            "fuel_seconds": r.get::<i64, _>("fuel_seconds"),
+            "fuel_tier": r.get::<i32, _>("fuel_tier"),
+            "members": r.get::<serde_json::Value, _>("members"),
+            "updated_at": r.get::<String, _>("updated_at")
+        }));
+    }
+    Ok(Json(serde_json::Value::Array(blocks)))
+}
+
+#[derive(serde::Deserialize)]
+struct DepositFuelInput {
+    slot: usize,
+}
+
+fn detect_fuel_tier(item: &serde_json::Value) -> Option<i32> {
+    let display = item["display_name"].as_str().unwrap_or("");
+    if display.contains("Tier 1 Fuel") || display.contains("Ember Shard") {
+        Some(1)
+    } else if display.contains("Tier 2 Fuel") || display.contains("Cobalt Crystal") {
+        Some(2)
+    } else if display.contains("Tier 3 Fuel") || display.contains("Crimson Core") {
+        Some(3)
+    } else if display.contains("Tier 4 Fuel") || display.contains("Astral Void Crystal") {
+        Some(4)
+    } else {
+        None
+    }
+}
+
+const MAX_STORED_FUEL: i64 = 72 * 3600;
+
+fn fuel_duration(tier: i32) -> i64 {
+    match tier {
+        1 => 7200,
+        2 => 10800,
+        3 => 14400,
+        4 => 21600,
+        _ => 0,
+    }
+}
+
+fn fuel_radius(tier: i32) -> i32 {
+    match tier {
+        1 => 1,
+        2 => 3,
+        3 => 5,
+        4 => 7,
+        _ => 1,
+    }
+}
+
+async fn deposit_player_private_fuel(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Path((uuid, block_index)): Path<(String, i32)>,
+    Json(body): Json<DepositFuelInput>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let uuid = uuid.to_lowercase();
+    if !is_uuid(&uuid) || !(1..=3).contains(&block_index) || body.slot >= 36 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM minecraft_accounts WHERE uuid=$1 AND user_id=$2)",
+    )
+    .bind(&uuid)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    if !exists {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let block_row = sqlx::query(
+        "SELECT placed, fuel_seconds, fuel_tier, radius FROM private_blocks WHERE uuid=$1 AND block_index=$2 FOR UPDATE",
+    )
+    .bind(&uuid)
+    .bind(block_index)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    let block_row = match block_row {
+        Some(r) => r,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+    let placed: bool = block_row.get("placed");
+    if !placed {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let inv_row: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT slots FROM player_inventory WHERE uuid=$1 FOR UPDATE",
+    )
+    .bind(&uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    let mut slots = match inv_row {
+        Some(s) if s.is_array() => s,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let slots_arr = slots.as_array_mut().unwrap();
+    if body.slot >= slots_arr.len() || slots_arr[body.slot].is_null() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let item = slots_arr[body.slot].clone();
+    let crystal_tier = match detect_fuel_tier(&item) {
+        Some(t) => t,
+        None => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let current_fuel_seconds: i64 = block_row.get("fuel_seconds");
+    let current_fuel_tier: i32 = block_row.get("fuel_tier");
+    let added_seconds = fuel_duration(crystal_tier);
+    let new_fuel_seconds = (current_fuel_seconds + added_seconds).min(MAX_STORED_FUEL);
+    let new_fuel_tier = current_fuel_tier.max(crystal_tier);
+    let new_radius = fuel_radius(new_fuel_tier);
+
+    sqlx::query(
+        "UPDATE private_blocks SET fuel_seconds=$3, fuel_tier=$4, radius=$5, updated_at=now() WHERE uuid=$1 AND block_index=$2",
+    )
+    .bind(&uuid)
+    .bind(block_index)
+    .bind(new_fuel_seconds)
+    .bind(new_fuel_tier)
+    .bind(new_radius)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    let amount = item["amount"].as_i64().unwrap_or(1);
+    if amount > 1 {
+        slots_arr[body.slot]["amount"] = serde_json::json!(amount - 1);
+    } else {
+        slots_arr[body.slot] = serde_json::Value::Null;
+    }
+
+    sqlx::query(
+        "UPDATE player_inventory SET slots=$2, updated_at=now() WHERE uuid=$1",
+    )
+    .bind(&uuid)
+    .bind(&slots)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    if let Some(fp) = item["fingerprint"].as_str() {
+        let req_id = new_session_token()?;
+        sqlx::query(
+            "INSERT INTO inventory_deletions(uuid, request_id, slot, fingerprint, status)
+             VALUES($1, $2, $3, $4, 'pending')
+             ON CONFLICT (uuid) DO UPDATE SET request_id=EXCLUDED.request_id, slot=EXCLUDED.slot, fingerprint=EXCLUDED.fingerprint, status='pending', created_at=now()",
+        )
+        .bind(&uuid)
+        .bind(&req_id)
+        .bind(body.slot as i32)
+        .bind(fp)
+        .execute(&mut *tx)
+        .await
+        .map_err(market_db)?;
+    }
+
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(serde_json::json!({
+        "fuel_seconds": new_fuel_seconds,
+        "fuel_tier": new_fuel_tier,
+        "radius": new_radius,
+        "size": 2 * new_radius + 1,
+        "added_seconds": added_seconds
+    })))
 }
 
 #[derive(serde::Deserialize)]
@@ -11656,6 +11874,59 @@ mod test {
         let status2 = body_json(get_internal(&pool, &format!("/internal/mine/status?uuid={uuid}"), Some(&token), &ip).await?).await?;
         assert_eq!(status2["allowed"], false);
         assert!(status2["cooldown_remaining"].as_i64().unwrap() > 0);
+
+        let (email, cookie) = fresh_user(&pool).await?;
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email=$1")
+            .bind(&email).fetch_one(&pool).await?;
+        sqlx::query("INSERT INTO minecraft_accounts (user_id, uuid, username) VALUES ($1, $2, $3)")
+            .bind(user_id).bind(&uuid).bind("MinerPro").execute(&pool).await?;
+
+        let unauth = send(&pool, "GET", &format!("/api/players/{uuid}/privates"), None, None).await?;
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        let priv_res = send(&pool, "GET", &format!("/api/players/{uuid}/privates"), Some(&cookie), None).await?;
+        assert_eq!(priv_res.status(), StatusCode::OK);
+        let priv_arr = body_json(priv_res).await?;
+        assert_eq!(priv_arr.as_array().unwrap().len(), 3);
+        assert_eq!(priv_arr[0]["block_index"], 1);
+        assert_eq!(priv_arr[0]["placed"], true);
+        assert_eq!(priv_arr[0]["radius"], 7);
+
+        let mut test_slots = vec![serde_json::Value::Null; 41];
+        test_slots[0] = serde_json::json!({
+            "key": "minecraft:prismarine_crystals",
+            "amount": 2,
+            "damage": null,
+            "max_damage": null,
+            "display_name": "[Tier 2 Fuel: Cobalt Crystal]",
+            "enchantments": {},
+            "fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+        });
+        sqlx::query("INSERT INTO player_inventory(uuid, username, slots) VALUES($1, 'MinerPro', $2)")
+            .bind(&uuid).bind(serde_json::to_value(&test_slots).unwrap()).execute(&pool).await?;
+
+        let fuel_dep1 = send(&pool, "POST", &format!("/api/players/{uuid}/privates/1/fuel"), Some(&cookie), Some(serde_json::json!({"slot": 0}))).await?;
+        assert_eq!(fuel_dep1.status(), StatusCode::OK);
+        let dep1_json = body_json(fuel_dep1).await?;
+        assert_eq!(dep1_json["added_seconds"], 10800);
+        assert_eq!(dep1_json["fuel_seconds"], 32400);
+
+        let inv1: serde_json::Value = sqlx::query_scalar("SELECT slots FROM player_inventory WHERE uuid=$1").bind(&uuid).fetch_one(&pool).await?;
+        assert_eq!(inv1[0]["amount"], 1);
+
+        let fuel_dep2 = send(&pool, "POST", &format!("/api/players/{uuid}/privates/1/fuel"), Some(&cookie), Some(serde_json::json!({"slot": 0}))).await?;
+        assert_eq!(fuel_dep2.status(), StatusCode::OK);
+        let dep2_json = body_json(fuel_dep2).await?;
+        assert_eq!(dep2_json["added_seconds"], 10800);
+        assert_eq!(dep2_json["fuel_seconds"], 43200);
+
+        let inv2: serde_json::Value = sqlx::query_scalar("SELECT slots FROM player_inventory WHERE uuid=$1").bind(&uuid).fetch_one(&pool).await?;
+        assert!(inv2[0].is_null());
+
+        let fuel_dep3 = send(&pool, "POST", &format!("/api/players/{uuid}/privates/1/fuel"), Some(&cookie), Some(serde_json::json!({"slot": 0}))).await?;
+        assert_eq!(fuel_dep3.status(), StatusCode::BAD_REQUEST);
+
+        delete_user(&pool, &email).await?;
 
         drop_budget_pool(admin, pool, schema).await
     }

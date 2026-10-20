@@ -182,7 +182,8 @@ function Shell() {
           {user === null ? <div className="workspace stats-workspace"><main className="main"><div className="note"><p>Log in to control your linked Minecraft accounts.</p><button className="btn" onClick={() => { navigate('/login'); openAccount() }}>Log in</button></div></main></div>
             : selectedPlayer ? statsAccounts.map((account) => <div key={`${user.id}-${account.uuid}`} className="player-account-content" hidden={account.uuid !== selectedPlayer.uuid}>
               <PlayerApp inventoryLaunch={inventoryLaunch?.uuid === account.uuid ? inventoryLaunch.activation : 0} account={account} stats={stats} loadError={loadError} onRetry={retry} onSelectAccount={openPlayer} open={playerOpen && account.uuid === selectedPlayer.uuid}
-                onGoToAccount={() => { navigate('/cabinet', { replace: true }); openAccount() }} />
+                onGoToAccount={() => { navigate('/cabinet', { replace: true }); openAccount() }}
+                onOpenMarketplace={openMarket} />
             </div>)
             : <div className="workspace stats-workspace"><main className="main">{loadError ? <div className="note" data-tone="error" role="alert"><p>{loadError}</p><button className="btn" onClick={retry}>Retry loading players</button></div>
               : stats === null ? <p className="loading">Loading your linked players…</p>

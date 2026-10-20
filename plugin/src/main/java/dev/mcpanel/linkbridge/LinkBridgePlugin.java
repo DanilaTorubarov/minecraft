@@ -2546,6 +2546,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         try {
             syncInventoryDeletions();
             syncMarketplace();
+            loadAllPlacedPrivateBlocks();
             sendInventories();
         } finally { inventoryFlushRunning.set(false); }
     }
@@ -2596,7 +2597,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 ItemStack current = player.getInventory().getItem(index);
                 deleted = current != null && !current.isEmpty()
                     && expected.equals(InventoryNbt.fingerprint(current.serializeAsBytes()));
-                if(deleted) player.getInventory().setItem(index,null);
+                if(deleted) {
+                    if (current.getAmount() > 1) {
+                        current.setAmount(current.getAmount() - 1);
+                    } else {
+                        player.getInventory().setItem(index, null);
+                    }
+                }
                 data.set(key,org.bukkit.persistence.PersistentDataType.STRING,id + (deleted ? ":deleted" : ":conflict"));
             }
             // Item and receipt are saved together. A retry after a lost response
@@ -2622,9 +2629,23 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 items.put(entry.getKey(),ItemStack.deserializeBytes(nbt.itemBytes(entry.getValue())));
             }
             boolean replay = (id + ":deleted").equals(nbt.receipt()) || (id + ":conflict").equals(nbt.receipt());
-            deleted = !refresh && nbt.delete(index,expected,id);
+            deleted = !refresh;
+            if(!refresh && !replay) {
+                ItemStack it = items.get(index);
+                if (it != null && expected.equals(InventoryNbt.fingerprint(it.serializeAsBytes()))) {
+                    if (it.getAmount() > 1) {
+                        it.setAmount(it.getAmount() - 1);
+                        nbt.replaceMarketItem(index, InventoryNbt.read(it.serializeAsBytes()).root);
+                        deleted = true;
+                    } else {
+                        deleted = nbt.delete(index, expected, id);
+                        if (deleted) items.remove(index);
+                    }
+                } else {
+                    deleted = false;
+                }
+            }
             if(!refresh && !replay) nbt.save(file);
-            if(deleted && !replay) items.remove(index);
             String[] slots = new String[41];
             java.util.Arrays.fill(slots,"null");
             for(var entry:items.entrySet()) slots[entry.getKey()] = slotJson(entry.getValue());
@@ -3295,10 +3316,21 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                                 } catch (Exception ignored) {}
                             }
                         }
-                        PlacedPrivateBlock pb = new PlacedPrivateBlock(
-                            id, ownerUuid, ownerName, blockIndex, world, x, y, z, true, radius, fuelSeconds, fuelTier, members
-                        );
-                        placedPrivateBlocks.put(world + ":" + x + ":" + y + ":" + z, pb);
+                        String key = world + ":" + x + ":" + y + ":" + z;
+                        PlacedPrivateBlock existing = placedPrivateBlocks.get(key);
+                        if (existing != null) {
+                            if (fuelSeconds > existing.fuelSeconds) {
+                                existing.fuelSeconds = fuelSeconds;
+                                existing.fuelTier = fuelTier;
+                                existing.radius = radius;
+                            }
+                            existing.members = members;
+                        } else {
+                            PlacedPrivateBlock pb = new PlacedPrivateBlock(
+                                id, ownerUuid, ownerName, blockIndex, world, x, y, z, true, radius, fuelSeconds, fuelTier, members
+                            );
+                            placedPrivateBlocks.put(key, pb);
+                        }
                         loaded++;
                     }
                     getLogger().info("[Private] Loaded " + loaded + " active placed private block(s) from database.");

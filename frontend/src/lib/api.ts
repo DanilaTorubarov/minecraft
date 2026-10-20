@@ -355,6 +355,42 @@ export async function getPlayerInventory(uuid: string): Promise<InventoryView> {
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as InventoryView
 }
+
+export interface PrivateBlockView {
+  id: string
+  block_index: number
+  world: string
+  x: number
+  y: number
+  z: number
+  placed: boolean
+  radius: number
+  size: number
+  fuel_seconds: number
+  fuel_tier: number
+  members: string[]
+  updated_at: string
+}
+
+export interface DepositFuelResult {
+  fuel_seconds: number
+  fuel_tier: number
+  radius: number
+  size: number
+  added_seconds: number
+}
+
+export async function getPlayerPrivates(uuid: string): Promise<PrivateBlockView[]> {
+  const response = await send('GET', `/api/players/${encodeURIComponent(uuid)}/privates`)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as PrivateBlockView[]
+}
+
+export async function depositPrivateFuel(uuid: string, blockIndex: number, slot: number): Promise<DepositFuelResult> {
+  const response = await send('POST', `/api/players/${encodeURIComponent(uuid)}/privates/${blockIndex}/fuel`, { slot })
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as DepositFuelResult
+}
 export async function getPlayerSkin(uuid: string): Promise<SkinView> {
   const response = await send('GET', `/api/players/${encodeURIComponent(uuid)}/skin`)
   if (!response.ok) throw new ApiError(response.status)
