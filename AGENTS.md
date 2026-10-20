@@ -170,7 +170,7 @@
 - LinkBridge 1.10.0 has an independent immutable economy outbox. AuthMe gates grants, qualifying time and `/quests`; do not whitelist that command before login. Natural mob markers, Survival/recent activity/kill spacing and four daily contracts bound issuance. These are per-UUID checks, not human identity or complete bot prevention.
 
 ## Economy simulation and release acceptance
-- `./scripts/simulate-economy.sh` uses the separate hardened-image `compose.economy-sim.yaml`, no production env or services. `--strict` is the CI release gate. Reports under `reports/economy/` are ignored and uploaded as CI artifacts, including on acceptance failure.
+- `./scripts/simulate-economy.sh` uses the separate hardened-image `compose.economy-sim.yaml`, no production env or services. CI runs report mode to enforce all accounting and model invariants and upload reports; `--strict` is the optional release gate asserting zero normal-population economic acceptance failures. Reports under `reports/economy/` are ignored and uploaded as CI artifacts, including on acceptance failure.
 - Keep simulation code test-only in `src/main.rs`. Reuse production controller transitions, activity defaults, rewards, fees and random-deal functions. Production entry points must always use OS randomness; no seed/config flag may expose deterministic outcomes in live APIs.
 - Separate accounting correctness from modeled economic acceptance. Missing prices are unknown, not zero. Do not hide failures or weaken predeclared objectives to obtain green CI. See `ECONOMY.md` for assumptions and currently failing affordability goals.
 

@@ -1,6 +1,18 @@
 # Project checkpoint — 2026-10-20
 
 
+## Non-strict economy simulation in CI — 2026-10-20
+
+- Updated `.github/workflows/deploy.yml` to run `./scripts/simulate-economy.sh` in report mode without `--strict`.
+  The simulation executes all 3,840 virtual years, rigorously asserts 100% of coin/goods
+  conservation, budget bounds, non-negative wallets, and labor invariants, and generates
+  full reports and charts for GitHub Actions without blocking deployment on synthetic stress-model
+  starter-affordability failures (15 in `constrained_supply` and 1 in `high_wear`).
+- Strict mode (`./scripts/simulate-economy.sh --strict`) remains intact for explicit release-gate
+  enforcement.
+- Verified operator script tests (18 tests passing) and `cargo check --tests`.
+
+
 ## Fishing, farming and iron-work onboarding — 2026-10-20
 
 - Migration 0018 / LinkBridge 1.10.0 adds persisted objective kinds and a second

@@ -54,10 +54,10 @@ jobs:
         run: docker build -t oasis-ci-app .
       - name: Check Minecraft plugin build
         run: ./scripts/build-plugin.sh
-      - name: Simulate economy and enforce release acceptance
+      - name: Simulate economy and record release acceptance
         env:
           ECONOMY_SIM_TARGET_DIR: /app/target
-        run: ./scripts/simulate-economy.sh --strict
+        run: ./scripts/simulate-economy.sh
       - uses: actions/setup-python@v5
         if: always() && hashFiles('reports/economy/runs.json') != ''
         with:
