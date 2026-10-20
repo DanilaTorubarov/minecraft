@@ -37,6 +37,7 @@ compose.override.yaml
 
 # Local visual verification captures (the design brief remains tracked).
 /.impeccable/review/
+/.github/hooks/
 
 
 # Reproducible simulation output is uploaded by CI, not committed.
