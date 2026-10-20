@@ -204,6 +204,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimerAsynchronously(this, this::syncSkins, 40L, 100L);
 
+        initializeEconomy();
+        initializeEconomyServices();
         lastTickAt = System.currentTimeMillis();
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, this::tickPlayTime, PLAY_TICK_TICKS, PLAY_TICK_TICKS);
@@ -224,6 +226,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         // timeout keeps the shutdown quick when the panel is down.
         try {
             flush(null, Duration.ofSeconds(3));
+            flushEconomy(Duration.ofSeconds(3));
         } catch (Exception ignored) {
             // Nothing useful to do on the way down.
         }
@@ -300,6 +303,15 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return true;
         }
 
+        if(command.getName().equalsIgnoreCase("services")) {
+            if(!allowAttempt(player.getUniqueId())) {player.sendMessage("[Economy] Wait a few seconds and try again.");return true;}
+            serviceCommand(player,args);return true;
+        }
+        if (command.getName().equalsIgnoreCase("quests")) {
+            if (args.length>2 || (args.length>=1 && !args[0].equalsIgnoreCase("start")) || (args.length==2 && !List.of("hunting","fishing","farming").contains(args[1].toLowerCase(Locale.ROOT)))) {player.sendMessage("[Quests] Usage: /quests or /quests start [hunting|fishing|farming]");return true;}
+            if (!allowAttempt(player.getUniqueId())) {player.sendMessage("[Quests] Wait a few seconds and try again.");return true;}
+            queryContract(player,args.length>=1,true,args.length==2?args[1].toLowerCase(Locale.ROOT):"hunting"); return true;
+        }
         if (command.getName().equalsIgnoreCase("balance")) {
             if (args.length != 0) {
                 player.sendMessage("[Coins] Usage: /bal or /balance");
@@ -377,7 +389,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             // Flush this player's earnings before reading the shared balance. If
             // synchronisation fails, never show a plausible but stale number.
             synchronized (flushLock) {
-                if (flush(uuid, requestTimeout)) {
+                if (flush(uuid, requestTimeout) && flushEconomy(requestTimeout)) {
                     HttpResponse<String> response = post(balanceUrl,
                         "{\"uuid\":\"" + uuid + "\"}", requestTimeout);
                     if (response != null && response.statusCode() == 200) {
@@ -423,6 +435,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private void countLogin(Player player) {
         if (player != null && isAuthenticated(player)) {
             countersFor(player).logins.incrementAndGet();
+            economyLogin(player);
         }
     }
 
@@ -480,6 +493,405 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         player.sendMessage(PREFIX + "Get a code at " + panelUrl + ", then type /website link <code> here.");
     }
 
+    // --- Economy: independent durable outbox; never reuses statistics as money. ---
+    private record EconomyKey(UUID uuid, String day, String contract) {}
+    static final class EconomyCount {
+        long seconds,kills,fish,crops,mined,smelted;
+        long[] snapshot(){return new long[]{Math.min(86400,seconds),Math.min(10000,kills),Math.min(10000,fish),Math.min(10000,crops),Math.min(10000,mined),Math.min(10000,smelted)};}
+        void subtract(long[] accepted){seconds-=accepted[0];kills-=accepted[1];fish-=accepted[2];crops-=accepted[3];mined-=accepted[4];smelted-=accepted[5];}
+        boolean empty(){return seconds==0&&kills==0&&fish==0&&crops==0&&mined==0&&smelted==0;}
+    }
+    static final class QuestRules {
+        static boolean fish(String type){return List.of("COD","SALMON","TROPICAL_FISH","PUFFERFISH").contains(type);}
+        static boolean harvest(String type,int age,int max){return max>0&&age==max&&List.of("WHEAT","CARROTS","POTATOES","BEETROOTS").contains(type);}
+    }
+    private final Object economyLock = new Object();
+    private final Object economyFlushLock = new Object();
+    private final Map<EconomyKey, EconomyCount> economyCounts = new LinkedHashMap<>();
+    private final Map<UUID, Long> lastActive = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> economySampleAt = new ConcurrentHashMap<>();
+    private final Map<UUID, com.google.gson.JsonObject> contracts = new ConcurrentHashMap<>();
+    private final Map<UUID, Location> lastRewardKill = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastRewardKillAt = new ConcurrentHashMap<>();
+    private Path economyOutbox;
+    private String economyPending;
+    private Map<EconomyKey, long[]> economyPendingCounts = Map.of();
+    private String economyBase;
+
+    private void initializeEconomy() {
+        economyBase = statsUrl.substring(0, statsUrl.length()-"/internal/stats/report".length()) + "/internal/economy";
+        economyOutbox = getDataFolder().toPath().resolve("pending-economy.json");
+        try { if (Files.exists(economyOutbox)) economyPending = Files.readString(economyOutbox); }
+        catch (IOException error) { throw new IllegalStateException("Cannot recover economy outbox", error); }
+        if (getCommand("quests") != null) {
+            getCommand("quests").setExecutor(this);
+            getCommand("quests").setTabCompleter((sender,command,alias,args) -> {
+                if (!(sender instanceof Player player) || !isAuthenticated(player)) return List.of();
+                if(args.length==2 && args[0].equalsIgnoreCase("start"))return List.of("hunting","fishing","farming").stream().filter(v->v.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+                if(args.length!=1)return List.of();
+                return "start".startsWith(args[0].toLowerCase(Locale.ROOT)) ? List.of("start") : List.of();
+            });
+        }
+        getServer().getScheduler().runTaskTimer(this, this::sampleEconomy, 200L, 200L);
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> flushEconomy(requestTimeout), 100L, 100L);
+        for (Player player : getServer().getOnlinePlayers()) if (isAuthenticated(player)) economyLogin(player);
+    }
+    private String economyDay() { return java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString(); }
+    private void economyLogin(Player player) {
+        if (!isAuthenticated(player)) return;
+        countersFor(player); // Remember a server-observed name even without activity.
+        economySampleAt.put(player.getUniqueId(),System.currentTimeMillis());
+        synchronized (economyLock) {
+            economyCounts.computeIfAbsent(new EconomyKey(player.getUniqueId(),economyDay(),""), k -> new EconomyCount());
+        }
+        queryContract(player,false,false);
+    }
+    private void sampleEconomy() {
+        // A ten-second sample is credited only following recent physical activity.
+        // Lag never creates extra time, and ticks on UTC midnight belong to the
+        // preceding interval, avoiding a fabricated activity day from a boundary.
+        String day = java.time.Instant.now().minusSeconds(10).atZone(java.time.ZoneOffset.UTC).toLocalDate().toString();
+        long now=System.currentTimeMillis();
+        synchronized (economyLock) {
+            for (Player player : getServer().getOnlinePlayers()) {
+                if (!isAuthenticated(player) || player.getGameMode()!=org.bukkit.GameMode.SURVIVAL) continue;
+                long previous=economySampleAt.getOrDefault(player.getUniqueId(),now);
+                economySampleAt.put(player.getUniqueId(),now);
+                long seconds=Math.max(0,Math.min(10,(now-previous)/1000));
+                if (seconds==0 || now-lastActive.getOrDefault(player.getUniqueId(),0L)>60_000L) continue;
+                names.put(player.getUniqueId(),player.getName());
+                EconomyCount count=economyCounts.computeIfAbsent(new EconomyKey(player.getUniqueId(),day,""), k -> new EconomyCount());
+                count.seconds+=seconds;
+            }
+        }
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void onEconomySpawn(org.bukkit.event.entity.CreatureSpawnEvent event) {
+        if (event.getSpawnReason()==org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.NATURAL
+            && event.getEntity() instanceof org.bukkit.entity.Monster) {
+            event.getEntity().getPersistentDataContainer().set(new NamespacedKey(this,"quest_natural"),org.bukkit.persistence.PersistentDataType.BYTE,(byte)1);
+        }
+    }
+    private void economyKill(EntityDeathEvent event, Player killer) {
+        if (killer.getGameMode()!=org.bukkit.GameMode.SURVIVAL || !(event.getEntity() instanceof org.bukkit.entity.Monster)
+            || !event.getEntity().getPersistentDataContainer().has(new NamespacedKey(this,"quest_natural"),org.bukkit.persistence.PersistentDataType.BYTE)) return;
+        UUID uuid=killer.getUniqueId(); long now=System.currentTimeMillis();
+        if (now-lastActive.getOrDefault(uuid,0L)>60_000L || now-lastRewardKillAt.getOrDefault(uuid,0L)<2000L) return;
+        Location location=event.getEntity().getLocation(); Location previous=lastRewardKill.get(uuid);
+        if (previous!=null && previous.getWorld().equals(location.getWorld()) && previous.distanceSquared(location)<64) return;
+        var contract=contracts.get(uuid);
+        if (!questAccepts(killer,"hunting")) return;
+        lastRewardKill.put(uuid,location); lastRewardKillAt.put(uuid,now);
+        synchronized (economyLock) {
+            economyCounts.computeIfAbsent(new EconomyKey(uuid,economyDay(),contract.get("id").getAsString()),k -> new EconomyCount()).kills++;
+        }
+    }
+    private boolean questAccepts(Player player,String kind) {
+        if(!isAuthenticated(player)||player.getGameMode()!=org.bukkit.GameMode.SURVIVAL)return false;
+        var contract=contracts.get(player.getUniqueId());
+        return contract!=null && contract.get("status").getAsString().equals("active")
+            && System.currentTimeMillis()/1000<contract.get("expires").getAsLong()
+            && (contract.has("kind")?contract.get("kind").getAsString():"hunting").equals(kind);
+    }
+    private void questProgress(Player player,String kind,int counter,int amount) {
+        if(amount<=0||!questAccepts(player,kind))return;
+        UUID uuid=player.getUniqueId();var contract=contracts.get(uuid);
+        synchronized(economyLock) {
+            var count=economyCounts.computeIfAbsent(new EconomyKey(uuid,economyDay(),contract.get("id").getAsString()),k->new EconomyCount());
+            switch(counter) {case 2 -> count.fish+=amount;case 3 -> count.crops+=amount;case 4 -> count.mined+=amount;case 5 -> count.smelted+=amount;default -> throw new IllegalArgumentException("Unknown objective");}
+        }
+    }
+    private boolean ironOre(org.bukkit.block.Block block) {
+        return block.getType()==org.bukkit.Material.IRON_ORE||block.getType()==org.bukkit.Material.DEEPSLATE_IRON_ORE;
+    }
+    private long orePosition(org.bukkit.block.Block block) {return ((long)block.getY()<<8)|((block.getZ()&15)<<4)|(block.getX()&15);}
+    private boolean placedOre(org.bukkit.block.Block block,boolean add,boolean remove) {
+        var key=new NamespacedKey(this,"quest_placed_iron");var data=block.getChunk().getPersistentDataContainer();
+        long[] saved=data.getOrDefault(key,org.bukkit.persistence.PersistentDataType.LONG_ARRAY,new long[0]);
+        var positions=new java.util.HashSet<Long>();for(long position:saved)positions.add(position);
+        boolean exists=positions.contains(orePosition(block));
+        if(add)positions.add(orePosition(block));if(remove)positions.remove(orePosition(block));
+        if(add||remove) {if(positions.isEmpty())data.remove(key);else data.set(key,org.bukkit.persistence.PersistentDataType.LONG_ARRAY,positions.stream().mapToLong(Long::longValue).toArray());}
+        return exists;
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void onQuestOrePlace(BlockPlaceEvent event) {if(ironOre(event.getBlockPlaced()))placedOre(event.getBlockPlaced(),true,false);}
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void onQuestPiston(org.bukkit.event.block.BlockPistonExtendEvent event) {
+        for(var block:event.getBlocks())if(ironOre(block))placedOre(block.getRelative(event.getDirection()),true,false);
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void onQuestPistonRetract(org.bukkit.event.block.BlockPistonRetractEvent event) {
+        for(var block:event.getBlocks())if(ironOre(block))placedOre(block.getRelative(event.getDirection()),true,false);
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void onQuestHarvest(BlockBreakEvent event) {
+        Player player=event.getPlayer();var block=event.getBlock();
+        boolean placed=ironOre(block)&&placedOre(block,false,true);
+        if(!isAuthenticated(player)||player.getGameMode()!=org.bukkit.GameMode.SURVIVAL||!event.isDropItems())return;
+        if(ironOre(block)&&!placed&&block.getDrops(player.getInventory().getItemInMainHand(),player).stream().anyMatch(item->item.getType()==org.bukkit.Material.RAW_IRON))questProgress(player,"starter_iron",4,1);
+        if(block.getBlockData() instanceof org.bukkit.block.data.Ageable crop&&QuestRules.harvest(block.getType().name(),crop.getAge(),crop.getMaximumAge()))questProgress(player,"farming",3,1);
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void onQuestFish(PlayerFishEvent event) {
+        if(event.getState()!=PlayerFishEvent.State.CAUGHT_FISH||!(event.getCaught() instanceof org.bukkit.entity.Item caught))return;
+        if(!QuestRules.fish(caught.getItemStack().getType().name()))return;
+        if(isAuthenticated(event.getPlayer()))lastActive.put(event.getPlayer().getUniqueId(),System.currentTimeMillis());
+        questProgress(event.getPlayer(),"fishing",2,1);
+    }
+    @EventHandler(priority=EventPriority.MONITOR)
+    public void onQuestSmelt(org.bukkit.event.inventory.FurnaceExtractEvent event) {
+        if(event.getItemType()!=org.bukkit.Material.IRON_INGOT)return;
+        if(isAuthenticated(event.getPlayer()))lastActive.put(event.getPlayer().getUniqueId(),System.currentTimeMillis());
+        questProgress(event.getPlayer(),"starter_iron",5,event.getItemAmount());
+    }
+    private boolean flushEconomy(Duration timeout) {
+        synchronized (economyFlushLock) {
+            if (economyPending!=null && !sendEconomyPending(timeout)) return false;
+            // One immutable player batch at a time. Batches include zero activity
+            // after authentication, so an idle newcomer still receives their grant.
+            while (true) {
+                com.google.gson.JsonObject body=new com.google.gson.JsonObject();
+                Map<EconomyKey,long[]> snapshot=new LinkedHashMap<>();
+                synchronized (economyLock) {
+                    if (economyCounts.isEmpty()) return true;
+                    UUID uuid=economyCounts.keySet().iterator().next().uuid();
+                    String username=names.get(uuid); if (username==null) return false;
+                    body.addProperty("id",UUID.randomUUID().toString()); body.addProperty("uuid",uuid.toString()); body.addProperty("username",username);
+                    var days=new com.google.gson.JsonArray();
+                    for (var entry:economyCounts.entrySet()) {
+                        if (!entry.getKey().uuid().equals(uuid) || snapshot.size()>=1000) continue;
+                        var key=entry.getKey(); var count=entry.getValue();
+                        long[] captured=count.snapshot();
+                        long seconds=captured[0],kills=captured[1],fish=captured[2],crops=captured[3],mined=captured[4],smelted=captured[5];
+                        var day=new com.google.gson.JsonObject(); day.addProperty("day",key.day()); day.addProperty("active_seconds",seconds); day.addProperty("kills",kills);
+                        if (!key.contract().isEmpty()) day.addProperty("contract_id",key.contract());
+                        day.addProperty("fish_caught",fish);day.addProperty("crops_harvested",crops);day.addProperty("iron_mined",mined);day.addProperty("iron_smelted",smelted);
+                        days.add(day); snapshot.put(key,captured);
+                    }
+                    body.add("days",days);
+                }
+                try {
+                    Path temporary=economyOutbox.resolveSibling("pending-economy.tmp");
+                    Files.writeString(temporary,body.toString());
+                    Files.move(temporary,economyOutbox,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+                    economyPending=body.toString(); economyPendingCounts=snapshot;
+                } catch(IOException error) {getLogger().warning("Cannot persist economy report: "+error);return false;}
+                if (!sendEconomyPending(timeout)) return false;
+            }
+        }
+    }
+    private boolean sendEconomyPending(Duration timeout) {
+        var response=post(economyBase+"/report",economyPending,timeout);
+        if (response==null || response.statusCode()!=200) return false;
+        try {Files.deleteIfExists(economyOutbox);} catch(IOException error) {return false;}
+        synchronized(economyLock) {
+            for(var entry:economyPendingCounts.entrySet()) {
+                var count=economyCounts.get(entry.getKey()); if(count==null) continue;
+                count.subtract(entry.getValue());
+                if(count.empty()) economyCounts.remove(entry.getKey());
+            }
+        }
+        economyPending=null; economyPendingCounts=Map.of(); return true;
+    }
+    private void queryContract(Player player, boolean start, boolean announceResult) {queryContract(player,start,announceResult,"hunting");}
+    private void queryContract(Player player, boolean start, boolean announceResult,String kind) {
+        UUID uuid=player.getUniqueId(); String username=player.getName();
+        getServer().getScheduler().runTaskAsynchronously(this,() -> {
+            String message;
+            if (!flushEconomy(requestTimeout)) message="[Quests] Cannot sync activity. Try /quests again.";
+            else {
+                var body=new com.google.gson.JsonObject(); body.addProperty("uuid",uuid.toString()); body.addProperty("username",username);body.addProperty("start",start);body.addProperty("kind",kind);
+                var response=post(economyBase+"/contract",body.toString(),requestTimeout);
+                if(response==null) message="[Quests] The panel is unavailable. Try again.";
+                else if(response.statusCode()==429) message="[Quests] Daily limit reached: four contracts per UTC day.";
+                else if(response.statusCode()==402) message="[Quests] No funded coin reward is available. Coin shares renew at UTC midnight after observed activity; your existing coins are unchanged.";
+                else if(response.statusCode()!=200) message="[Quests] Cannot load your contract. Try again.";
+                else {
+                    try {
+                        var json=com.google.gson.JsonParser.parseString(response.body());
+                        if(json.isJsonNull()) {contracts.remove(uuid);message="[Quests] Use /quests start to begin the iron starter quest, then /quests start hunting, fishing or farming.";}
+                        else {
+                            var contract=json.getAsJsonObject(); contracts.put(uuid,contract);
+                            String objective=contract.has("kind")?contract.get("kind").getAsString():"hunting";
+                            int progress=contract.get("progress").getAsInt(),target=contract.get("target").getAsInt();
+                            String goal=switch(objective) {
+                                case "starter_iron" -> "Mine iron ore: "+progress+"/"+target+"; smelt/extract iron ingots: "+contract.get("secondary_progress").getAsInt()+"/"+target;
+                                case "fishing" -> "Catch fish with a rod: "+progress+"/"+target;
+                                case "farming" -> "Harvest mature wheat, carrots, potatoes or beetroot: "+progress+"/"+target;
+                                default -> "Natural hostile mobs: "+progress+"/"+target;
+                            };
+                            String legacy="";
+                            if(contract.has("iron") && (contract.get("iron").getAsInt()>0||contract.get("bread").getAsInt()>0||contract.get("xp").getAsInt()>0))legacy="; existing promised items: "+contract.get("iron")+" iron, "+contract.get("bread")+" bread, "+contract.get("xp")+" XP";
+                            message="[Quests] "+(contract.get("status").getAsString().equals("paid")?"completed":contract.get("status").getAsString())+": "+goal+". Reward: "+contract.get("reward").getAsLong()+" coins"+legacy+". "+(objective.equals("starter_iron")?"Complete both objectives to unlock repeatable quests. No free iron or bonus XP. ":"")+"Four contracts per UTC day; 24-hour expiry. Use /quests start [hunting|fishing|farming].";
+                        }
+                    }catch(Exception error) {message="[Quests] Could not read the contract. Try again.";}
+                }
+            }
+            if(announceResult) {
+                String result=message;
+                try {getServer().getScheduler().runTask(this,() -> {if(player.isOnline() && isAuthenticated(player))player.sendMessage(result);});}catch(Exception ignored){}
+            }
+        });
+    }
+
+    private final Map<UUID, com.google.gson.JsonObject> repairQuotes = new ConcurrentHashMap<>();
+    private final Map<UUID, String> pendingRepairs = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicBoolean economyTasksRunning = new java.util.concurrent.atomic.AtomicBoolean();
+    private Path repairDirectory;
+
+    private void initializeEconomyServices() {
+        repairDirectory = getDataFolder().toPath().resolve("pending-repairs");
+        try {
+            Files.createDirectories(repairDirectory);
+            try (var files=Files.list(repairDirectory)) {
+                for (Path file:files.filter(p -> p.getFileName().toString().endsWith(".json")).toList()) {
+                    var body=com.google.gson.JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+                    UUID uuid=UUID.fromString(body.get("uuid").getAsString());
+                    if(!file.getFileName().toString().equals(uuid+".json")) throw new IOException("Invalid repair receipt path");
+                    pendingRepairs.put(uuid,body.toString());
+                }
+            }
+        } catch(Exception error) {throw new IllegalStateException("Cannot recover repair requests",error);}
+        if(getCommand("services")!=null) {
+            getCommand("services").setExecutor(this);
+            getCommand("services").setTabCompleter((sender,command,alias,args) -> {
+                if(!(sender instanceof Player p)||!isAuthenticated(p))return List.of();
+                if(args.length==1)return List.of("repair","travel").stream().filter(v->v.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                if(args.length==2 && args[0].equalsIgnoreCase("repair") && "confirm".startsWith(args[1].toLowerCase(Locale.ROOT)))return List.of("confirm");
+                return List.of();
+            });
+        }
+        getServer().getScheduler().runTaskTimerAsynchronously(this,this::syncEconomyServices,100L,100L);
+    }
+    private void economyMessage(UUID uuid,String text) {
+        try {getServer().getScheduler().runTask(this,()->{
+            Player p=getServer().getPlayer(uuid);
+            if(p!=null&&p.isOnline()&&isAuthenticated(p))p.sendMessage("[Economy] "+text);
+        });}catch(Exception ignored){}
+    }
+    private void serviceCommand(Player player,String[] args) {
+        if(args.length==0) {player.sendMessage("[Economy] /services repair shows a quote for the held iron item. Repairs cost 10 coins per quarter durability, at most three units per UTC day; keep 1,000 coins. Private-block travel is not available yet.");return;}
+        if(args.length==1 && args[0].equalsIgnoreCase("travel")) {player.sendMessage("[Economy] Private-block travel will be available when private blocks are added. No coins were charged.");return;}
+        if(!args[0].equalsIgnoreCase("repair")||args.length>2||(args.length==2&&!args[1].equalsIgnoreCase("confirm"))) {player.sendMessage("[Economy] Usage: /services repair [confirm] or /services travel");return;}
+        UUID uuid=player.getUniqueId();
+        if(pendingRepairs.containsKey(uuid)) {player.sendMessage("[Economy] A saved repair request is awaiting confirmation from the panel. It will retry automatically.");return;}
+        if(args.length==2) {
+            var body=repairQuotes.remove(uuid);
+            if(body==null || body.get("quote_expires").getAsLong()<System.currentTimeMillis()/1000) {player.sendMessage("[Economy] Quote expired. Use /services repair again.");return;}
+            try {
+                Path file=repairDirectory.resolve(uuid+".json"),temporary=repairDirectory.resolve(uuid+".tmp");
+                Files.writeString(temporary,body.toString());Files.move(temporary,file,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+                pendingRepairs.put(uuid,body.toString());
+                player.sendMessage("[Economy] Repair requested for "+body.get("expected_price").getAsLong()+" coins. Keep the item in its slot; a changed item will be refunded.");
+            }catch(IOException error) {player.sendMessage("[Economy] Cannot save your repair request. No request was sent.");}
+            return;
+        }
+        ItemStack item=player.getInventory().getItemInMainHand();
+        if(item.isEmpty()||item.getAmount()!=1||!item.getType().name().startsWith("IRON_")||!(item.getItemMeta() instanceof org.bukkit.inventory.meta.Damageable damage)||damage.getDamage()<=0) {player.sendMessage("[Economy] Hold a damaged iron tool, weapon or armor item.");return;}
+        int max=damage.hasMaxDamage()?damage.getMaxDamage():item.getType().getMaxDurability();
+        var body=new com.google.gson.JsonObject();body.addProperty("uuid",uuid.toString());body.addProperty("username",player.getName());body.addProperty("id",UUID.randomUUID().toString());body.addProperty("slot",player.getInventory().getHeldItemSlot());
+        try {body.addProperty("fingerprint",InventoryNbt.fingerprint(item.serializeAsBytes()));}
+        catch(Exception error){player.sendMessage("[Economy] Cannot read this item. No repair request was sent.");return;}
+        body.addProperty("key",item.getType().getKey().toString());body.addProperty("damage",damage.getDamage());body.addProperty("max_damage",max);
+        getServer().getScheduler().runTaskAsynchronously(this,()->{
+            var response=post(economyBase+"/repair/quote",body.toString(),requestTimeout);
+            if(response==null||response.statusCode()!=200) {economyMessage(uuid,response!=null&&response.statusCode()==429?"All three repair units are used today.":"Cannot quote this repair. No coins were charged.");return;}
+            try {
+                var quote=com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                body.addProperty("expected_price",quote.get("price").getAsLong());body.addProperty("expected_units",quote.get("units").getAsInt());body.addProperty("quote_expires",quote.get("quote_expires").getAsLong());
+                repairQuotes.put(uuid,body);
+                economyMessage(uuid,"Repair quote: "+quote.get("price").getAsLong()+" coins for "+quote.get("units").getAsInt()+" quarter-durability units. Keep at least 1,000 coins after payment. Use /services repair confirm within 60 seconds.");
+            }catch(Exception error){economyMessage(uuid,"Cannot read the repair quote. No coins were charged.");}
+        });
+    }
+    private void syncEconomyServices() {
+        if(!economyTasksRunning.compareAndSet(false,true))return;
+        try {
+            int sent=0;
+            for(var entry:pendingRepairs.entrySet()) {
+                if(sent++>=25)break;
+                var response=post(economyBase+"/repair",entry.getValue(),requestTimeout);
+                if(response==null||response.statusCode()>=500)break;
+                int code=response.statusCode();
+                String message;
+                if(code==200) {
+                    String status=com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject().get("status").getAsString();
+                    message=switch(status) {
+                        case "done" -> "This repair was already delivered. Your request was recovered without another charge.";
+                        case "conflict" -> "This repair was refunded because the item changed. Your request was recovered without another charge.";
+                        case "pending" -> "Repair is queued. Keep the original item in its slot until delivery.";
+                        default -> throw new IOException("Unknown repair receipt status");
+                    };
+                }
+                else if(code==402)message="Repair was not purchased: it must leave 1,000 coins in your wallet.";
+                else if(code==412)message="Repair quote changed or expired. Use /services repair for a new quote.";
+                else if(code==409)message="A repair is already pending, or this request conflicts. Check the original request.";
+                else if(code==429)message="All three repair units are used today.";
+                else message="Repair request rejected. Use /services repair again.";
+                // Remove only after a definitive result. A lost response retains
+                // the exact immutable ID, fields and quote for receipt recovery.
+                Files.deleteIfExists(repairDirectory.resolve(entry.getKey()+".json"));
+                pendingRepairs.remove(entry.getKey(),entry.getValue());economyMessage(entry.getKey(),message);
+            }
+            var response=post(economyBase+"/tasks/sync","{}",requestTimeout);
+            if(response==null||response.statusCode()!=200||response.body().length()>1_000_000)return;
+            for(var element:com.google.gson.JsonParser.parseString(response.body()).getAsJsonArray()) {
+                String report=getServer().getScheduler().callSyncMethod(this,()->applyEconomyTask(element.getAsJsonObject())).get();
+                if(report!=null) {
+                    var accepted=post(economyBase+"/tasks/report",report,requestTimeout);
+                    if(accepted==null||accepted.statusCode()!=200)break;
+                }
+            }
+        }catch(Exception error){getLogger().warning("Economy delivery deferred: "+error.getClass().getSimpleName());}
+        finally{economyTasksRunning.set(false);}
+    }
+    private String applyEconomyTask(com.google.gson.JsonObject task)throws Exception {
+        UUID uuid=UUID.fromString(task.get("uuid").getAsString());
+        String id=UUID.fromString(task.get("id").getAsString()).toString();
+        Player player=getServer().getPlayer(uuid);
+        if(player==null||!player.isOnline()||!isAuthenticated(player))return null;
+        var key=new NamespacedKey(this,"economy_task");
+        String saved=player.getPersistentDataContainer().getOrDefault(key,org.bukkit.persistence.PersistentDataType.STRING,"");
+        com.google.gson.JsonObject result;
+        boolean fresh=saved.isEmpty()||!com.google.gson.JsonParser.parseString(saved).getAsJsonObject().get("id").getAsString().equals(id);
+        if(!fresh) result=com.google.gson.JsonParser.parseString(saved).getAsJsonObject();
+        else {
+            result=new com.google.gson.JsonObject();result.addProperty("id",id);result.addProperty("uuid",uuid.toString());result.addProperty("status","done");
+            String kind=task.get("kind").getAsString();
+            if(kind.equals("reward")) {
+                int iron=task.get("iron").getAsInt(),bread=task.get("bread").getAsInt(),xp=task.get("xp").getAsInt();
+                if(iron<0||iron>8||bread<0||bread>16||xp<0||xp>5)throw new IOException("Invalid economy reward");
+                var empty=new ArrayList<Integer>();
+                for(int i=0;i<36;i++){ItemStack existing=player.getInventory().getItem(i);if(existing==null||existing.isEmpty())empty.add(i);}
+                if(empty.size()<(iron>0?1:0)+(bread>0?1:0))return null;
+                int index=0;
+                if(iron>0)player.getInventory().setItem(empty.get(index++),new ItemStack(org.bukkit.Material.IRON_INGOT,iron));
+                if(bread>0)player.getInventory().setItem(empty.get(index),new ItemStack(org.bukkit.Material.BREAD,bread));
+                if(xp>0)player.giveExp(xp);
+            } else if(kind.equals("repair")) {
+                int slot=task.get("slot").getAsInt(),before=task.get("damage").getAsInt(),max=task.get("max_damage").getAsInt(),units=task.get("units").getAsInt();
+                if(slot<0||slot>40||max<1||max>10000||units<1||units>3)throw new IOException("Invalid repair task");
+                ItemStack current=player.getInventory().getItem(slot);
+                boolean matches=current!=null&&!current.isEmpty()&&current.getAmount()==1
+                    &&current.getType().getKey().toString().equals(task.get("key").getAsString())
+                    &&InventoryNbt.fingerprint(current.serializeAsBytes()).equals(task.get("fingerprint").getAsString());
+                if(matches && current.getItemMeta() instanceof org.bukkit.inventory.meta.Damageable damage
+                    &&damage.getDamage()==before && (damage.hasMaxDamage()?damage.getMaxDamage():current.getType().getMaxDurability())==max) {
+                    ItemStack repaired=current.clone();var meta=(org.bukkit.inventory.meta.Damageable)repaired.getItemMeta();
+                    meta.setDamage(Math.max(0,before-units*((max+3)/4)));repaired.setItemMeta(meta);player.getInventory().setItem(slot,repaired);
+                }else result.addProperty("status","conflict");
+            }else throw new IOException("Unknown economy task");
+            player.getPersistentDataContainer().set(key,org.bukkit.persistence.PersistentDataType.STRING,result.toString());
+        }
+        player.saveData();
+        Path file=getServer().getLevelDirectory().resolve("players/data").resolve(uuid+".dat");
+        if(!result.toString().equals(InventoryNbt.read(Files.readAllBytes(file)).economyReceipt()))throw new IOException("Economy receipt not saved");
+        inventoryPending.remove(uuid);inventoryAccepted.remove(uuid);inventoryAcceptedAt.remove(uuid);
+        if(fresh)player.sendMessage(result.get("status").getAsString().equals("done")?"[Economy] Your quest rewards or repair were delivered.":"[Economy] The repair item changed. Your payment will be refunded.");
+        return result.toString();
+    }
+
     // --- Measuring and reporting statistics -----------------------------------
 
     /**
@@ -516,6 +928,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (!isAuthenticated(player)) {
             return;
         }
+        lastActive.put(player.getUniqueId(),System.currentTimeMillis());
         countersFor(player).blocksPlaced.incrementAndGet();
     }
 
@@ -526,6 +939,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (!isAuthenticated(player) || event.isCancelled()) {
             return;
         }
+        lastActive.put(player.getUniqueId(),System.currentTimeMillis());
         countersFor(player).blocksBroken.incrementAndGet();
     }
 
@@ -559,6 +973,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         // Centi-blocks: a walk of a fraction of a block must still count, and an
         // integer counter survives the flush retries without losing the fraction.
+        lastActive.put(player.getUniqueId(),System.currentTimeMillis());
         countersFor(player).distanceCm.addAndGet(Math.round(blocks * 100.0));
     }
 
@@ -567,6 +982,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         Player killer = event.getEntity().getKiller();
         if (killer != null && isAuthenticated(killer)) {
             countersFor(killer).mobsKilled.incrementAndGet();
+            economyKill(event,killer);
         }
     }
 
@@ -702,6 +1118,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
+        repairQuotes.remove(uuid);
         // A quit is a good moment to hand in the pending activity, so "last active"
         // in the panel tracks the disconnect. The panel may be unreachable; the
         // periodic flush still owns the data.
@@ -1688,6 +2105,11 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     entries.values.add(new Tag(10,copy));
                 }
             }
+        }
+        String economyReceipt() throws IOException {
+            Tag values=root.get("BukkitValues");if(values==null)return "";
+            Tag value=compound(values).get("linkbridge:economy_task");
+            return value!=null&&value.type==8?(String)value.value:"";
         }
         String marketReceipt() throws IOException {
             Tag values=root.get("BukkitValues");

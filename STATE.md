@@ -1,4 +1,249 @@
-# Project checkpoint — 2026-10-19
+# Project checkpoint — 2026-10-20
+
+
+## Fishing, farming and iron-work onboarding — 2026-10-20
+
+- Migration 0018 / LinkBridge 1.10.0 adds persisted objective kinds and a second
+  starter counter. New UUIDs first mine ten ore blocks and smelt/extract ten iron
+  ingots. Both must finish after acceptance; no new bonus iron, bread or XP.
+  Vanilla drops/XP remain ordinary gameplay. Existing accepted/completed quest
+  identities are grandfathered as onboarded, with all accepted terms preserved.
+- Afterward `/quests start hunting|fishing|farming` selects a repeatable. Baseline
+  targets: ten eligible natural hostiles, five fish caught by rod, or sixteen
+  mature wheat/carrot/potato/beetroot crop blocks. Fishing and farming scale with
+  the same lifetime earning curve. One active quest, four shared acceptances per
+  UTC day, 24-hour deadline, and origin-day coin reservations remain intact.
+  A zero-coin starter can unlock the feature; zero-coin repeatables are rejected.
+- Only authenticated Survival actions count. Canceled actions, fishing junk and
+  treasure, immature crops and automated harvesting do not count. Persistent
+  chunk markers exclude newly placed/piston-moved iron ore; old placed ores have
+  no retroactive provenance. Smelting credits player extraction, not hoppers.
+- Independent event counters use the immutable outbox. Missing counters default
+  to zero without changing old canonical report hashes. SQL ignores irrelevant
+  activity for each accepted kind. New quests create no item/XP delivery tasks;
+  legacy promised deliveries retain the durable player receipt protocol.
+- Verified `cargo check --tests`, 136 backend/Postgres tests and 18 operator
+  tests. Plugin build and inventory/objective-filter/outbox counter regressions
+  pass. An upgrade test applies migration 0018 over real pre-objective tables,
+  preserving old receipt replay, hunting terms and item/XP delivery promises.
+- Frontend build, lint and 57 tests pass. The Minigames help now names hunting,
+  fishing and farming rather than suggesting all income comes from hunting.
+- Current simulated onboarding now uses personal iron-gathering labor and five
+  assumed smelting minutes, with no free materials/XP. It then uses hunting as
+  the repeatable benchmark. Fishing/farming action rates, furnace parallelism
+  and 24-hour starter expiry are not represented faithfully; gameplay calibration
+  is still needed. Earlier 80/80 money and 240/240 timely-kit figures below belong
+  to the superseded material-grant policy and are not current evidence.
+- Current normal-population benchmark: money 80/80, market affordability 64/80;
+  all 240 late newcomers eventually get kits, 195/240 within sixty active minutes.
+  Removing the material subsidy slows starter access. Sixteen affordability
+  failures preserve the failing strict deployment gate; thresholds are unchanged.
+- Full 3,840-year matrix completed in 424 seconds: all accounting/labor/funding
+  invariants passed; strict mode returned 101 for sixteen normal-case market
+  failures. Verified complete unique trace coverage, no current NPC materials,
+  and the final Rust source SHA-256; refreshed the report charts.
+- Source/build changes only. No production migration, runtime JAR installation,
+  server restart, real-player interaction, commit or push.
+
+## Implemented budget and reward policy — 2026-10-20
+
+- Migration 0017 and LinkBridge 1.9.0 implement the selected 60-day issuance
+  budget, 20% newcomer reserve and frozen fair daily allowances (maximum 1,200
+  per UUID). Eligibility is known identities with five active minutes during
+  the previous thirteen completed dates. First-day players receive the permanent
+  100-coin grant and may earn materials/XP; coin allocation starts next day.
+- Accepted rewards reserve their origin day's funding and remain fixed across
+  policy changes/midnight. Legacy promises are honored, outstanding rewards
+  count in measured supply, expiry releases funding, and reports settle once.
+  A migration applied after an old daily review waits until tomorrow to fund
+  new coin contracts, preserving that review and every existing balance.
+- Finite early rewards: 3/8/8/8 iron while still needing a kit, 16 first-contract
+  bread, and five real XP for each of the first ten completions. Durable ordered
+  online delivery waits for AuthMe and storage space, saves a player-file receipt
+  with inventory/XP before acknowledgement, and preserves marketplace receipts.
+- `/services repair` quotes a held iron item; explicit confirmation accepts
+  ten coins per quarter durability, at most three units/day, leaving a 1,000
+  reserve. Immutable persisted requests retry safely; changed items refund once.
+  User chose teleport to a future owned private block. That feature is absent:
+  `/services travel` explains it is unavailable and its API never debits coins.
+- Verification: `cargo check --tests`; 132 Rust/Postgres tests in a disposable
+  Compose project; 18 operator tests; frontend build/lint and 57 tests; plugin
+  Gradle `inventoryNbtTest jar` all pass. A separate rolled-back schema verified
+  migration over an already-reviewed old policy, completion backfill and legacy
+  terms. No real-client delivery or repair interaction has been exercised yet.
+- Simulator adaptive runs now use the implemented policy, shared production
+  budget/allocation/material helpers, prior-day grants/eligibility and disabled
+  travel. Historical six candidates remain comparisons, with their old timing
+  explicitly identified. The repair benefit still approximates iron-equivalent
+  wear; XP utility and behavior remain uncalibrated. The diagnostic advanced
+  mining gate is not implemented as a real crafting restriction.
+- Current normal-population results: money 80/80, market affordability 70/80;
+  all 240/240 late newcomers equip within sixty active minutes. Ten
+  constrained-supply market failures retain a failing strict deployment gate.
+  Heavy-minigame and wealthy-return money objectives fail in all 40 stress
+  runs each; hoarding and alternate-identity scenarios pass money in 40/40 each. The historical 7/80 joint pass below belongs to the old policy.
+- The full 3,840-year matrix completed in 411 seconds. Accounting/labor/funding
+  invariants passed throughout; strict mode returned 101 for those ten failures.
+  Verified all 960 implemented/control and 2,880 historical candidate years,
+  unique identities/scenario coverage, complete daily traces, funding bounds
+  and the current source SHA-256. Generated reports/charts are local artifacts.
+- Local source and build outputs only: no production migration, wallet/world
+  change, runtime plugin installation, service restart, commit or push.
+
+## Budget, service and starter-material experiments — 2026-10-19
+
+- Added six test-only candidates: issuance recovery over 30/60/120 days; 60-day
+  recovery with 35% or 70% daily service willingness; and 60-day/35% services
+  with finite starter contract materials. Twenty percent of funding is reserved
+  for first-14-day identities; remaining funding is shared fairly before work.
+  New grants subtract from funding. Signed net removal, service sinks and finite
+  NPC resource creation are reconciled explicitly. Offered contract rewards are
+  fixed before simulated work; live difficulty still depends on coin earnings.
+- All five assumption sets, twelve scenarios and eight seeds are retained:
+  960 current/frozen control years plus 2,880 candidate years = 3,840 years.
+  The full matrix completed in about fifteen minutes locally. Every candidate
+  passed accounting, labor and funding invariants; saved traces and metadata
+  were checked for coverage, identity, balances, funding and censored cohorts.
+- In normal populations (80 runs/240 late newcomers per variant), current rules
+  pass money in 22/80, market affordability in 41/80, both in 7/80, and equip
+  155/240 newcomers within sixty active session minutes. Every budget variant
+  passes money in 80/80. The 60-day budget passes market affordability in 65/80
+  and equips 212/240 within sixty minutes; voluntary services help modestly.
+- Strongest tested package: 60-day recovery, 35% service willingness and bounded
+  starter materials. Money passes 80/80, market affordability 70/80, timely kits
+  240/240. The remaining ten normal-case market failures all use constrained
+  supply. This is a promising next candidate, not a production-ready guarantee:
+  assumptions remain uncalibrated, returning held wealth can exceed the target,
+  heavy minigame use can drain funds, and material resale/alt funneling plus
+  advanced crafting demand are not represented faithfully enough for rollout.
+- Tests: `cargo check --tests`, 128 Rust/Postgres tests and 18 operator tests
+  passed; all six model regressions were rerun after the final candidate change.
+  One initial broad test filter invoked SQL checks without a database; the
+  subsequent full suite used the disposable database and passed. Strict mode
+  returns 101 because the unchanged current policy still fails 73/80 release
+  cases. Candidate verdicts cannot turn an unimplemented policy green in CI.
+- Added comparison JSON/Markdown, full traces per candidate, coin-flow and stress
+  summaries, and visually checked PNG/SVG comparisons. CI publishes the candidate
+  comparison with the control results. The compiled-source hash matches the current file, and all 960 control money,
+  inventory and labor paths match the prior model; production Rust before the
+  test-only module is byte-for-byte unchanged. No live data, game settings,
+  installed plugins or production services were changed, committed or pushed.
+
+
+## Simulation model improvements before policy tuning — 2026-10-19
+
+- Supersedes the earlier quest-first model's behavioral assumptions below.
+  Production issuance, controller, commission, minigame rules and acceptance
+  thresholds have not been tuned. All changes remain local and unpushed.
+- Simulated players now choose work using quest reward/minute, personal needs,
+  posted reservation prices, commission and lagged observed sell-through. One
+  shared minute budget covers quests, iron and food; fractional yields carry
+  between sessions. Gathering can directly equip a player before market sales.
+- Demand follows actual play, with bounded replacement backlogs. Axe ownership
+  (3 iron) and full equipment (27 iron + food) are distinct milestones. Starting
+  and day-301 cohorts include actual mixed-route progression, session minutes,
+  calendar days and unfinished counts; completion-only quantiles are labeled.
+  Quotes are sampled before purchases rather than from end-of-day leftovers.
+- Five explicitly uncalibrated assumption sets cover constrained/reference/high
+  supply, slower combat and greater wear. All twelve scenarios, eight seeds and
+  both policies run for a year: 960 virtual years / 350,400 daily observations.
+  Identity, attendance and productivity RNG streams are separate from games.
+- Accounting/labor invariants pass. The unchanged strict objectives fail in
+  73/80 normal-population adaptive runs, leaving deployment blocked. Under
+  reference assumptions all 24 late stable-population newcomers complete a kit
+  within one 30-minute session, yet all eight money-target checks fail. Under
+  constrained supply all 24 eventually complete, but p90 of cohort p90 session
+  minutes is 1,620. Findings depend on invented assumptions, not live prices;
+  ECONOMY.md records calibration requirements and remaining simplifications.
+- Verified `cargo check --tests`, 126 backend tests and 18 operator-script tests.
+  All four model regression tests were rerun after excluding private hoards
+  and closed weekly markets from quoted supply. Full-matrix strict failure is
+  expected; the release objectives have not been relaxed.
+- Reports now identify the assumption set in JSON/CSV, show cohort censoring and
+  include a visually checked sensitivity chart alongside reference-case plots.
+  No services, real wallets, installed plugin or world data were modified.
+
+
+## Seeded economy simulations and CI release gate — 2026-10-19
+
+- Added a test-only agent simulator in `src/main.rs`: twelve scenarios, eight
+  deterministic seeds, adaptive/frozen policies and 365-day traces (192 virtual
+  years). Production and simulation share daily controller arithmetic, activity
+  defaults, grant/contract constants, reward progression, fee rounding and deal
+  distributions. Live game wrappers retain OS randomness; there is no seed API.
+- The separate `compose.economy-sim.yaml` and `scripts/simulate-economy.sh` do not
+  load `.env.docker`, start game/database services, or join production networks.
+  Report mode checks conservation; `--strict` additionally enforces the declared
+  normal-population money/affordability objectives. CI runs strict mode before
+  deployment, renders charts and uploads generated reports even on acceptance
+  failure. Generated traces are ignored under `reports/economy/`.
+- Every simulated day checks coin/goods conservation, nonnegative wallets,
+  one grant/identity, bounded contracts/policy and fee movement. Reproducibility,
+  hoarding and AFK checks run with the ordinary backend suite. Existing SQL/API
+  tests continue to check persistence, atomicity, ownership and replay races.
+- Results: accounting invariants passed throughout the matrix; all sixteen
+  adaptive stable/growing-population cases failed starter affordability. The
+  monetary target can be met while modeled starter equipment remains scarce or
+  expensive. Hoarding/low trading accumulates coins; heavy games drains them.
+  Abundant supply improves affordability while leaving excess money. These are
+  synthetic behavioral scenarios, not observed server prices; assumptions and
+  sensitivity cases are recorded in ECONOMY.md and the generated manifest.
+- Strict mode returned exit 101 and preserved its reports as expected. The new
+  release gate therefore intentionally blocks deployment pending review of the
+  economic policy, goods model and acceptance goals; no thresholds or production
+  parameters were silently changed to get a passing result.
+- Verified: `cargo check --tests`, 123 ordinary Rust/Postgres tests and 18 operator
+  script tests; full simulation matrix and expected strict failure. Matplotlib
+  PNG/SVG charts and an offline index were generated and visually inspected.
+  Results include source SHA-256, assumptions, daily CSV, raw JSON, summary and
+  seed-level acceptance failures. Existing player data/services were untouched.
+- Work remains local, uncommitted and unpushed. No GitHub Actions run, production
+  deployment, Minecraft client simulation or actual market-price measurement
+  occurred. See `reports/economy/summary.md` locally and ECONOMY.md for commands.
+
+
+## Real economy steps 1–5 — 2026-10-19
+
+- Added migration `0016_economy.sql`: balances are preserved, opening positions
+  and subsequent wallet changes are recorded in a database-enforced append-only
+  ledger, and grant identities/report receipts survive unlinking and website
+  account deletion. Test block-break income is removed, including old-plugin
+  statistics reports.
+- LinkBridge 1.8.0 reports daily qualifying Survival activity through a separate
+  immutable outbox. The first authenticated economy registration grants 100 coins
+  once. `/quests` and `/quests start` expose natural-hostile-mob contracts, fixed
+  accepted terms, lifetime-earned difficulty and a four-contract UTC daily limit.
+- Added a once-daily policy review with a 14-day qualification window, smoothed
+  population/supply, 70,000 coins per active UUID, unexpired committed stakes,
+  +/-10% neutral band, sustained signals and five bounded economic settings.
+  `ECONOMY_AUTOMATION=false` freezes reviews without resetting balances.
+- New Marketplace listings explicitly accept the current 0–5% seller commission;
+  existing listings keep zero fees. The accepted rate survives policy changes.
+  Seller previews use server-calculated proceeds; cumulative fee rounding, coin
+  movement, order receipt and delivery commit together.
+- Minigame probabilities adjust slightly and equally for everyone. Public config
+  matches the dealt distributions. Stale starts return 412 without a debit;
+  stored levels/reels/boards preserve paid rounds and receipt recovery across
+  policy changes. Mines keeps its TNT count and varies ore distribution only.
+- Verification: `cargo check --tests`; all 122 PostgreSQL-backed tests passed on
+  a fresh disposable Compose database with normal concurrency. The seven economy
+  checks were rerun after excluding expired, lazily settled stakes from supply.
+  Frontend production build, ESLint and 57 Node tests passed. Gradle compiled
+  LinkBridge 1.8.0 and its inventory NBT runner passed. The Gradle generic `check`
+  task rejects this repository's main-method test convention as “no discovered
+  tests”; the documented `inventoryNbtTest jar` command passed.
+- The final production image booted against the disposable database, served the
+  neutral public policy and completed its first daily review at migration 0016.
+  It built with hardened bases using the documented local
+  offline Cargo-cache Dockerfile; committed Dockerfile/Compose image provenance
+  is unchanged. Seller fee/proceeds and keyboard access were inspected in Dark
+  at wide and 520px window widths using labeled disposable fixtures, never real
+  player balances. Captures are ignored under `.impeccable/review/economy-*`.
+- All changes are local, uncommitted and unpushed. No existing services, real
+  database, worlds or installed runtime plugin JARs were changed. No production
+  rollout or authenticated Minecraft client test occurred. Economic price
+  monitoring/calibration and client-level natural-spawn/AFK/quest verification
+  remain. See `ECONOMY.md` for defaults, limitations and coordinated rollout.
 
 ## English minigames and recovery — 2026-10-19
 

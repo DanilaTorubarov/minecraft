@@ -1,0 +1,16 @@
+# Offline virtual-world tests: no app/db/Minecraft services or production env file.
+services:
+  simulation:
+    image: dhi.io/rust:1-dev
+    working_dir: /app
+    volumes:
+      - .:/app
+      - economy_sim_cargo:/root/.cargo
+    environment:
+      CARGO_TARGET_DIR: ${ECONOMY_SIM_TARGET_DIR:-/app/.plugin-build/economy-simulation-target}
+      CARGO_NET_OFFLINE: ${CARGO_NET_OFFLINE:-false}
+      ECONOMY_SIM_OUTPUT: /app/reports/economy
+      ECONOMY_SIM_STRICT: ${ECONOMY_SIM_STRICT:-0}
+    command: cargo test --locked economy_simulation_year -- --ignored --nocapture
+volumes:
+  economy_sim_cargo:

@@ -14,6 +14,8 @@ use sqlx::Row;
 
 const SESSION_TTL_HOURS: i32 = 24;
 const MAX_LINKED_ACCOUNTS: i64 = 4;
+const ECONOMY_STARTER_GRANT: i64 = 100;
+const ECONOMY_DAILY_CONTRACT_LIMIT: i64 = 4;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
     let pool = connect().await?;
     tokio::spawn(skin_signing_worker(pool.clone()));
+    tokio::spawn(economy_worker(pool.clone()));
     println!("Server running: http://127.0.0.1:8080");
     axum::serve(listener, app(pool)).await?;
     Ok(())
@@ -66,6 +69,15 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/link/start", post(start_link))
         .route("/api/link/{uuid}", delete(unlink_account))
         .route("/api/stats", get(stats_for_user))
+        .route("/api/economy", get(public_economy))
+        .route("/internal/economy/session", post(economy_session))
+        .route("/internal/economy/report", post(report_economy))
+        .route("/internal/economy/contract", post(economy_contract))
+        .route("/internal/economy/repair/quote", post(repair_quote))
+        .route("/internal/economy/repair", post(buy_repair))
+        .route("/internal/economy/travel", post(unavailable_private_block_travel))
+        .route("/internal/economy/tasks/sync", post(sync_economy_tasks))
+        .route("/internal/economy/tasks/report", post(report_economy_task))
         .route("/api/minigames/config", get(minigame_config))
         .route("/api/minigames/state", get(minigame_state))
         .route("/api/minigames/chest/spin", post(spin_lucky_chest))
@@ -80,6 +92,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/inventory/report", post(report_inventory))
         .route("/api/players/{uuid}/inventory/marketplace", post(create_market_listing))
         .route("/api/marketplace", get(marketplace))
+        .route("/api/marketplace/quote", post(market_quote))
         .route("/api/marketplace/{id}/buy", post(buy_market_listing))
         .route("/api/marketplace/{id}/cancel", post(cancel_market_listing))
         .route("/internal/marketplace/sync", post(sync_market_tasks))
@@ -150,7 +163,17 @@ async fn spa_fallback(uri: Uri) -> Response {
 
 async fn connect() -> Result<sqlx::PgPool, Box<dyn std::error::Error>> {
     let url = std::env::var("DATABASE_URL")?;
-    let pool = sqlx::PgPool::connect(&url).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                sqlx::query("SET TIME ZONE 'UTC'")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await?;
     sqlx::migrate::Migrator::new(std::path::Path::new("./migrations")).await?.run(&pool).await?;
     Ok(pool)
 }
@@ -1307,8 +1330,8 @@ struct StatsPlayer {
     blocks_broken: i64,
     // Added with the wider activity set (migration 0008). `serde(default)` keeps
     // a plugin built before them working: a missing counter means "nothing was
-    // measured", not a rejected batch. A plugin still sitting on an old jar must
-    // never stop the panel from banking play time and coins.
+    // measured", not a rejected batch. Older plugins can still report statistics;
+    // money is earned only through the independent economy protocol.
     #[serde(default)] mobs_killed: i64,
     #[serde(default)] deaths: i64,
     #[serde(default)] distance_cm: i64,
@@ -1395,7 +1418,7 @@ async fn report_stats(
                    damage_dealt, damage_taken, logins, items_picked_up, items_enchanted,
                    tools_broken, animals_bred, times_slept, advancements, coins)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                         $16, $17, $18, $19, $5)
+                         $16, $17, $18, $19, 0)
                  ON CONFLICT (uuid) DO UPDATE SET
                    username = EXCLUDED.username,
                    play_seconds = player_stats.play_seconds + EXCLUDED.play_seconds,
@@ -1415,7 +1438,6 @@ async fn report_stats(
                    animals_bred = player_stats.animals_bred + EXCLUDED.animals_bred,
                    times_slept = player_stats.times_slept + EXCLUDED.times_slept,
                    advancements = player_stats.advancements + EXCLUDED.advancements,
-                   coins = player_stats.coins + EXCLUDED.coins,
                    last_seen_at = now()"
             )
             .bind(&player.uuid)
@@ -1736,6 +1758,42 @@ fn market_header(headers: &HeaderMap) -> Result<(), StatusCode> {
     }
     Ok(())
 }
+#[derive(serde::Deserialize)]
+struct MarketQuoteInput {
+    quantity: i32,
+    unit_price: Option<i64>,
+    lot_price: Option<i64>,
+}
+async fn market_quote(
+    State(pool): State<sqlx::PgPool>,
+    _user: SessionUser,
+    Json(input): Json<MarketQuoteInput>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !(1..=230).contains(&input.quantity)
+        || (input.unit_price.is_none() && input.lot_price.is_none())
+        || [input.unit_price, input.lot_price]
+            .into_iter()
+            .flatten()
+            .any(|p| !(1..=1_000_000_000).contains(&p))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let bps = economy_policy(&pool).await?.commission_bps;
+    let quote = |gross: i64| {
+        let fee = market_commission(0, gross, i64::from(bps));
+        serde_json::json!({"gross":gross,"fee":fee,"proceeds":gross-fee})
+    };
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(
+            serde_json::json!({"commission_bps":bps,"unit":input.unit_price.map(|p|quote(p*i64::from(input.quantity))),"lot":input.lot_price.map(quote)}),
+        ),
+    ))
+}
+fn market_commission(gross: i64, total: i64, bps: i64) -> i64 {
+    ((gross + total) * bps + 9999) / 10000 - (gross * bps + 9999) / 10000
+}
+
 fn market_lot_price(price: i64, remaining: i32, quantity: i32) -> i64 {
     (price * i64::from(remaining) + i64::from(quantity) - 1) / i64::from(quantity)
 }
@@ -1747,6 +1805,7 @@ struct MarketListingInput {
     quantity: i32,
     unit_price: Option<i64>,
     lot_price: Option<i64>,
+    expected_commission_bps: i32,
 }
 async fn create_market_listing(
     State(pool): State<sqlx::PgPool>,
@@ -1769,6 +1828,10 @@ async fn create_market_listing(
         return Err(StatusCode::BAD_REQUEST);
     }
     let mut tx = pool.begin().await.map_err(market_db)?;
+    let fee = economy_policy(&mut *tx).await?.commission_bps;
+    if body.expected_commission_bps != fee {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
     let username: Option<String> = sqlx::query_scalar(
         "SELECT username FROM minecraft_accounts WHERE uuid=$1 AND user_id=$2 FOR UPDATE",
     )
@@ -1809,9 +1872,9 @@ async fn create_market_listing(
     }
     item["amount"] = serde_json::json!(body.quantity);
     let id = new_session_token()?;
-    sqlx::query("INSERT INTO market_listings(id,user_id,uuid,username,item,quantity,remaining,unit_price,lot_price,status) VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8,'pending')")
+    sqlx::query("INSERT INTO market_listings(id,user_id,uuid,username,item,quantity,remaining,unit_price,lot_price,commission_bps,status) VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,'pending')")
         .bind(&id).bind(user_id).bind(&uuid).bind(&username).bind(item).bind(body.quantity)
-        .bind(body.unit_price).bind(body.lot_price).execute(&mut *tx).await.map_err(market_db)?;
+        .bind(body.unit_price).bind(body.lot_price).bind(fee).execute(&mut *tx).await.map_err(market_db)?;
     sqlx::query("INSERT INTO market_tasks(id,listing_id,uuid,username,kind,quantity,slot,fingerprint) VALUES($1,$2,$3,$4,'withdraw',$5,$6,$7)")
         .bind(new_session_token()?).bind(id).bind(uuid).bind(username).bind(body.quantity).bind(body.slot as i32).bind(body.fingerprint)
         .execute(&mut *tx).await.map_err(market_db)?;
@@ -1836,7 +1899,7 @@ async fn marketplace(
     if query.q.len() > 128 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let mut rows = sqlx::query("SELECT l.id,l.user_id,l.username,l.item,l.quantity,l.remaining,l.unit_price,l.lot_price,l.status,i.data_url AS icon FROM market_listings l LEFT JOIN item_icons i ON i.key=l.item->>'key'
+    let mut rows = sqlx::query("SELECT l.id,l.user_id,l.username,l.item,l.quantity,l.remaining,l.unit_price,l.lot_price,l.commission_bps,l.gross_sold,l.fee_paid,l.status,i.data_url AS icon FROM market_listings l LEFT JOIN item_icons i ON i.key=l.item->>'key'
         WHERE (CASE WHEN $2 THEN l.user_id=$1 ELSE l.status='active' AND l.remaining>0 END)
         AND position(lower($3) in lower(coalesce(l.item->>'display_name','') || ' ' || replace(l.item->>'key','_',' ') || ' ' || (l.item->>'key') || ' ' || l.username))>0
         AND ($4::text IS NULL OR (l.created_at,l.id)<(SELECT created_at,id FROM market_listings WHERE id=$4))
@@ -1860,6 +1923,7 @@ async fn marketplace(
         serde_json::json!({"id":r.get::<String,_>("id"),"seller":r.get::<String,_>("username"),
             "mine":r.get::<i64,_>("user_id")==user_id,"item":item,"quantity":quantity,"remaining":remaining,
             "unit_price":r.get::<Option<i64>,_>("unit_price"),"lot_price":lot.map(|p| market_lot_price(p,remaining,quantity)),
+            "commission_bps":r.get::<i32,_>("commission_bps"),"gross_sold":r.get::<i64,_>("gross_sold"),"fee_paid":r.get::<i64,_>("fee_paid"),
             "status":r.get::<String,_>("status")})
     }).collect();
     let deliveries = sqlx::query("SELECT t.id,t.username,t.quantity,t.status,l.item FROM market_tasks t JOIN market_listings l ON l.id=t.listing_id
@@ -1872,7 +1936,7 @@ async fn marketplace(
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(
-            serde_json::json!({"listings":listings,"deliveries":deliveries,"next_cursor":next_cursor}),
+            serde_json::json!({"listings":listings,"deliveries":deliveries,"next_cursor":next_cursor,"commission_bps":economy_policy(&pool).await?.commission_bps}),
         ),
     ))
 }
@@ -1960,6 +2024,9 @@ async fn buy_market_listing(
     if total != body.expected_total {
         return Err(StatusCode::CONFLICT);
     }
+    let fee_bps = i64::from(listing.get::<i32, _>("commission_bps"));
+    let gross: i64 = listing.get("gross_sold");
+    let commission = market_commission(gross, total, fee_bps);
     let seller: String = listing.get("uuid");
     // An active listing always has a saved lossless item. Delivery stays durable
     // even when the recipient is offline or has no empty storage slot.
@@ -1976,6 +2043,7 @@ async fn buy_market_listing(
     .fetch_all(&mut *tx)
     .await
     .map_err(market_db)?;
+    coin_reason(&mut tx, "market_purchase", &body.request_id).await?;
     let charged =
         sqlx::query("UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1 AND coins >= $2")
             .bind(&body.buyer_uuid)
@@ -1987,10 +2055,11 @@ async fn buy_market_listing(
     if charged == 0 {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
+    coin_reason(&mut tx, "market_sale", &body.request_id).await?;
     let paid = sqlx::query(
         "UPDATE player_stats SET coins=coins+$2 WHERE uuid=$1 AND coins <= 9223372036854775807-$2",
     )
-    .bind(seller)
+    .bind(&seller)
     .bind(total)
     .execute(&mut *tx)
     .await
@@ -1999,10 +2068,29 @@ async fn buy_market_listing(
     if paid == 0 {
         return Err(StatusCode::CONFLICT);
     }
+    // Record fee separately from the gross seller credit for explicit accounting.
+    if commission > 0 {
+        coin_reason(&mut tx, "market_commission", &body.request_id).await?;
+        sqlx::query("UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1")
+            .bind(&seller)
+            .bind(commission)
+            .execute(&mut *tx)
+            .await
+            .map_err(market_db)?;
+    }
+    sqlx::query(
+        "UPDATE market_listings SET gross_sold=gross_sold+$2,fee_paid=fee_paid+$3 WHERE id=$1",
+    )
+    .bind(&id)
+    .bind(total)
+    .bind(commission)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
     sqlx::query("UPDATE market_listings SET remaining=remaining-$2,status=CASE WHEN remaining=$2 THEN 'closed' ELSE 'active' END WHERE id=$1")
         .bind(&id).bind(body.quantity).execute(&mut *tx).await.map_err(market_db)?;
-    sqlx::query("INSERT INTO market_orders(id,user_id,payload_hash,listing_id,buyer_uuid,quantity,total) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(&body.request_id).bind(user_id).bind(hash).bind(&id).bind(&body.buyer_uuid).bind(body.quantity).bind(total)
+    sqlx::query("INSERT INTO market_orders(id,user_id,payload_hash,listing_id,buyer_uuid,quantity,total,commission) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+        .bind(&body.request_id).bind(user_id).bind(hash).bind(&id).bind(&body.buyer_uuid).bind(body.quantity).bind(total).bind(commission)
         .execute(&mut *tx).await.map_err(|e| if e.as_database_error().is_some_and(|db| db.is_unique_violation()) { StatusCode::CONFLICT } else { market_db(e) })?;
     sqlx::query("INSERT INTO market_tasks(id,listing_id,uuid,username,kind,quantity,item_bytes) VALUES($1,$2,$3,$4,'deliver',$5,$6)")
         .bind(new_session_token()?).bind(id).bind(body.buyer_uuid).bind(username).bind(body.quantity).bind(bytes)
@@ -2431,7 +2519,7 @@ async fn stats_for_user(
 // `player_stats.coins`, the same balance the game server reports into and `/bal`
 // reads, so a minigame win or loss is visible in game immediately.
 //
-// The tables below are the whole economy. `chest_rtp_x10000` and
+// The tables below define baseline game rules. `chest_rtp_x10000` and
 // `mines_rtp_x10000` are computed from them, so the return the window shows can
 // never drift from the return that is actually paid.
 
@@ -2545,6 +2633,27 @@ fn mines_rtp_x10000(preset: &MinesPreset) -> i64 {
     10_000 * survive * multiplier / (MINES_CELLS as i64 * 24 * 100 * safe)
 }
 
+fn chest_diamond_rolls(level: i32) -> u64 {
+    (CHEST_SINGLE_DIAMOND_ROLLS as i64 - i64::from(level) * 33) as u64
+}
+fn chest_rtp_at(level: i32) -> i64 {
+    (chest_rtp_x10000() * 100
+        + (chest_diamond_rolls(level) as i64 - CHEST_SINGLE_DIAMOND_ROLLS as i64) * 150)
+        / 100
+}
+fn mines_rtp_at(preset: &MinesPreset, level: i32) -> i64 {
+    if level == 0 {
+        return mines_rtp_x10000(preset);
+    }
+    let safe = mines_safe_cells(preset.mines) as i64;
+    let (iron, gold, _) = mines_ores(preset.mines);
+    let sum =
+        (iron as i64 * preset.boost_iron + gold as i64 * preset.boost_gold + preset.boost_diamond)
+            * 100
+            - i64::from(level) * 10 * (preset.boost_gold - preset.boost_iron);
+    10000 * safe * (safe - 1) * (100 * safe * 100 + 2 * sum) / (25 * 24 * 100 * safe * 100)
+}
+
 /// 8 bytes of OS randomness. The browser must not be able to predict a reel.
 fn random_u64() -> Result<u64, StatusCode> {
     let mut bytes = [0u8; 8];
@@ -2582,14 +2691,20 @@ struct ChestSpin {
     mult_x100: i64,
 }
 
-fn spin_chest() -> Result<ChestSpin, StatusCode> {
+fn spin_chest_at(level: i32) -> Result<ChestSpin, StatusCode> {
+    spin_chest_using(level, random_below)
+}
+fn spin_chest_using(
+    level: i32,
+    mut draw: impl FnMut(u64) -> Result<u64, StatusCode>,
+) -> Result<ChestSpin, StatusCode> {
     let symbols = CHEST_SYMBOLS.len() as u64;
-    let roll = random_below(CHEST_ROLLS)?;
+    let roll = draw(CHEST_ROLLS)?;
     let triple_end = CHEST_TRIPLE_ROLLS;
     let pair_end = triple_end + CHEST_PAIR_ROLLS;
-    let diamond_end = pair_end + CHEST_SINGLE_DIAMOND_ROLLS;
+    let diamond_end = pair_end + chest_diamond_rolls(level);
     if roll < triple_end {
-        let mut pick = random_below(100)? as i64;
+        let mut pick = draw(100)? as i64;
         let mut chosen = 0usize;
         for (index, symbol) in CHEST_SYMBOLS.iter().enumerate() {
             pick -= symbol.triple_weight as i64;
@@ -2602,14 +2717,14 @@ fn spin_chest() -> Result<ChestSpin, StatusCode> {
         return Ok(ChestSpin { reels: [id, id, id], mult_x100: CHEST_SYMBOLS[chosen].triple_x100 });
     }
     if roll < pair_end {
-        let pair = random_below(symbols)? as usize;
+        let pair = draw(symbols)? as usize;
         // The third reel must differ, or this would be three of a kind.
-        let mut other = random_below(symbols - 1)? as usize;
+        let mut other = draw(symbols - 1)? as usize;
         if other >= pair {
             other += 1;
         }
         let (pair_id, other_id) = (CHEST_SYMBOLS[pair].id, CHEST_SYMBOLS[other].id);
-        let reels = match random_below(3)? {
+        let reels = match draw(3)? {
             0 => [pair_id, pair_id, other_id],
             1 => [pair_id, other_id, pair_id],
             _ => [other_id, pair_id, pair_id],
@@ -2619,14 +2734,14 @@ fn spin_chest() -> Result<ChestSpin, StatusCode> {
     let non_diamond = |offset: u64| CHEST_SYMBOLS[1 + offset as usize].id;
     if roll < diamond_end {
         // One diamond beside two different treasures: a flat bonus.
-        let first = random_below(symbols - 1)?;
-        let mut second = random_below(symbols - 1)?;
+        let first = draw(symbols - 1)?;
+        let mut second = draw(symbols - 1)?;
         while second == first {
-            second = random_below(symbols - 1)?;
+            second = draw(symbols - 1)?;
         }
         let (a, b) = (non_diamond(first), non_diamond(second));
         let diamond = CHEST_SYMBOLS[0].id;
-        let reels = match random_below(3)? {
+        let reels = match draw(3)? {
             0 => [diamond, a, b],
             1 => [a, diamond, b],
             _ => [a, b, diamond],
@@ -2634,14 +2749,14 @@ fn spin_chest() -> Result<ChestSpin, StatusCode> {
         return Ok(ChestSpin { reels, mult_x100: CHEST_SINGLE_DIAMOND_X100 });
     }
     // No win: three different treasures and no diamond.
-    let first = random_below(symbols - 1)?;
-    let mut second = random_below(symbols - 1)?;
+    let first = draw(symbols - 1)?;
+    let mut second = draw(symbols - 1)?;
     while second == first {
-        second = random_below(symbols - 1)?;
+        second = draw(symbols - 1)?;
     }
-    let mut third = random_below(symbols - 1)?;
+    let mut third = draw(symbols - 1)?;
     while third == first || third == second {
-        third = random_below(symbols - 1)?;
+        third = draw(symbols - 1)?;
     }
     Ok(ChestSpin {
         reels: [non_diamond(first), non_diamond(second), non_diamond(third)],
@@ -2657,10 +2772,28 @@ struct MinesState {
     board: Vec<String>,
     revealed: Vec<usize>,
     mult_x100: i64,
+    #[serde(default)]
+    economy_level: i32,
 }
 
-fn new_mines_state(preset: &MinesPreset) -> Result<MinesState, StatusCode> {
-    let (iron, gold, diamond) = mines_ores(preset.mines);
+fn new_mines_state_at(preset: &MinesPreset, level: i32) -> Result<MinesState, StatusCode> {
+    new_mines_state_using(preset, level, random_below)
+}
+fn new_mines_state_using(
+    preset: &MinesPreset,
+    level: i32,
+    mut draw: impl FnMut(u64) -> Result<u64, StatusCode>,
+) -> Result<MinesState, StatusCode> {
+    let (mut iron, mut gold, diamond) = mines_ores(preset.mines);
+    if level != 0 && draw(100)? < u64::from(level.unsigned_abs()) * 10 {
+        if level < 0 {
+            iron -= 1;
+            gold += 1;
+        } else {
+            iron += 1;
+            gold -= 1;
+        }
+    }
     let mut board = Vec::with_capacity(MINES_CELLS);
     board.extend(std::iter::repeat_n("tnt".to_owned(), preset.mines));
     board.extend(std::iter::repeat_n("iron".to_owned(), iron));
@@ -2668,16 +2801,23 @@ fn new_mines_state(preset: &MinesPreset) -> Result<MinesState, StatusCode> {
     board.extend(std::iter::repeat_n("diamond".to_owned(), diamond));
     // Fisher-Yates, or the layout would follow the order above.
     for index in (1..board.len()).rev() {
-        let swap = random_below(index as u64 + 1)? as usize;
+        let swap = draw(index as u64 + 1)? as usize;
         board.swap(index, swap);
     }
-    Ok(MinesState { mines: preset.mines as i64, board, revealed: Vec::new(), mult_x100: MINES_START_X100 })
+    Ok(MinesState {
+        mines: preset.mines as i64,
+        board,
+        revealed: Vec::new(),
+        mult_x100: MINES_START_X100,
+        economy_level: level,
+    })
 }
 
 #[derive(serde::Serialize)]
 struct MinigameConfigView {
     min_bet: i64,
     max_bet: i64,
+    economy: EconomyPolicy,
     chest: ChestRulesView,
     mines: MinesRulesView,
 }
@@ -2707,6 +2847,8 @@ struct MinesPresetView {
     boost_gold: i64,
     boost_diamond: i64,
     rtp_x10000: i64,
+    ore_adjustment_chance_x10000: i64,
+    ore_adjustment: &'static str,
 }
 
 #[derive(serde::Serialize)]
@@ -2717,49 +2859,67 @@ struct MinesRulesView {
     presets: Vec<MinesPresetView>,
 }
 
-/// Static rules, so the window renders the very numbers the server pays. Public:
+/// Current public rules, calculated from the same distributions used for new rounds:
 /// it is a paytable, not anybody's data.
-async fn minigame_config() -> Json<MinigameConfigView> {
+async fn minigame_config(
+    State(pool): State<sqlx::PgPool>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let policy = economy_policy(&pool).await?;
+    let level = policy.level;
     let chance = |rolls: u64| (rolls * 10_000 / CHEST_ROLLS) as i64;
-    Json(MinigameConfigView {
-        min_bet: MINIGAME_MIN_BET,
-        max_bet: MINIGAME_MAX_BET,
-        chest: ChestRulesView {
-            symbols: CHEST_SYMBOLS
-                .iter()
-                .map(|symbol| ChestSymbolView {
-                    id: symbol.id,
-                    triple_x100: symbol.triple_x100,
-                    pair_x100: symbol.pair_x100,
-                })
-                .collect(),
-            single_diamond_x100: CHEST_SINGLE_DIAMOND_X100,
-            triple_chance_x10000: chance(CHEST_TRIPLE_ROLLS),
-            pair_chance_x10000: chance(CHEST_PAIR_ROLLS),
-            single_diamond_chance_x10000: chance(CHEST_SINGLE_DIAMOND_ROLLS),
-            rtp_x10000: chest_rtp_x10000(),
-        },
-        mines: MinesRulesView {
-            cells: MINES_CELLS,
-            min_safe: MINES_MIN_SAFE,
-            starting_x100: MINES_START_X100,
-            presets: MINES_PRESETS
-                .iter()
-                .map(|preset| MinesPresetView {
-                    mines: preset.mines as i64,
-                    min_safe: MINES_MIN_SAFE,
-                    boost_iron: preset.boost_iron,
-                    boost_gold: preset.boost_gold,
-                    boost_diamond: preset.boost_diamond,
-                    rtp_x10000: mines_rtp_x10000(preset),
-                })
-                .collect(),
-        },
-    })
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(MinigameConfigView {
+            min_bet: MINIGAME_MIN_BET,
+            max_bet: MINIGAME_MAX_BET,
+            economy: policy,
+            chest: ChestRulesView {
+                symbols: CHEST_SYMBOLS
+                    .iter()
+                    .map(|symbol| ChestSymbolView {
+                        id: symbol.id,
+                        triple_x100: symbol.triple_x100,
+                        pair_x100: symbol.pair_x100,
+                    })
+                    .collect(),
+                single_diamond_x100: CHEST_SINGLE_DIAMOND_X100,
+                triple_chance_x10000: chance(CHEST_TRIPLE_ROLLS),
+                pair_chance_x10000: chance(CHEST_PAIR_ROLLS),
+                single_diamond_chance_x10000: chance(chest_diamond_rolls(level)),
+                rtp_x10000: chest_rtp_at(level),
+            },
+            mines: MinesRulesView {
+                cells: MINES_CELLS,
+                min_safe: MINES_MIN_SAFE,
+                starting_x100: MINES_START_X100,
+                presets: MINES_PRESETS
+                    .iter()
+                    .map(|preset| MinesPresetView {
+                        mines: preset.mines as i64,
+                        min_safe: MINES_MIN_SAFE,
+                        boost_iron: preset.boost_iron,
+                        boost_gold: preset.boost_gold,
+                        boost_diamond: preset.boost_diamond,
+                        rtp_x10000: mines_rtp_at(preset, level),
+                        ore_adjustment_chance_x10000: i64::from(level.abs()) * 1000,
+                        ore_adjustment: if level < 0 {
+                            "iron_to_gold"
+                        } else if level > 0 {
+                            "gold_to_iron"
+                        } else {
+                            "none"
+                        },
+                    })
+                    .collect(),
+            },
+        }),
+    ))
 }
 
 #[derive(serde::Serialize)]
 struct ChestSpinView {
+    economy_level: i32,
+    rtp_x10000: i64,
     round_id: String,
     bet: i64,
     reels: Vec<String>,
@@ -2772,6 +2932,8 @@ struct ChestSpinView {
 struct ChestState {
     reels: Vec<String>,
     mult_x100: i64,
+    #[serde(default)]
+    economy_level: i32,
 }
 
 #[derive(serde::Serialize)]
@@ -2784,6 +2946,8 @@ struct MinesCellView {
 struct MinesRoundView {
     round_id: String,
     payer_uuid: String,
+    economy_level: i32,
+    rtp_x10000: i64,
     bet: i64,
     mines: i64,
     min_safe: i64,
@@ -2808,6 +2972,8 @@ struct ChestSpinRequest {
     bet: i64,
     /// The browser's own id for this spin, reused when it retries. Never the round id.
     client_id: String,
+    #[serde(default)]
+    economy_level: i32,
 }
 
 #[derive(serde::Deserialize)]
@@ -2815,6 +2981,8 @@ struct MinesStartRequest {
     uuid: String,
     bet: i64,
     mines: i64,
+    #[serde(default)]
+    economy_level: i32,
 }
 
 #[derive(serde::Deserialize)]
@@ -2962,6 +3130,11 @@ fn mines_view(round: &StoredRound, state: &MinesState, balance: i64) -> MinesRou
     MinesRoundView {
         round_id: round.id.clone(),
         payer_uuid: round.uuid.clone(),
+        economy_level: state.economy_level,
+        rtp_x10000: mines_rtp_at(
+            mines_preset(state.mines).expect("stored preset"),
+            state.economy_level,
+        ),
         bet: round.bet,
         mines: state.mines,
         min_safe: MINES_MIN_SAFE,
@@ -3049,6 +3222,8 @@ where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
     let state: ChestState =
         serde_json::from_str(&state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Some(ChestSpinView {
+        economy_level: state.economy_level,
+        rtp_x10000: chest_rtp_at(state.economy_level),
         round_id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         bet: row.try_get("bet").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         reels: state.reels,
@@ -3079,12 +3254,17 @@ async fn spin_lucky_chest(
     // A receipt is still recoverable after unlinking; only a new stake needs a link.
     owns_player(&pool, user_id, &uuid).await?;
 
-    let spin = spin_chest()?;
+    let policy = economy_policy(&pool).await?;
+    if input.economy_level != policy.level {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
+    let spin = spin_chest_at(policy.level)?;
     let payout = bet * spin.mult_x100 / 100;
     let round_id = new_round_id()?;
     let state = serde_json::to_string(&ChestState {
         reels: spin.reels.iter().map(|reel| (*reel).to_owned()).collect(),
         mult_x100: spin.mult_x100,
+        economy_level: policy.level,
     })
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -3096,8 +3276,10 @@ async fn spin_lucky_chest(
     if let Some(view) = return_chest_spin(&mut *tx, user_id, &client_id).await? {
         return Ok(Json(view));
     }
+    coin_reason(&mut tx, "minigame_stake", &round_id).await?;
     let mut balance = debit_coins(&mut tx, &uuid, bet).await?;
     if payout > 0 {
+        coin_reason(&mut tx, "minigame_payout", &round_id).await?;
         balance = credit_coins(&mut tx, &uuid, payout).await?;
     }
     let outcome = if payout > 0 { "paid" } else { "lost" };
@@ -3134,6 +3316,8 @@ async fn spin_lucky_chest(
     }
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(ChestSpinView {
+        economy_level: policy.level,
+        rtp_x10000: chest_rtp_at(policy.level),
         round_id,
         bet,
         reels: spin.reels.iter().map(|reel| (*reel).to_owned()).collect(),
@@ -3162,7 +3346,11 @@ async fn start_mines(
         let balance = payer_balance(&pool, &round.uuid).await?;
         return Ok(Json(mines_view(&round, &state, balance)));
     }
-    let state = new_mines_state(preset)?;
+    let policy = economy_policy(&pool).await?;
+    if input.economy_level != policy.level {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
+    let state = new_mines_state_at(preset, policy.level)?;
     let round_id = new_round_id()?;
     let stored = serde_json::to_string(&state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -3174,6 +3362,7 @@ async fn start_mines(
         let balance = payer_balance(&mut *tx, &round.uuid).await?;
         return Ok(Json(mines_view(&round, &state, balance)));
     }
+    coin_reason(&mut tx, "minigame_stake", &round_id).await?;
     let balance = debit_coins(&mut tx, &uuid, bet).await?;
     // The partial unique index allows one live round per game, so a second tab
     // resolves to the same round instead of staking money twice.
@@ -3258,6 +3447,7 @@ async fn reveal_mines(
             round.status = "settled".to_owned();
             round.outcome = Some("paid".to_owned());
             round.payout = payout;
+            coin_reason(&mut tx, "minigame_payout", &round_id).await?;
             let balance = credit_coins(&mut tx, &round.uuid, payout).await?;
             settle_round(&mut tx, &round_id, "paid", payout, &state).await?;
             balance
@@ -3304,6 +3494,7 @@ async fn cash_out_mines(
     round.status = "settled".to_owned();
     round.outcome = Some("paid".to_owned());
     round.payout = payout;
+    coin_reason(&mut tx, "minigame_payout", &round_id).await?;
     let balance = credit_coins(&mut tx, &round.uuid, payout).await?;
     settle_round(&mut tx, &round_id, "paid", payout, &state).await?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -3324,6 +3515,931 @@ async fn minigame_state(
     Ok(Json(MinigameStateView { active: Some(mines_view(&round, &state, balance)) }))
 }
 
+// --- Economy: money history is enforced by the database coin_change trigger. ---
+async fn coin_reason(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    reason: &str,
+    reference: &str,
+) -> Result<(), StatusCode> {
+    sqlx::query(
+        "SELECT set_config('economy.reason',$1,true),set_config('economy.reference',$2,true)",
+    )
+    .bind(reason)
+    .bind(reference)
+    .execute(&mut **tx)
+    .await
+    .map_err(market_db)?;
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+struct EconomyPolicy {
+    level: i32,
+    commission_bps: i32,
+    target_per_player: i64,
+}
+async fn economy_policy<'e, E>(executor: E) -> Result<EconomyPolicy, StatusCode>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let row = sqlx::query(
+        "SELECT level,commission_bps,target_per_player FROM economy_policy WHERE singleton",
+    )
+    .fetch_one(executor)
+    .await
+    .map_err(market_db)?;
+    Ok(EconomyPolicy {
+        level: row.get("level"),
+        commission_bps: row.get("commission_bps"),
+        target_per_player: row.get("target_per_player"),
+    })
+}
+async fn public_economy(State(pool): State<sqlx::PgPool>) -> Result<impl IntoResponse, StatusCode> {
+    let policy=economy_policy(&pool).await?;
+    Ok(([(header::CACHE_CONTROL,"no-store")],Json(serde_json::json!({"level":policy.level,"commission_bps":policy.commission_bps,"target_per_player":policy.target_per_player,"recovery_days":ECONOMY_RECOVERY_DAYS,"newcomer_days":ECONOMY_NEWCOMER_DAYS,"newcomer_reserve_percent":20,"max_daily_allowance":ECONOMY_MAX_ALLOWANCE,"repair_unit_price":ECONOMY_REPAIR_PRICE,"private_block_travel_available":false,"private_block_travel_price":ECONOMY_TRAVEL_PRICE}))))
+}
+
+/// Defaults shared by the production activity query and virtual players.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+struct EconomyActivityRules {
+    seconds: i64,
+    days: i64,
+    seconds_per_day: i64,
+}
+impl Default for EconomyActivityRules {
+    fn default() -> Self {
+        Self {
+            seconds: 7200,
+            days: 3,
+            seconds_per_day: 300,
+        }
+    }
+}
+impl EconomyActivityRules {
+    fn from_env() -> Self {
+        let base = Self::default();
+        Self {
+            seconds: env_i64("ECONOMY_ACTIVE_SECONDS", base.seconds).clamp(300, 1_209_600),
+            days: env_i64("ECONOMY_ACTIVE_DAYS", base.days).clamp(1, 14),
+            seconds_per_day: env_i64("ECONOMY_ACTIVE_DAY_SECONDS", base.seconds_per_day)
+                .clamp(60, 86400),
+        }
+    }
+    #[cfg(test)]
+    fn qualifies(self, days: &[i64]) -> bool {
+        days.iter().sum::<i64>() >= self.seconds
+            && days.iter().filter(|&&s| s >= self.seconds_per_day).count() as i64 >= self.days
+    }
+}
+
+const ECONOMY_RECOVERY_DAYS: i64 = 60;
+const ECONOMY_NEWCOMER_DAYS: i64 = 14;
+const ECONOMY_MAX_ALLOWANCE: i64 = 1200;
+const ECONOMY_TRAVEL_PRICE: i64 = 25;
+const ECONOMY_REPAIR_PRICE: i64 = 10;
+const ECONOMY_SERVICE_RESERVE: i64 = 1000;
+#[cfg(test)]
+const ECONOMY_STARTER_BREAD: i32 = 16;
+
+fn daily_issuance_budget(
+    policy: EconomyControl,
+    burn_ema: i64,
+    grants: i64,
+    previous: i64,
+    eligible: usize,
+    recovery: i64,
+) -> i64 {
+    if policy.active_ema == 0 || eligible == 0 {
+        return 0;
+    }
+    let target = i128::from(policy.active_ema) * i128::from(policy.target_per_player) / 1000;
+    let desired = (i128::from(burn_ema)
+        + (target - i128::from(policy.money_ema)) / i128::from(recovery)
+        - i128::from(grants))
+    .max(0);
+    let step = (i128::from(previous) / 10).max(eligible as i128 * 25);
+    desired
+        .clamp(
+            (i128::from(previous) - step).max(0),
+            i128::from(previous) + step,
+        )
+        .min(eligible as i128 * i128::from(ECONOMY_MAX_ALLOWANCE))
+        .min(i128::from(i64::MAX)) as i64
+}
+fn fair_economy_allowances(
+    budget: i64,
+    eligible: &[bool],
+    newcomers: &[bool],
+    rotation: usize,
+) -> Vec<i64> {
+    assert_eq!(eligible.len(), newcomers.len());
+    let mut shares = vec![0; eligible.len()];
+    let all: Vec<_> = (0..eligible.len()).filter(|&i| eligible[i]).collect();
+    let new: Vec<_> = all.iter().copied().filter(|&i| newcomers[i]).collect();
+    let reserve = if new.is_empty() { 0 } else { budget / 5 };
+    for (pot, ids) in [(budget - reserve, &all), (reserve, &new)] {
+        if ids.is_empty() {
+            continue;
+        }
+        for (j, &id) in ids.iter().enumerate() {
+            let rank = (j + ids.len() - rotation % ids.len()) % ids.len();
+            shares[id] +=
+                pot / ids.len() as i64 + i64::from((rank as i64) < pot % ids.len() as i64);
+        }
+    }
+    for share in &mut shares {
+        *share = (*share).min(ECONOMY_MAX_ALLOWANCE);
+    }
+    shares
+}
+#[cfg(test)]
+fn legacy_starter_contract_items(completed: i64, needs_starter: bool) -> (i32, i32, i32) {
+    let iron = if needs_starter {
+        match completed {
+            0 => 3,
+            1..=3 => 8,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    let bread = if needs_starter && completed == 0 {
+        ECONOMY_STARTER_BREAD
+    } else {
+        0
+    };
+    (iron, bread, if completed < 10 { 5 } else { 0 })
+}
+fn repair_units(damage: i32, max_damage: i32, used: i32) -> i32 {
+    let per_unit = (max_damage + 3) / 4;
+    if damage <= 0 || per_unit <= 0 {
+        return 0;
+    }
+    ((damage + per_unit - 1) / per_unit).min((3 - used).max(0))
+}
+fn iron_repair_key(key: &str) -> bool {
+    matches!(
+        key,
+        "minecraft:iron_axe"
+            | "minecraft:iron_pickaxe"
+            | "minecraft:iron_shovel"
+            | "minecraft:iron_hoe"
+            | "minecraft:iron_sword"
+            | "minecraft:iron_helmet"
+            | "minecraft:iron_chestplate"
+            | "minecraft:iron_leggings"
+            | "minecraft:iron_boots"
+    )
+}
+async fn lock_economy(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), StatusCode> {
+    sqlx::query("SELECT singleton FROM economy_policy WHERE singleton FOR UPDATE")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(market_db)?;
+    Ok(())
+}
+async fn expire_player_contracts(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    uuid: &str,
+) -> Result<(), StatusCode> {
+    let rows=sqlx::query("UPDATE economy_contracts SET status='expired' WHERE uuid=$1 AND status='active' AND expires_at<=now() RETURNING reward,budget_day::text AS budget_day")
+        .bind(uuid).fetch_all(&mut **tx).await.map_err(market_db)?;
+    for row in rows {
+        if let Some(day) = row.get::<Option<String>, _>("budget_day") {
+            let reward: i64 = row.get("reward");
+            sqlx::query(
+                "UPDATE economy_allowances SET reserved=reserved-$3 WHERE day=$1::date AND uuid=$2",
+            )
+            .bind(&day)
+            .bind(uuid)
+            .bind(reward)
+            .execute(&mut **tx)
+            .await
+            .map_err(market_db)?;
+            sqlx::query("UPDATE economy_budgets SET reserved=reserved-$2 WHERE day=$1::date")
+                .bind(&day)
+                .bind(reward)
+                .execute(&mut **tx)
+                .await
+                .map_err(market_db)?;
+        }
+    }
+    Ok(())
+}
+
+/// The same deterministic daily policy transition is used by SQL and simulations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+struct EconomyControl {
+    initialized: bool,
+    level: i32,
+    commission_bps: i32,
+    active_ema: i64,
+    money_ema: i64,
+    signal: i32,
+    signal_days: i32,
+    target_per_player: i64,
+}
+impl Default for EconomyControl {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            level: 0,
+            commission_bps: 200,
+            active_ema: 0,
+            money_ema: 0,
+            signal: 0,
+            signal_days: 0,
+            target_per_player: 70_000,
+        }
+    }
+}
+fn next_economy_control(prior: EconomyControl, players: i64, money: i64) -> EconomyControl {
+    let active = if prior.initialized {
+        (prior.active_ema * 3 + players * 1000) / 4
+    } else {
+        players * 1000
+    };
+    let supply = if prior.initialized {
+        (prior.money_ema as i128 * 3 + money as i128) / 4
+    } else {
+        money as i128
+    } as i64;
+    let target = (active as i128 * prior.target_per_player as i128 / 1000) as i64;
+    let signal = if target == 0 || players == 0 {
+        0
+    } else if supply as i128 * 100 > target as i128 * 110 {
+        1
+    } else if (supply as i128) * 100 < (target as i128) * 90 {
+        -1
+    } else {
+        0
+    };
+    let days = if signal != 0 && signal == prior.signal {
+        prior.signal_days.min(1000) + 1
+    } else if signal == 0 {
+        0
+    } else {
+        1
+    };
+    let level = (prior.level + if days >= 2 { signal } else { 0 }).clamp(-2, 2);
+    let desired = [0, 100, 200, 350, 500][(level + 2) as usize];
+    EconomyControl {
+        initialized: true,
+        level,
+        commission_bps: prior.commission_bps + (desired - prior.commission_bps).clamp(-25, 25),
+        active_ema: active,
+        money_ema: supply,
+        signal,
+        signal_days: days,
+        target_per_player: prior.target_per_player,
+    }
+}
+
+// UTC day boundaries everywhere, including the plugin. Review at most once per
+// day; missing days are not replayed as invented observations after downtime.
+async fn review_economy(pool: &sqlx::PgPool) -> Result<(), StatusCode> {
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    review_economy_tx(&mut tx).await?;
+    tx.commit().await.map_err(market_db)
+}
+async fn review_economy_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), StatusCode> {
+    let policy=sqlx::query("SELECT *,reviewed_day=current_date AS reviewed FROM economy_policy WHERE singleton FOR UPDATE")
+        .fetch_one(&mut **tx).await.map_err(market_db)?;
+    if policy.get::<Option<bool>, _>("reviewed") == Some(true) {
+        return Ok(());
+    }
+    let activity_rules = EconomyActivityRules::from_env();
+    let measured=sqlx::query("WITH active AS (SELECT uuid FROM economy_activity WHERE day BETWEEN current_date-13 AND current_date GROUP BY uuid HAVING sum(active_seconds)>=$1 AND count(*) FILTER(WHERE active_seconds>=$2)>=$3), held AS (SELECT uuid,sum(bet)::bigint AS coins FROM minigame_rounds WHERE status='active' AND created_at>now()-$4*interval '1 second' GROUP BY uuid)
+        , promised AS (SELECT uuid,sum(reward)::bigint AS coins FROM economy_contracts WHERE status='active' GROUP BY uuid)
+        SELECT count(*)::bigint AS players,coalesce(sum(s.coins+coalesce(h.coins,0)+coalesce(p.coins,0)),0)::bigint AS money,coalesce(sum(p.coins),0)::bigint AS committed FROM active a JOIN player_stats s USING(uuid) LEFT JOIN held h USING(uuid) LEFT JOIN promised p USING(uuid)")
+        .bind(activity_rules.seconds)
+        .bind(activity_rules.seconds_per_day)
+        .bind(activity_rules.days)
+        .bind(MINIGAME_ROUND_TTL_SECONDS)
+        .fetch_one(&mut **tx).await.map_err(market_db)?;
+    let players: i64 = measured.get("players");
+    let money: i64 = measured.get("money");
+    let prior_control = EconomyControl {
+        initialized: policy.get::<Option<bool>, _>("reviewed").is_some(),
+        level: policy.get("level"),
+        commission_bps: policy.get("commission_bps"),
+        active_ema: policy.get("active_ema"),
+        money_ema: policy.get("money_ema"),
+        signal: policy.get("signal"),
+        signal_days: policy.get("signal_days"),
+        target_per_player: policy.get("target_per_player"),
+    };
+    let next = if std::env::var("ECONOMY_AUTOMATION").as_deref() == Ok("false") {
+        prior_control
+    } else {
+        next_economy_control(prior_control, players, money)
+    };
+
+    let EconomyControl {
+        level,
+        commission_bps: fee,
+        active_ema: active,
+        money_ema: supply,
+        signal,
+        signal_days: days,
+        ..
+    } = next;
+    let target = (active as i128 * next.target_per_player as i128 / 1000) as i64;
+    sqlx::query("UPDATE economy_policy SET level=$1,commission_bps=$2,active_ema=$3,money_ema=$4,signal=$5,signal_days=$6,reviewed_day=current_date WHERE singleton")
+        .bind(level).bind(fee).bind(active).bind(supply).bind(signal).bind(days).execute(&mut **tx).await.map_err(market_db)?;
+    sqlx::query("INSERT INTO economy_reviews(day,active_players,active_money,active_ema,money_ema,target,level,commission_bps) VALUES(current_date,$1,$2,$3,$4,$5,$6,$7)")
+        .bind(players).bind(money).bind(active).bind(supply).bind(target).bind(level).bind(fee).execute(&mut **tx).await.map_err(market_db)?;
+    // All grants, allocations, reservations and settlements share the policy lock.
+    // Allocate only known identities from completed activity days: logging in
+    // earlier cannot claim another player's share. New arrivals earn items/XP
+    // immediately and join the next day's coin allocation after five active minutes.
+    let cohort=sqlx::query("SELECT p.uuid,p.starter_granted_at::date>current_date-$1::int AS newcomer FROM economy_players p JOIN economy_activity a USING(uuid) WHERE p.starter_granted_at::date<current_date AND a.day BETWEEN current_date-13 AND current_date-1 GROUP BY p.uuid HAVING sum(a.active_seconds)>=300 ORDER BY p.uuid")
+        .bind(ECONOMY_NEWCOMER_DAYS).fetch_all(&mut **tx).await.map_err(market_db)?;
+    let burn:i64=sqlx::query_scalar("SELECT coalesce(-sum(delta),0)::bigint FROM coin_ledger WHERE created_at>=current_date-interval '1 day' AND created_at<current_date AND reason IN ('market_commission','economy_service','economy_service_refund')")
+        .fetch_one(&mut **tx).await.map_err(market_db)?;
+    // Committed stakes are not burned. Attribute lazy expiry to its actual TTL,
+    // and settled wins/losses to settlement rather than the earlier stake debit.
+    let games:i64=sqlx::query_scalar("SELECT coalesce(sum(bet-payout),0)::bigint FROM minigame_rounds WHERE (status='settled' OR created_at+($1*interval '1 second')<=now()) AND (CASE WHEN outcome='expired' OR status='active' THEN created_at+($1*interval '1 second') ELSE settled_at END)>=current_date-interval '1 day' AND (CASE WHEN outcome='expired' OR status='active' THEN created_at+($1*interval '1 second') ELSE settled_at END)<current_date")
+        .bind(MINIGAME_ROUND_TTL_SECONDS).fetch_one(&mut **tx).await.map_err(market_db)?;
+    let grants:i64=sqlx::query_scalar("SELECT coalesce(sum(delta),0)::bigint FROM coin_ledger WHERE reason='starter_grant' AND created_at>=current_date-interval '1 day' AND created_at<current_date")
+        .fetch_one(&mut **tx).await.map_err(market_db)?;
+    let burn_ema =
+        ((i128::from(policy.get::<i64, _>("burn_ema")) * 6 + i128::from(burn) + i128::from(games))
+            / 7)
+        .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+    let automation = std::env::var("ECONOMY_AUTOMATION").as_deref() != Ok("false");
+    let budget = if automation {
+        daily_issuance_budget(
+            next,
+            burn_ema,
+            grants,
+            policy.get("issuance_budget"),
+            cohort.len(),
+            ECONOMY_RECOVERY_DAYS,
+        )
+    } else {
+        policy
+            .get::<i64, _>("issuance_budget")
+            .min(cohort.len() as i64 * ECONOMY_MAX_ALLOWANCE)
+    };
+    let inserted=sqlx::query("INSERT INTO economy_budgets(day,budget,eligible,previous_grants,burn_ema) VALUES(current_date,$1,$2,$3,$4) ON CONFLICT DO NOTHING")
+        .bind(budget).bind(cohort.len() as i64).bind(grants).bind(burn_ema).execute(&mut **tx).await.map_err(market_db)?.rows_affected();
+    if inserted > 0 {
+        let newcomers: Vec<bool> = cohort.iter().map(|r| r.get("newcomer")).collect();
+        let rotation: i64 =
+            sqlx::query_scalar("SELECT (extract(epoch FROM current_date)/86400)::bigint")
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(market_db)?;
+        let allowances = fair_economy_allowances(
+            budget,
+            &vec![true; cohort.len()],
+            &newcomers,
+            rotation as usize,
+        );
+        for (row, amount) in cohort.iter().zip(allowances) {
+            sqlx::query("INSERT INTO economy_allowances(day,uuid,allowance,newcomer) VALUES(current_date,$1,$2,$3)")
+                .bind(row.get::<String,_>("uuid")).bind(amount).bind(row.get::<bool,_>("newcomer")).execute(&mut **tx).await.map_err(market_db)?;
+        }
+    }
+    sqlx::query("UPDATE economy_policy SET issuance_budget=$1,burn_ema=$2 WHERE singleton")
+        .bind(budget)
+        .bind(burn_ema)
+        .execute(&mut **tx)
+        .await
+        .map_err(market_db)?;
+    sqlx::query("UPDATE economy_reviews SET issuance_budget=$1,burn_ema=$2,committed_rewards=$3 WHERE day=current_date")
+        .bind(budget).bind(burn_ema).bind(measured.get::<i64,_>("committed")).execute(&mut **tx).await.map_err(market_db)?;
+    Ok(())
+}
+
+async fn economy_worker(pool: sqlx::PgPool) {
+    loop {
+        if let Err(error) = review_economy(&pool).await {
+            eprintln!("Economy review failed: {error}");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct EconomyPlayerInput {
+    uuid: String,
+    username: String,
+}
+fn normalize_economy_player(body: &mut EconomyPlayerInput) -> Result<(), StatusCode> {
+    body.uuid = body.uuid.trim().to_lowercase();
+    body.username = body.username.trim().to_owned();
+    if !is_uuid(&body.uuid) || !is_minecraft_username(&body.username) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
+}
+async fn grant_starter(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    uuid: &str,
+    username: &str,
+) -> Result<(), StatusCode> {
+    lock_economy(tx).await?;
+    // Lock policy before identity everywhere, including report replay and services.
+    let fresh = sqlx::query("INSERT INTO economy_players(uuid) VALUES($1) ON CONFLICT DO NOTHING")
+        .bind(uuid)
+        .execute(&mut **tx)
+        .await
+        .map_err(market_db)?
+        .rows_affected()
+        > 0;
+    sqlx::query("SELECT uuid FROM economy_players WHERE uuid=$1 FOR UPDATE")
+        .bind(uuid)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(market_db)?;
+    if fresh {
+        coin_reason(tx, "starter_grant", uuid).await?;
+        sqlx::query("INSERT INTO player_stats(uuid,username,coins) VALUES($1,$2,$3) ON CONFLICT(uuid) DO UPDATE SET coins=player_stats.coins+EXCLUDED.coins")
+            .bind(uuid).bind(username).bind(ECONOMY_STARTER_GRANT).execute(&mut **tx).await.map_err(market_db)?;
+    }
+    Ok(())
+}
+async fn economy_session(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(mut body): Json<EconomyPlayerInput>,
+) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    normalize_economy_player(&mut body)?;
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    review_economy_tx(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+    tx.commit().await.map_err(market_db)?;
+    Ok(StatusCode::OK)
+}
+
+fn zero_quest_counter(value: &i32) -> bool {
+    *value == 0
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+struct EconomyDay {
+    day: String,
+    active_seconds: i32,
+    kills: i32,
+    #[serde(default, skip_serializing_if = "zero_quest_counter")]
+    fish_caught: i32,
+    #[serde(default, skip_serializing_if = "zero_quest_counter")]
+    crops_harvested: i32,
+    #[serde(default, skip_serializing_if = "zero_quest_counter")]
+    iron_mined: i32,
+    #[serde(default, skip_serializing_if = "zero_quest_counter")]
+    iron_smelted: i32,
+    contract_id: Option<String>,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+struct EconomyReport {
+    id: String,
+    uuid: String,
+    username: String,
+    days: Vec<EconomyDay>,
+}
+async fn report_economy(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<EconomyReport>,
+) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.id)
+        || !is_uuid(&body.uuid)
+        || !is_minecraft_username(&body.username)
+        || body.days.is_empty()
+        || body.days.len() > 1000
+        || body.days.iter().any(|d| {
+            !(0..=86400).contains(&d.active_seconds)
+                || [
+                    d.kills,
+                    d.fish_caught,
+                    d.crops_harvested,
+                    d.iron_mined,
+                    d.iron_smelted,
+                ]
+                .iter()
+                .any(|v| !(0..=10000).contains(v))
+                || (d.day.len() != 10
+                    || !d.day.bytes().enumerate().all(|(i, c)| {
+                        if i == 4 || i == 7 {
+                            c == b'-'
+                        } else {
+                            c.is_ascii_digit()
+                        }
+                    }))
+                || d.contract_id.as_ref().is_some_and(|s| !is_uuid(s))
+        })
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let hash = hash_token(&serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?);
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    let inserted = sqlx::query(
+        "INSERT INTO economy_reports(id,payload_hash) VALUES($1,$2) ON CONFLICT DO NOTHING",
+    )
+    .bind(&body.id)
+    .bind(&hash)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?
+    .rows_affected();
+    if inserted == 0 {
+        let existing: String =
+            sqlx::query_scalar("SELECT payload_hash FROM economy_reports WHERE id=$1")
+                .bind(&body.id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(market_db)?;
+        return if existing == hash {
+            Ok(StatusCode::OK)
+        } else {
+            Err(StatusCode::CONFLICT)
+        };
+    }
+    review_economy_tx(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+    for day in &body.days {
+        let valid: bool = sqlx::query_scalar("SELECT $1::date<=current_date")
+            .bind(&day.day)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        if !valid {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        sqlx::query("INSERT INTO economy_activity(uuid,day,active_seconds) VALUES($1,$2::date,$3) ON CONFLICT(uuid,day) DO UPDATE SET active_seconds=least(86400,economy_activity.active_seconds+EXCLUDED.active_seconds)")
+            .bind(&body.uuid).bind(&day.day).bind(day.active_seconds).execute(&mut *tx).await.map_err(market_db)?;
+        if let Some(id) = &day.contract_id {
+            // Reports can arrive late, but only kills measured during the accepted
+            // contract's UTC day range can advance it. Plugin also checks exact expiry.
+            let row=sqlx::query("UPDATE economy_contracts SET progress=least(target,progress+CASE kind WHEN 'hunting' THEN $3 WHEN 'fishing' THEN $5 WHEN 'farming' THEN $6 ELSE $7 END),secondary_progress=least(target,secondary_progress+CASE WHEN kind='starter_iron' THEN $8 ELSE 0 END) WHERE id=$1 AND uuid=$2 AND status='active' AND $4::date BETWEEN created_at::date AND expires_at::date RETURNING kind,target,progress,secondary_progress,reward,budget_day::text AS budget_day,reward_iron,reward_bread,reward_xp")
+                .bind(id).bind(&body.uuid).bind(day.kills).bind(&day.day).bind(day.fish_caught).bind(day.crops_harvested).bind(day.iron_mined).bind(day.iron_smelted).fetch_optional(&mut *tx).await.map_err(market_db)?;
+            if let Some(row) = row {
+                if row.get::<i32, _>("progress") == row.get::<i32, _>("target")
+                    && (row.get::<String, _>("kind") != "starter_iron"
+                        || row.get::<i32, _>("secondary_progress") == row.get::<i32, _>("target"))
+                {
+                    let reward: i64 = row.get("reward");
+                    coin_reason(&mut tx, "quest_reward", id).await?;
+                    if reward > 0 {
+                        credit_coins(&mut tx, &body.uuid, reward).await?;
+                    }
+                    if let Some(day) = row.get::<Option<String>, _>("budget_day") {
+                        sqlx::query("UPDATE economy_allowances SET reserved=reserved-$3,paid=paid+$3 WHERE day=$1::date AND uuid=$2").bind(&day).bind(&body.uuid).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
+                        sqlx::query("UPDATE economy_budgets SET reserved=reserved-$2,issued=issued+$2 WHERE day=$1::date").bind(&day).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
+                    }
+                    let iron: i32 = row.get("reward_iron");
+                    let bread: i32 = row.get("reward_bread");
+                    let xp: i32 = row.get("reward_xp");
+                    if iron + bread + xp > 0 {
+                        sqlx::query("INSERT INTO economy_tasks(id,uuid,kind,contract_id,iron,bread,xp) VALUES($1,$2,'reward',$1,$3,$4,$5)").bind(id).bind(&body.uuid).bind(iron).bind(bread).bind(xp).execute(&mut *tx).await.map_err(market_db)?;
+                    }
+                    sqlx::query(
+                        "UPDATE economy_players SET quest_earned=quest_earned+$2,contracts_completed=contracts_completed+1,starter_completed=starter_completed OR $3 WHERE uuid=$1",
+                    )
+                    .bind(&body.uuid)
+                    .bind(reward)
+                    .bind(row.get::<String,_>("kind")=="starter_iron")
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(market_db)?;
+                    sqlx::query("UPDATE economy_contracts SET status='paid' WHERE id=$1")
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(market_db)?;
+                }
+            }
+        }
+    }
+    tx.commit().await.map_err(market_db)?;
+    Ok(StatusCode::OK)
+}
+fn contract_terms(earned: i64, level: i32) -> (i32, i64) {
+    let excess = (earned - 100_000).max(0) as i128;
+    let target = (10 + earned as i128 / 5000 + excess * excess / 1_000_000_000).min(2000) as i32;
+    let reward = if earned < 10_000 {
+        250
+    } else {
+        250 * (10_000 - i64::from(level) * 1000) / 10_000
+    };
+    (target, reward)
+}
+fn quest_target(kind: &str, hunting: i32) -> i32 {
+    match kind {
+        "starter_iron" => 10,
+        "fishing" => (hunting + 1) / 2,
+        "farming" => (hunting * 16 + 9) / 10,
+        _ => hunting,
+    }
+}
+async fn contract_view(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    uuid: &str,
+) -> Result<serde_json::Value, StatusCode> {
+    let row=sqlx::query("SELECT id,kind,target,progress,secondary_progress,reward,reward_iron,reward_bread,reward_xp,status,extract(epoch FROM expires_at)::bigint AS expires FROM economy_contracts WHERE uuid=$1 ORDER BY created_at DESC,id DESC LIMIT 1")
+        .bind(uuid).fetch_optional(&mut **tx).await.map_err(market_db)?;
+    Ok(row.map(|r|serde_json::json!({"id":r.get::<String,_>("id"),"kind":r.get::<String,_>("kind"),"target":r.get::<i32,_>("target"),"progress":r.get::<i32,_>("progress"),"secondary_progress":r.get::<i32,_>("secondary_progress"),"reward":r.get::<i64,_>("reward"),"status":r.get::<String,_>("status"),"expires":r.get::<i64,_>("expires"),"iron":r.get::<i32,_>("reward_iron"),"bread":r.get::<i32,_>("reward_bread"),"xp":r.get::<i32,_>("reward_xp")})).unwrap_or(serde_json::Value::Null))
+}
+#[derive(serde::Deserialize)]
+struct ContractInput {
+    uuid: String,
+    username: String,
+    #[serde(default)]
+    start: bool,
+    #[serde(default)]
+    kind: Option<String>,
+}
+async fn economy_contract(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<ContractInput>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid) || !is_minecraft_username(&body.username) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if body
+        .kind
+        .as_deref()
+        .is_some_and(|kind| !matches!(kind, "hunting" | "fishing" | "farming"))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    review_economy_tx(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+    expire_player_contracts(&mut tx, &body.uuid).await?;
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM economy_contracts WHERE uuid=$1 AND status='active')",
+    )
+    .bind(&body.uuid)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    if body.start && !active {
+        let count: i64=sqlx::query_scalar("SELECT count(*) FROM economy_contracts WHERE uuid=$1 AND created_at>=date_trunc('day',now())")
+            .bind(&body.uuid).fetch_one(&mut *tx).await.map_err(market_db)?;
+        if count >= ECONOMY_DAILY_CONTRACT_LIMIT {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+        let player = sqlx::query(
+            "SELECT quest_earned,contracts_completed,starter_completed FROM economy_players WHERE uuid=$1",
+        )
+        .bind(&body.uuid)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(market_db)?;
+        let level = economy_policy(&mut *tx).await?.level;
+        let (hunting_target, base_reward) = contract_terms(player.get("quest_earned"), level);
+        let kind = if player.get::<bool, _>("starter_completed") {
+            body.kind.as_deref().unwrap_or("hunting")
+        } else {
+            "starter_iron"
+        };
+        let target = quest_target(kind, hunting_target);
+        let remaining:Option<i64>=sqlx::query_scalar("SELECT allowance-reserved-paid FROM economy_allowances WHERE day=current_date AND uuid=$1").bind(&body.uuid).fetch_optional(&mut *tx).await.map_err(market_db)?;
+        let reward = base_reward.min(remaining.unwrap_or(0));
+        if reward == 0 && kind != "starter_iron" {
+            return Err(StatusCode::PAYMENT_REQUIRED);
+        }
+        if remaining.is_some() {
+            sqlx::query("UPDATE economy_allowances SET reserved=reserved+$2 WHERE day=current_date AND uuid=$1").bind(&body.uuid).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
+            sqlx::query("UPDATE economy_budgets SET reserved=reserved+$1 WHERE day=current_date")
+                .bind(reward)
+                .execute(&mut *tx)
+                .await
+                .map_err(market_db)?;
+        }
+        sqlx::query("INSERT INTO economy_contracts(id,uuid,target,reward,policy_level,budget_day,kind) VALUES($1,$2,$3,$4,$5,current_date,$6)")
+            .bind(new_round_id()?).bind(&body.uuid).bind(target).bind(reward).bind(level).bind(kind).execute(&mut *tx).await.map_err(market_db)?;
+    }
+    let view = contract_view(&mut tx, &body.uuid).await?;
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(view))
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EconomyRepair {
+    uuid: String,
+    username: String,
+    id: String,
+    slot: i32,
+    fingerprint: String,
+    key: String,
+    damage: i32,
+    max_damage: i32,
+    #[serde(default)]
+    expected_price: i64,
+    #[serde(default)]
+    expected_units: i32,
+    #[serde(default)]
+    quote_expires: i64,
+}
+fn validate_repair(body: &EconomyRepair) -> Result<(), StatusCode> {
+    if !is_uuid(&body.uuid)
+        || !is_uuid(&body.id)
+        || !is_minecraft_username(&body.username)
+        || !(0..=40).contains(&body.slot)
+        || !iron_repair_key(&body.key)
+        || body.fingerprint.len() != 64
+        || !body
+            .fingerprint
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || !(1..=10000).contains(&body.max_damage)
+        || body.damage <= 0
+        || body.damage > body.max_damage
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
+}
+async fn repair_used(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    uuid: &str,
+) -> Result<i32, StatusCode> {
+    sqlx::query_scalar("SELECT coalesce(sum(repair_units),0)::int FROM economy_tasks WHERE uuid=$1 AND kind='repair' AND status<>'conflict' AND created_at>=date_trunc('day',now())")
+        .bind(uuid).fetch_one(&mut **tx).await.map_err(market_db)
+}
+async fn repair_quote(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<EconomyRepair>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    validate_repair(&body)?;
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    let units = repair_units(
+        body.damage,
+        body.max_damage,
+        repair_used(&mut tx, &body.uuid).await?,
+    );
+    if units == 0 {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+    let expires: i64 = sqlx::query_scalar("SELECT extract(epoch FROM now())::bigint+60")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(market_db)?;
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(
+        serde_json::json!({"price":i64::from(units)*ECONOMY_REPAIR_PRICE,"units":units,"quote_expires":expires,"wallet_reserve":ECONOMY_SERVICE_RESERVE}),
+    ))
+}
+async fn buy_repair(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<EconomyRepair>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    validate_repair(&body)?;
+    let hash = hash_token(&serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?);
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    // Receipt recovery precedes quote expiry: retry cannot buy another repair.
+    if let Some(row) =
+        sqlx::query("SELECT uuid,kind,payload_hash,status,price FROM economy_tasks WHERE id=$1")
+            .bind(&body.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(market_db)?
+    {
+        if row.get::<String, _>("uuid") != body.uuid
+            || row.get::<String, _>("kind") != "repair"
+            || row.get::<String, _>("payload_hash") != hash
+        {
+            return Err(StatusCode::CONFLICT);
+        }
+        return Ok(Json(
+            serde_json::json!({"id":body.id,"status":row.get::<String,_>("status"),"price":row.get::<i64,_>("price")}),
+        ));
+    }
+    let valid: bool = sqlx::query_scalar(
+        "SELECT $1>=extract(epoch FROM now())::bigint AND $1<=extract(epoch FROM now())::bigint+60",
+    )
+    .bind(body.quote_expires)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    let units = repair_units(
+        body.damage,
+        body.max_damage,
+        repair_used(&mut tx, &body.uuid).await?,
+    );
+    if !valid
+        || units == 0
+        || units != body.expected_units
+        || body.expected_price != i64::from(units) * ECONOMY_REPAIR_PRICE
+    {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
+    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM economy_tasks WHERE uuid=$1 AND kind='repair' AND status='pending')").bind(&body.uuid).fetch_one(&mut *tx).await.map_err(market_db)? {return Err(StatusCode::CONFLICT);}
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+    coin_reason(&mut tx, "economy_service", &body.id).await?;
+    let balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1 AND coins>=$2+$3 RETURNING coins",
+    )
+    .bind(&body.uuid)
+    .bind(body.expected_price)
+    .bind(ECONOMY_SERVICE_RESERVE)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    if balance.is_none() {
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+    sqlx::query("INSERT INTO economy_tasks(id,uuid,kind,slot,fingerprint,item_key,damage,max_damage,repair_units,price,payload_hash) VALUES($1,$2,'repair',$3,$4,$5,$6,$7,$8,$9,$10)")
+        .bind(&body.id).bind(&body.uuid).bind(body.slot).bind(&body.fingerprint).bind(&body.key).bind(body.damage).bind(body.max_damage).bind(units).bind(body.expected_price).bind(hash).execute(&mut *tx).await.map_err(market_db)?;
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(
+        serde_json::json!({"id":body.id,"status":"pending","price":body.expected_price}),
+    ))
+}
+async fn unavailable_private_block_travel(headers: HeaderMap) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    // The private-block system is not implemented. Never debit for a missing destination.
+    Err(StatusCode::SERVICE_UNAVAILABLE)
+}
+async fn sync_economy_tasks(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    let rows=sqlx::query("SELECT * FROM (SELECT DISTINCT ON(uuid) * FROM economy_tasks WHERE status='pending' ORDER BY uuid,sequence) t ORDER BY last_checked_at NULLS FIRST,sequence LIMIT 25")
+        .fetch_all(&mut *tx).await.map_err(market_db)?;
+    let mut tasks = Vec::new();
+    for r in rows {
+        let id: String = r.get("id");
+        sqlx::query("UPDATE economy_tasks SET last_checked_at=now() WHERE id=$1")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(market_db)?;
+        tasks.push(serde_json::json!({"id":id,"uuid":r.get::<String,_>("uuid"),"kind":r.get::<String,_>("kind"),"iron":r.get::<i32,_>("iron"),"bread":r.get::<i32,_>("bread"),"xp":r.get::<i32,_>("xp"),"slot":r.get::<Option<i32>,_>("slot"),"fingerprint":r.get::<Option<String>,_>("fingerprint"),"key":r.get::<Option<String>,_>("item_key"),"damage":r.get::<Option<i32>,_>("damage"),"max_damage":r.get::<Option<i32>,_>("max_damage"),"units":r.get::<i32,_>("repair_units")}));
+    }
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(serde_json::Value::Array(tasks)))
+}
+#[derive(serde::Deserialize)]
+struct EconomyTaskReport {
+    id: String,
+    uuid: String,
+    status: String,
+}
+async fn report_economy_task(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<EconomyTaskReport>,
+) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.id)
+        || !is_uuid(&body.uuid)
+        || !matches!(body.status.as_str(), "done" | "conflict")
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    let row = sqlx::query(
+        "SELECT kind,status,price FROM economy_tasks WHERE id=$1 AND uuid=$2 FOR UPDATE",
+    )
+    .bind(&body.id)
+    .bind(&body.uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    let status: String = row.get("status");
+    if status != "pending" {
+        return if status == body.status {
+            Ok(StatusCode::OK)
+        } else {
+            Err(StatusCode::CONFLICT)
+        };
+    }
+    if body.status == "conflict" {
+        if row.get::<String, _>("kind") != "repair" {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        coin_reason(&mut tx, "economy_service_refund", &body.id).await?;
+        credit_coins(&mut tx, &body.uuid, row.get("price")).await?;
+    }
+    sqlx::query("UPDATE economy_tasks SET status=$2 WHERE id=$1")
+        .bind(&body.id)
+        .bind(&body.status)
+        .execute(&mut *tx)
+        .await
+        .map_err(market_db)?;
+    tx.commit().await.map_err(market_db)?;
+    Ok(StatusCode::OK)
+}
 // --- Player skins ----------------------------------------------------------
 
 const MAX_SKIN_BYTES: usize = 256 * 1024;
@@ -3593,7 +4709,6 @@ async fn report_player_skin(State(pool): State<sqlx::PgPool>, headers: HeaderMap
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
 }
-
 
 #[cfg(test)]
 mod test {
@@ -5889,9 +7004,9 @@ mod test {
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
         assert_eq!(balance_status, StatusCode::OK);
         assert_eq!(cache.unwrap(), "no-store");
-        assert_eq!(&bytes[..], b"7");
+        assert_eq!(&bytes[..], b"0");
         assert_eq!(&zero[..], b"0");
-        assert_eq!(stored, (7, 7));
+        assert_eq!(stored, (0, 7));
         Ok(())
     }
 
@@ -5972,8 +7087,8 @@ mod test {
         assert_eq!(body["summary"]["distance_cm"], 20_000);
         assert_eq!(body["summary"]["logins"], 2);
         assert_eq!(body["summary"]["damage_dealt"], 400);
-        assert_eq!(body["summary"]["coins"], 6);
-        assert_eq!(accounts[0]["coins"], 6);
+        assert_eq!(body["summary"]["coins"], 0);
+        assert_eq!(accounts[0]["coins"], 0);
         Ok(())
     }
 
@@ -6017,7 +7132,7 @@ mod test {
         assert_eq!(view["accounts"][0]["stats"]["play_seconds"], 120);
         assert_eq!(view["accounts"][0]["stats"]["mobs_killed"], 0);
         // Coins still accrue from the block breaks the old jar did report.
-        assert_eq!(stored, (4, 0));
+        assert_eq!(stored, (0, 0));
         Ok(())
     }
 
@@ -6184,9 +7299,9 @@ mod test {
         assert!(after["accounts"].as_array().cloned().unwrap_or_default().is_empty());
         assert_eq!(restored["accounts"].as_array().map(Vec::len), Some(1));
         assert_eq!(restored["accounts"][0]["stats"]["play_seconds"], 600);
-        assert_eq!(before["accounts"][0]["coins"], 3);
+        assert_eq!(before["accounts"][0]["coins"], 0);
         assert_eq!(after["summary"]["coins"], 0);
-        assert_eq!(restored["accounts"][0]["coins"], 3);
+        assert_eq!(restored["accounts"][0]["coins"], 0);
         Ok(())
     }
     fn skin_test_png() -> Vec<u8> {
@@ -6553,7 +7668,7 @@ mod test {
         Ok(snapshot)
     }
     fn market_input(quantity: i32) -> serde_json::Value {
-        serde_json::json!({"slot":0,"fingerprint":"a".repeat(64),"quantity":quantity,"unit_price":10,"lot_price":15})
+        serde_json::json!({"slot":0,"fingerprint":"a".repeat(64),"quantity":quantity,"unit_price":10,"lot_price":15,"expected_commission_bps":200})
     }
     #[tokio::test]
     async fn marketplace_rotates_blocked_players_without_skipping_their_fifo() -> TestResult {
@@ -6674,7 +7789,7 @@ mod test {
             let balance: i64=sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid=$1").bind(&buyer).fetch_one(&pool).await?;
             market_eq!(balance,80);
             let balance: i64=sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid=$1").bind(&seller).fetch_one(&pool).await?;
-            market_eq!(balance,20);
+            market_eq!(balance,19);
             let quantity: i64=sqlx::query_scalar("SELECT sum(quantity)::bigint FROM market_tasks WHERE uuid=$1 AND kind='deliver'").bind(&buyer).fetch_one(&pool).await?;
             market_eq!(quantity,2);
             buy["quantity"]=serde_json::json!(3);
@@ -6842,11 +7957,12 @@ mod test {
         let uuid = test_uuid(&email);
         let code = start_code(pool, &cookie).await?;
         claim(pool, &code, &uuid, "Miner").await?;
-        report_stats(
-            pool,
-            Some(&test_service_token()),
-            vec![stats_player_with(&uuid, "Miner", 300, 0, coins, serde_json::json!({}))]
-        ).await?;
+        // Explicit administrative fixture funding; gameplay statistics mint nothing.
+        sqlx::query("INSERT INTO player_stats(uuid,username,coins) VALUES($1,'Miner',$2)")
+            .bind(&uuid)
+            .bind(coins)
+            .execute(pool)
+            .await?;
         Ok((email, cookie, uuid))
     }
 
@@ -7524,4 +8640,3106 @@ mod test {
         Ok(())
     }
 
+    #[test]
+    fn economy_fees_cannot_be_avoided_by_splitting_sales() {
+        for bps in [0, 25, 100, 200, 500] {
+            let mut gross = 0;
+            let mut paid = 0;
+            for amount in [1, 1, 2, 3, 17, 100, 230, 999] {
+                let fee = market_commission(gross, amount, bps);
+                assert!((0..=amount).contains(&fee));
+                gross += amount;
+                paid += fee;
+                assert_eq!(paid, market_commission(0, gross, bps));
+            }
+        }
+        assert_eq!(market_commission(0, 10_000, 500), 500);
+        assert_eq!(market_commission(0, 10_000, 0), 0);
+    }
+
+    #[test]
+    fn economy_progression_does_not_reset_when_coins_are_spent() {
+        assert_eq!(contract_terms(0, 2), (10, 250));
+        assert!(contract_terms(100_000, 0).0 > contract_terms(0, 0).0);
+        assert!(contract_terms(200_000, 0).0 > contract_terms(100_000, 0).0);
+        assert_eq!(contract_terms(10_000, -2).1, 300);
+        assert_eq!(contract_terms(10_000, 2).1, 200);
+        assert_eq!(contract_terms(i64::MAX, 2).0, 2000);
+    }
+
+    #[test]
+    fn economy_game_variants_publish_the_actual_probabilities_and_keep_a_margin() {
+        for level in -2..=2 {
+            assert!((9000..9500).contains(&chest_rtp_at(level)));
+            assert_eq!(chest_diamond_rolls(level), (600 - level * 33) as u64);
+            for preset in &MINES_PRESETS {
+                let safe = mines_safe_cells(preset.mines);
+                let (iron, gold, _) = mines_ores(preset.mines);
+                let adjustment =
+                    -(level as i128) * 10 * (preset.boost_gold - preset.boost_iron) as i128;
+                let sum = (iron as i128 * preset.boost_iron as i128
+                    + gold as i128 * preset.boost_gold as i128
+                    + preset.boost_diamond as i128)
+                    * 100
+                    + adjustment;
+                let mut survival = 1_000_000_000_000i128;
+                let mut best = 0;
+                for k in 1..=safe {
+                    survival = survival * (safe - k + 1) as i128 / (26 - k) as i128;
+                    if k >= 2 {
+                        let expected =
+                            survival * (100 * safe as i128 * 100 + k as i128 * sum) * 10000
+                                / (1_000_000_000_000i128 * 100 * safe as i128 * 100);
+                        best = best.max(expected);
+                        assert!(expected < 10000);
+                        if k == 2 {
+                            assert!((expected - mines_rtp_at(preset, level) as i128).abs() <= 1);
+                        }
+                    }
+                }
+                assert!((best - mines_rtp_at(preset, level) as i128).abs() <= 1);
+                for _ in 0..10 {
+                    let state = new_mines_state_at(preset, level).unwrap();
+                    assert_eq!(state.board.len(), 25);
+                    assert_eq!(
+                        state.board.iter().filter(|c| c.as_str() == "tnt").count(),
+                        preset.mines
+                    );
+                    assert_eq!(
+                        state
+                            .board
+                            .iter()
+                            .filter(|c| c.as_str() == "diamond")
+                            .count(),
+                        1
+                    );
+                    assert_eq!(state.economy_level, level);
+                }
+            }
+        }
+        assert_eq!(chest_rtp_at(0), chest_rtp_x10000());
+    }
+
+    #[tokio::test]
+    async fn economy_grants_and_contract_reports_are_atomic_and_idempotent() -> TestResult {
+        let pool = connect().await?;
+        let uuid = test_uuid(&random_ip());
+        let token = test_service_token();
+        let ip = random_ip();
+        let identity = serde_json::json!({"uuid":uuid,"username":"Hunter"});
+        let missing = post_internal(
+            &pool,
+            "/internal/economy/session",
+            None,
+            identity.clone(),
+            &ip,
+        )
+        .await?;
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        let (a, b) = tokio::join!(
+            post_internal(
+                &pool,
+                "/internal/economy/session",
+                Some(&token),
+                identity.clone(),
+                &ip
+            ),
+            post_internal(
+                &pool,
+                "/internal/economy/session",
+                Some(&token),
+                identity.clone(),
+                &ip
+            )
+        );
+        assert_eq!(a?.status(), StatusCode::OK);
+        assert_eq!(b?.status(), StatusCode::OK);
+        assert_eq!(coins_of(&pool, &uuid).await?, 100);
+        let mut accept = identity.clone();
+        accept["start"] = serde_json::json!(true);
+        let (a, b) = tokio::join!(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept.clone(),
+                &ip
+            ),
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept.clone(),
+                &ip
+            )
+        );
+        let a = body_json(a?).await?;
+        let b = body_json(b?).await?;
+        assert_eq!(a, b);
+        assert_eq!(a["reward"], 0);
+        assert_eq!(a["xp"], 0);assert_eq!(a["kind"],"starter_iron");
+        let day: String = sqlx::query_scalar("SELECT current_date::text")
+            .fetch_one(&pool)
+            .await?;
+        let id = test_uuid(&random_ip());
+        let report = serde_json::json!({"id":id,"uuid":uuid,"username":"Hunter","days":[{"day":day,"active_seconds":300,"kills":0,"iron_mined":10,"iron_smelted":10,"contract_id":a["id"]}]});
+        let (one, two) = tokio::join!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                report.clone(),
+                &ip
+            ),
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                report.clone(),
+                &ip
+            )
+        );
+        assert_eq!(one?.status(), StatusCode::OK);
+        assert_eq!(two?.status(), StatusCode::OK);
+        assert_eq!(coins_of(&pool, &uuid).await?, 100);
+        let measured: i32 =
+            sqlx::query_scalar("SELECT active_seconds FROM economy_activity WHERE uuid=$1")
+                .bind(&uuid)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(measured, 300);
+        let mut changed = report.clone();
+        changed["days"][0]["kills"] = serde_json::json!(1);
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                changed,
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::CONFLICT
+        );
+        let mut second = report.clone();
+        second["id"] = serde_json::json!(test_uuid(&random_ip()));
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                second.clone(),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            coins_of(&pool, &uuid).await?,
+            100,
+            "new report cannot pay a finished contract again"
+        );
+        second["id"] = serde_json::json!(test_uuid(&random_ip()));
+        second["days"][0]["day"] = serde_json::json!("2999-01-01");
+        assert_eq!(
+            post_internal(&pool, "/internal/economy/report", Some(&token), second, &ip)
+                .await?
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let ledger: (i64, i64) = sqlx::query_as(
+            "SELECT sum(delta)::bigint,count(*)::bigint FROM coin_ledger WHERE uuid=$1",
+        )
+        .bind(&uuid)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(ledger, (100, 1));
+        assert!(
+            sqlx::query("UPDATE coin_ledger SET reason='changed' WHERE uuid=$1")
+                .bind(&uuid)
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        // Even after unlink/account deletion the grant identity and audit remain.
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/session",
+                Some(&token),
+                identity,
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(coins_of(&pool, &uuid).await?, 100);
+        sqlx::query("UPDATE economy_players SET starter_completed=false WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
+        for _ in 0..3 {
+            let contract = body_json(
+                post_internal(
+                    &pool,
+                    "/internal/economy/contract",
+                    Some(&token),
+                    accept.clone(),
+                    &ip,
+                )
+                .await?,
+            )
+            .await?;
+            sqlx::query("UPDATE economy_contracts SET status='expired' WHERE id=$1")
+                .bind(contract["id"].as_str().unwrap())
+                .execute(&pool)
+                .await?;
+        }
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept,
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        sqlx::query("DELETE FROM economy_tasks WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
+        sqlx::query("DELETE FROM economy_contracts WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM economy_activity WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM economy_players WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        delete_player_stats(&pool, &uuid).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn economy_market_quotes_are_server_calculated_and_rates_are_explicit() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let input = serde_json::json!({"quantity":12,"unit_price":10,"lot_price":90});
+        let no_session = send(
+            &pool,
+            "POST",
+            "/api/marketplace/quote",
+            None,
+            Some(input.clone()),
+        )
+        .await?;
+        assert_eq!(no_session.status(), StatusCode::UNAUTHORIZED);
+        let quote =
+            body_json(post_session(&pool, "/api/marketplace/quote", &cookie, input).await?).await?;
+        assert_eq!(quote["commission_bps"], 200);
+        assert_eq!(
+            quote["unit"],
+            serde_json::json!({"gross":120,"fee":3,"proceeds":117})
+        );
+        assert_eq!(
+            quote["lot"],
+            serde_json::json!({"gross":90,"fee":2,"proceeds":88})
+        );
+        delete_user(&pool, &email).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn economy_policy_uses_qualified_activity_held_stakes_and_slow_daily_adjustments()
+    -> TestResult {
+        let pool = connect().await?;
+        let (email, _cookie) = fresh_user(&pool).await?;
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email=$1")
+            .bind(&email)
+            .fetch_one(&pool)
+            .await?;
+        let uuid = test_uuid(&random_ip());
+        let idle = test_uuid(&random_ip());
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE economy_policy SET level=0,commission_bps=200,active_ema=0,money_ema=0,signal=0,signal_days=0,reviewed_day=NULL WHERE singleton").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM economy_reviews WHERE day=current_date")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO player_stats(uuid,username,coins) VALUES($1,'ActiveHunter',100000),($2,'IdleHunter',1000000)").bind(&uuid).bind(&idle).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO economy_activity(uuid,day,active_seconds) SELECT $1,current_date-d,2400 FROM generate_series(0,2) d").bind(&uuid).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO economy_activity(uuid,day,active_seconds) SELECT $1,current_date-d,0 FROM generate_series(0,2) d").bind(&idle).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO minigame_rounds(id,user_id,uuid,game,bet,state) VALUES($1::uuid,$2,$3,'minesweeper',5000,'{}')")
+            .bind(new_round_id().unwrap()).bind(user_id).bind(&uuid).execute(&mut *tx).await?;
+        review_economy_tx(&mut tx)
+            .await
+            .map_err(|s| format!("review: {s}"))?;
+        let measured:(i64,i64,i64,i32,i32)=sqlx::query_as("SELECT active_players,active_money,target,level,commission_bps FROM economy_reviews WHERE day=current_date").fetch_one(&mut *tx).await?;
+        assert_eq!(measured, (1, 105000, 70000, 0, 200));
+        review_economy_tx(&mut tx)
+            .await
+            .map_err(|s| format!("duplicate review: {s}"))?;
+        assert_eq!(
+            economy_policy(&mut *tx).await.unwrap().level,
+            0,
+            "same day must not count twice"
+        );
+        sqlx::query("UPDATE economy_policy SET reviewed_day=current_date-1 WHERE singleton")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM economy_reviews WHERE day=current_date")
+            .execute(&mut *tx)
+            .await?;
+        review_economy_tx(&mut tx).await.unwrap();
+        let policy = economy_policy(&mut *tx).await.unwrap();
+        assert_eq!(policy.level, 1);
+        assert_eq!(policy.commission_bps, 225);
+        sqlx::query("UPDATE player_stats SET coins=0 WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE economy_policy SET reviewed_day=current_date-1 WHERE singleton")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM economy_reviews WHERE day=current_date")
+            .execute(&mut *tx)
+            .await?;
+        review_economy_tx(&mut tx).await.unwrap();
+        let smoothed: i64 =
+            sqlx::query_scalar("SELECT money_ema FROM economy_policy WHERE singleton")
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            smoothed, 80000,
+            "one empty wallet must not instantly erase the measured supply"
+        );
+        // Lazy round settlement must not keep an expired stake in circulation.
+        sqlx::query(
+            "UPDATE minigame_rounds SET created_at=now()-interval '16 minutes' WHERE uuid=$1",
+        )
+        .bind(&uuid)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE economy_policy SET reviewed_day=current_date-1 WHERE singleton")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM economy_reviews WHERE day=current_date")
+            .execute(&mut *tx)
+            .await?;
+        review_economy_tx(&mut tx).await.unwrap();
+        let measured_money: i64 =
+            sqlx::query_scalar("SELECT active_money FROM economy_reviews WHERE day=current_date")
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            measured_money, 0,
+            "an expired field is no longer committed money"
+        );
+        tx.rollback().await?;
+        delete_user(&pool, &email).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn economy_rule_quotes_and_paid_rounds_survive_policy_changes() -> TestResult {
+        // A private schema lets this test change global policy while the rest of
+        // the suite continues to exercise the neutral rules concurrently.
+        let admin = connect().await?;
+        let schema = format!("economy_{}", random_id().to_lowercase());
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin)
+            .await?;
+        // The schema identifier contains only this fixed prefix and generated ASCII alphanumerics.
+        assert!(
+            schema
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        );
+        let search_path = schema.clone();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .after_connect(move |connection, _| {
+                let command = search_path.clone();
+                Box::pin(async move {
+                    sqlx::query("SELECT set_config('search_path',$1,false)")
+                        .bind(command)
+                        .execute(connection)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&std::env::var("DATABASE_URL")?)
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await?
+            .run(&pool)
+            .await?;
+        let outcome:TestResult=async {
+            let (_email,cookie,uuid)=paid_player(&pool,1000).await?;
+            sqlx::query("UPDATE economy_policy SET level=2 WHERE singleton").execute(&pool).await?;
+            let before=coins_of(&pool,&uuid).await?;
+            let stale=post_session(&pool,"/api/minigames/mines/start",&cookie,serde_json::json!({"uuid":uuid,"bet":100,"mines":8,"economy_level":0})).await?;
+            assert_eq!(stale.status(),StatusCode::PRECONDITION_FAILED);assert_eq!(coins_of(&pool,&uuid).await?,before);
+            let round=body_json(post_session(&pool,"/api/minigames/mines/start",&cookie,serde_json::json!({"uuid":uuid,"bet":100,"mines":8,"economy_level":2})).await?).await?;
+            assert_eq!(round["economy_level"],2);assert_eq!(round["rtp_x10000"],mines_rtp_at(&MINES_PRESETS[0],2));
+            let id=round["round_id"].as_str().ok_or("round missing")?;
+            let board=mines_board(&pool,id).await?;
+            sqlx::query("UPDATE economy_policy SET level=-2 WHERE singleton").execute(&pool).await?;
+            let restored=body_json(get_with_cookie(&pool,"/api/minigames/state",Some(&cookie)).await?).await?;
+            assert_eq!(restored["active"]["economy_level"],2);
+            assert_eq!(mines_board(&pool,id).await?,board);
+            let safe:Vec<usize>=board.iter().enumerate().filter(|(_,c)|c.as_str()!="tnt").take(2).map(|(i,_)|i).collect();
+            for cell in safe {assert_eq!(post_session(&pool,"/api/minigames/mines/reveal",&cookie,serde_json::json!({"round_id":id,"cell":cell})).await?.status(),StatusCode::OK);}
+            let settled=body_json(post_session(&pool,"/api/minigames/mines/cashout",&cookie,serde_json::json!({"round_id":id})).await?).await?;
+            assert_eq!(settled["economy_level"],2);
+            let client=test_uuid(&random_ip());
+            let spin=serde_json::json!({"uuid":uuid,"bet":10,"client_id":client,"economy_level":-2});
+            let paid=body_json(post_session(&pool,"/api/minigames/chest/spin",&cookie,spin.clone()).await?).await?;
+            sqlx::query("UPDATE economy_policy SET level=2 WHERE singleton").execute(&pool).await?;
+            let receipt=body_json(post_session(&pool,"/api/minigames/chest/spin",&cookie,spin).await?).await?;
+            assert_eq!(receipt,paid);assert_eq!(receipt["rtp_x10000"],chest_rtp_at(-2));
+            assert_eq!(receipt["economy_level"],-2);
+            let config=body_json(get_with_cookie(&pool,"/api/minigames/config",None).await?).await?;
+            assert_eq!(config["chest"]["rtp_x10000"],chest_rtp_at(2));
+            // Seller agrees before escrow; changing the global rate cannot alter
+            // the pinned contract, including when it later becomes cheaper.
+            let snapshot=seed_market_inventory(&pool,&uuid).await?;
+            sqlx::query("UPDATE economy_policy SET commission_bps=500 WHERE singleton").execute(&pool).await?;
+            let path=format!("/api/players/{uuid}/inventory/marketplace");
+            assert_eq!(market_request(&pool,&path,Some(&cookie),market_input(1),true).await?,StatusCode::PRECONDITION_FAILED);
+            let mut listing=market_input(1);listing["expected_commission_bps"]=serde_json::json!(500);
+            assert_eq!(market_request(&pool,&path,Some(&cookie),listing,true).await?,StatusCode::ACCEPTED);
+            assert_eq!(market_ack(&pool,&uuid,"done",snapshot["slots"].clone()).await?,StatusCode::OK);
+            let id:String=sqlx::query_scalar("SELECT id FROM market_listings WHERE uuid=$1").bind(&uuid).fetch_one(&pool).await?;
+            sqlx::query("UPDATE economy_policy SET commission_bps=0 WHERE singleton").execute(&pool).await?;
+            let (_buyer_email,buyer_cookie,buyer)=paid_player(&pool,100).await?;
+            let buy=serde_json::json!({"request_id":test_uuid(&random_ip()),"buyer_uuid":buyer,"quantity":1,"pricing":"unit","expected_total":10,"expected_remaining":1});
+            let before=coins_of(&pool,&uuid).await?;
+            assert_eq!(market_request(&pool,&format!("/api/marketplace/{id}/buy"),Some(&buyer_cookie),buy.clone(),true).await?,StatusCode::ACCEPTED);
+            assert_eq!(market_request(&pool,&format!("/api/marketplace/{id}/buy"),Some(&buyer_cookie),buy,true).await?,StatusCode::ACCEPTED);
+            assert_eq!(coins_of(&pool,&uuid).await?,before+9);
+            let fee:i64=sqlx::query_scalar("SELECT -sum(delta)::bigint FROM coin_ledger WHERE uuid=$1 AND reason='market_commission'").bind(&uuid).fetch_one(&pool).await?;
+            assert_eq!(fee,1);
+            Ok(())
+        }.await;
+        pool.close().await;
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin)
+            .await?;
+        outcome
+    }
+    async fn isolated_budget_pool()
+    -> Result<(sqlx::PgPool, sqlx::PgPool, String), Box<dyn std::error::Error>> {
+        isolated_budget_pool_through(i64::MAX).await
+    }
+    async fn isolated_budget_pool_through(
+        version: i64,
+    ) -> Result<(sqlx::PgPool, sqlx::PgPool, String), Box<dyn std::error::Error>> {
+        let admin = connect().await?;
+        let schema = format!("budget_{}", random_id().to_lowercase());
+        assert!(
+            schema
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        );
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin)
+            .await?;
+        let search = schema.clone();
+        let pool=sqlx::postgres::PgPoolOptions::new().after_connect(move|c,_|{
+            let path=search.clone();Box::pin(async move {
+                sqlx::query("SELECT set_config('search_path',$1,false),set_config('TimeZone','UTC',false)").bind(path).execute(c).await?;Ok(())
+            })
+        }).connect(&std::env::var("DATABASE_URL")?).await?;
+        let mut migrator =
+            sqlx::migrate::Migrator::new(std::path::Path::new("./migrations")).await?;
+        migrator.migrations = migrator
+            .migrations
+            .iter()
+            .filter(|m| m.version <= version)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        migrator.run(&pool).await?;
+        Ok((admin, pool, schema))
+    }
+    async fn drop_budget_pool(
+        admin: sqlx::PgPool,
+        pool: sqlx::PgPool,
+        schema: String,
+    ) -> TestResult {
+        pool.close().await;
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin)
+            .await?;
+        Ok(())
+    }
+    async fn budget_identity(pool: &sqlx::PgPool, uuid: &str) -> TestResult {
+        let response = post_internal(
+            pool,
+            "/internal/economy/session",
+            Some(&test_service_token()),
+            serde_json::json!({"uuid":uuid,"username":"BudgetHunter"}),
+            &random_ip(),
+        )
+        .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        sqlx::query("UPDATE economy_players SET starter_completed=true WHERE uuid=$1")
+            .bind(uuid)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+    async fn budget_contract(
+        pool: &sqlx::PgPool,
+        uuid: &str,
+        start: bool,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let response=post_internal(pool,"/internal/economy/contract",Some(&test_service_token()),serde_json::json!({"uuid":uuid,"username":"BudgetHunter","start":start,"needs_starter":true}),&random_ip()).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        body_json(response).await
+    }
+    async fn budget_complete(
+        pool: &sqlx::PgPool,
+        uuid: &str,
+        contract: &serde_json::Value,
+        id: &str,
+    ) -> Result<StatusCode, Box<dyn std::error::Error>> {
+        let day: String = sqlx::query_scalar("SELECT current_date::text")
+            .fetch_one(pool)
+            .await?;
+        Ok(post_internal(pool,"/internal/economy/report",Some(&test_service_token()),serde_json::json!({"id":id,"uuid":uuid,"username":"BudgetHunter","days":[{"day":day,"active_seconds":300,"kills":contract["target"],"iron_mined":contract["target"],"iron_smelted":contract["target"],"contract_id":contract["id"]}]}),&random_ip()).await?.status())
+    }
+    #[tokio::test]
+    async fn quest_upgrade_preserves_accepted_hunts_rewards_and_immutable_old_receipts()
+    -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool_through(17).await?;
+        let uuid = test_uuid(&random_ip());
+        let id = new_round_id().unwrap();
+        let token = test_service_token();
+        let ip = random_ip();
+        sqlx::query("INSERT INTO economy_players(uuid) VALUES($1)")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO player_stats(uuid,username,coins) VALUES($1,'BudgetHunter',100)")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO economy_contracts(id,uuid,target,reward,policy_level,reward_iron,reward_bread,reward_xp) VALUES($1,$2,10,250,0,3,16,5)").bind(&id).bind(&uuid).execute(&pool).await?;
+        let day: String = sqlx::query_scalar("SELECT current_date::text")
+            .fetch_one(&pool)
+            .await?;
+        let saved = serde_json::json!({"id":new_round_id().unwrap(),"uuid":uuid,"username":"BudgetHunter","days":[{"day":day,"active_seconds":0,"kills":10,"contract_id":id}]});
+        let canonical =
+            serde_json::to_string(&serde_json::from_value::<EconomyReport>(saved.clone())?)
+                .unwrap();
+        sqlx::query("INSERT INTO economy_reports(id,payload_hash) VALUES($1,$2)")
+            .bind(saved["id"].as_str().unwrap())
+            .bind(hash_token(&canonical))
+            .execute(&pool)
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await?
+            .run(&pool)
+            .await?;
+        let old = budget_contract(&pool, &uuid, false).await?;
+        assert_eq!(old["kind"], "hunting");
+        assert_eq!(old["reward"], 250);
+        assert_eq!(old["iron"], 3);
+        assert_eq!(old["bread"], 16);
+        assert_eq!(old["xp"], 5);
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                saved.clone(),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            coins_of(&pool, &uuid).await?,
+            100,
+            "old receipt recovery cannot reapply progress or coins"
+        );
+        let mut fresh = saved;
+        fresh["id"] = serde_json::json!(new_round_id().unwrap());
+        assert_eq!(
+            post_internal(&pool, "/internal/economy/report", Some(&token), fresh, &ip)
+                .await?
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(coins_of(&pool, &uuid).await?, 350);
+        let tasks = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/tasks/sync",
+                Some(&token),
+                serde_json::json!({}),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(tasks[0]["iron"], 3);
+        assert_eq!(tasks[0]["bread"], 16);
+        assert_eq!(tasks[0]["xp"], 5);
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT starter_completed FROM economy_players WHERE uuid=$1"
+            )
+            .bind(&uuid)
+            .fetch_one(&pool)
+            .await?
+        );
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[test]
+    fn quest_reports_preserve_legacy_receipt_hashes_and_scale_objectives() {
+        let raw = r#"{"id":"report","uuid":"player","username":"Hunter","days":[{"day":"2026-10-20","active_seconds":300,"kills":10,"contract_id":null}]}"#;
+        let parsed: EconomyReport = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            raw,
+            "new zero counters must not invalidate a saved pre-upgrade receipt"
+        );
+        assert_eq!(quest_target("starter_iron", 2000), 10);
+        assert_eq!(quest_target("fishing", 10), 5);
+        assert_eq!(quest_target("farming", 10), 16);
+        assert_eq!(quest_target("fishing", 2000), 1000);
+        assert_eq!(quest_target("farming", 2000), 3200);
+    }
+    #[tokio::test]
+    async fn quest_objectives_are_isolated_starter_requires_both_and_rewards_are_coin_only()
+    -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let uuid = test_uuid(&random_ip());
+        budget_identity(&pool, &uuid).await?;
+        sqlx::query("UPDATE economy_players SET starter_completed=false WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE economy_budgets SET budget=1000,eligible=1 WHERE day=current_date")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO economy_allowances(day,uuid,allowance,newcomer) VALUES(current_date,$1,1000,true)").bind(&uuid).execute(&pool).await?;
+        let token = test_service_token();
+        let ip = random_ip();
+        let day: String = sqlx::query_scalar("SELECT current_date::text")
+            .fetch_one(&pool)
+            .await?;
+        let accept = |kind: &str| serde_json::json!({"uuid":uuid,"username":"BudgetHunter","start":true,"kind":kind});
+        let send = |id: &str, kills: i32, fish: i32, crops: i32, mined: i32, smelted: i32| serde_json::json!({"id":test_uuid(&random_ip()),"uuid":uuid,"username":"BudgetHunter","days":[{"day":day,"active_seconds":0,"kills":kills,"fish_caught":fish,"crops_harvested":crops,"iron_mined":mined,"iron_smelted":smelted,"contract_id":id}]});
+        let starter = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept("fishing"),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(starter["kind"], "starter_iron");
+        assert_eq!(starter["target"], 10);
+        assert_eq!(starter["iron"], 0);
+        assert_eq!(starter["bread"], 0);
+        assert_eq!(starter["xp"], 0);
+        let id = starter["id"].as_str().unwrap();
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                send(id, 100, 100, 100, 0, 10),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        let partial = budget_contract(&pool, &uuid, false).await?;
+        assert_eq!(partial["progress"], 0);
+        assert_eq!(partial["secondary_progress"], 10);
+        assert_eq!(partial["status"], "active");
+        assert_eq!(coins_of(&pool, &uuid).await?, 100);
+        let report = send(id, 0, 0, 0, 10, 0);
+        let (a, b) = tokio::join!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                report.clone(),
+                &ip
+            ),
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                report.clone(),
+                &ip
+            )
+        );
+        assert_eq!(a?.status(), StatusCode::OK);
+        assert_eq!(b?.status(), StatusCode::OK);
+        assert_eq!(coins_of(&pool, &uuid).await?, 350);
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT starter_completed FROM economy_players WHERE uuid=$1"
+            )
+            .bind(&uuid)
+            .fetch_one(&pool)
+            .await?
+        );
+        for (kind, target) in [("fishing", 5), ("farming", 16), ("hunting", 10)] {
+            let contract = body_json(
+                post_internal(
+                    &pool,
+                    "/internal/economy/contract",
+                    Some(&token),
+                    accept(kind),
+                    &ip,
+                )
+                .await?,
+            )
+            .await?;
+            assert_eq!(contract["kind"], kind);
+            assert_eq!(contract["target"], target);
+            let resumed = body_json(
+                post_internal(
+                    &pool,
+                    "/internal/economy/contract",
+                    Some(&token),
+                    accept("farming"),
+                    &ip,
+                )
+                .await?,
+            )
+            .await?;
+            assert_eq!(
+                contract, resumed,
+                "changing selection cannot replace an accepted quest"
+            );
+            let id = contract["id"].as_str().unwrap();
+            let wrong = match kind {
+                "fishing" => send(id, 100, 0, 100, 100, 100),
+                "farming" => send(id, 100, 100, 0, 100, 100),
+                _ => send(id, 0, 100, 100, 100, 100),
+            };
+            assert_eq!(
+                post_internal(&pool, "/internal/economy/report", Some(&token), wrong, &ip)
+                    .await?
+                    .status(),
+                StatusCode::OK
+            );
+            assert_eq!(budget_contract(&pool, &uuid, false).await?["progress"], 0);
+            let correct = match kind {
+                "fishing" => send(id, 0, target, 0, 0, 0),
+                "farming" => send(id, 0, 0, target, 0, 0),
+                _ => send(id, target, 0, 0, 0, 0),
+            };
+            assert_eq!(
+                post_internal(
+                    &pool,
+                    "/internal/economy/report",
+                    Some(&token),
+                    correct,
+                    &ip
+                )
+                .await?
+                .status(),
+                StatusCode::OK
+            );
+            assert_eq!(
+                budget_contract(&pool, &uuid, false).await?["status"],
+                "paid"
+            );
+        }
+        assert_eq!(coins_of(&pool, &uuid).await?, 1100);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM economy_tasks")
+                .fetch_one(&pool)
+                .await?,
+            0,
+            "new quests issue no material/XP tasks"
+        );
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept("hunting"),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept("unknown"),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mut invalid = send(id, 0, 0, 0, 0, 0);
+        invalid["days"][0]["iron_mined"] = serde_json::json!(-1);
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                invalid,
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[tokio::test]
+    async fn economy_budget_reserves_once_pays_promises_and_releases_expired_funding() -> TestResult
+    {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let a = test_uuid(&random_ip());
+        let b = test_uuid(&random_ip());
+        budget_identity(&pool, &a).await?;
+        budget_identity(&pool, &b).await?;
+        sqlx::query("UPDATE economy_budgets SET budget=500,eligible=2 WHERE day=current_date")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO economy_allowances(day,uuid,allowance,newcomer) VALUES(current_date,$1,250,true),(current_date,$2,250,true)").bind(&a).bind(&b).execute(&pool).await?;
+        let (one, two) = tokio::join!(
+            budget_contract(&pool, &a, true),
+            budget_contract(&pool, &a, true)
+        );
+        let one = one?;
+        assert_eq!(one, two?);
+        assert_eq!(
+            (
+                one["reward"].as_i64(),
+                one["iron"].as_i64(),
+                one["bread"].as_i64()
+            ),
+            (Some(250), Some(0), Some(0))
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT reserved FROM economy_budgets WHERE day=current_date"
+            )
+            .fetch_one(&pool)
+            .await?,
+            250
+        );
+        // A subsequent level or funding change cannot rewrite accepted terms.
+        sqlx::query("UPDATE economy_policy SET level=2,issuance_budget=0 WHERE singleton")
+            .execute(&pool)
+            .await?;
+        assert_eq!(budget_contract(&pool, &a, true).await?, one);
+        let receipt = test_uuid(&random_ip());
+        let (p, q) = tokio::join!(
+            budget_complete(&pool, &a, &one, &receipt),
+            budget_complete(&pool, &a, &one, &receipt)
+        );
+        assert_eq!(p?, StatusCode::OK);
+        assert_eq!(q?, StatusCode::OK);
+        assert_eq!(coins_of(&pool, &a).await?, 350);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM economy_tasks WHERE uuid=$1")
+                .bind(&a)
+                .fetch_one(&pool)
+                .await?,
+            0
+        );
+        let expiring = budget_contract(&pool, &b, true).await?;
+        sqlx::query(
+            "UPDATE economy_contracts SET expires_at=now()-interval '1 minute' WHERE id=$1",
+        )
+        .bind(expiring["id"].as_str().unwrap())
+        .execute(&pool)
+        .await?;
+        assert_eq!(
+            budget_contract(&pool, &b, false).await?["status"],
+            "expired"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT reserved FROM economy_budgets WHERE day=current_date"
+            )
+            .fetch_one(&pool)
+            .await?,
+            0
+        );
+        let next = budget_contract(&pool, &b, true).await?;
+        assert_eq!(next["reward"], 250);
+        // Offline report retry can complete accepted work before explicit expiry;
+        // the allocation remains reserved even across a UTC boundary.
+        assert_eq!(
+            budget_complete(&pool, &b, &next, &test_uuid(&random_ip())).await?,
+            StatusCode::OK
+        );
+        let book: (i64, i64) =
+            sqlx::query_as("SELECT reserved,issued FROM economy_budgets WHERE day=current_date")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(book, (0, 500));
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&test_service_token()),
+                serde_json::json!({"uuid":a,"username":"BudgetHunter","start":true}),
+                &random_ip()
+            )
+            .await?
+            .status(),
+            StatusCode::PAYMENT_REQUIRED
+        );
+        // A legacy promise has no allocation and keeps its original positive reward.
+        let legacy = test_uuid(&random_ip());
+        budget_identity(&pool, &legacy).await?;
+        let id = new_round_id().unwrap();
+        sqlx::query("INSERT INTO economy_contracts(id,uuid,target,reward,policy_level) VALUES($1,$2,2,300,0)").bind(&id).bind(&legacy).execute(&pool).await?;
+        let old = budget_contract(&pool, &legacy, false).await?;
+        assert_eq!(
+            budget_complete(&pool, &legacy, &old, &test_uuid(&random_ip())).await?,
+            StatusCode::OK
+        );
+        assert_eq!(coins_of(&pool, &legacy).await?, 400);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT issued FROM economy_budgets WHERE day=current_date"
+            )
+            .fetch_one(&pool)
+            .await?,
+            500
+        );
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[tokio::test]
+    async fn economy_late_report_settles_its_original_day_and_reward_delivery_is_ordered()
+    -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let uuid = test_uuid(&random_ip());
+        budget_identity(&pool, &uuid).await?;
+        sqlx::query("INSERT INTO economy_budgets(day,budget,eligible,previous_grants,burn_ema) VALUES(current_date-1,250,1,0,0)").execute(&pool).await?;
+        sqlx::query("INSERT INTO economy_allowances(day,uuid,allowance,newcomer,reserved) VALUES(current_date-1,$1,250,true,250)").bind(&uuid).execute(&pool).await?;
+        sqlx::query("UPDATE economy_budgets SET reserved=250 WHERE day=current_date-1")
+            .execute(&pool)
+            .await?;
+        let id = new_round_id().unwrap();
+        sqlx::query("INSERT INTO economy_contracts(id,uuid,target,reward,policy_level,budget_day,reward_iron,reward_bread,reward_xp,created_at,expires_at) VALUES($1,$2,10,250,0,current_date-1,3,16,5,now()-interval '24 hours',now()-interval '1 second')").bind(&id).bind(&uuid).execute(&pool).await?;
+        // The persisted outbox is flushed before an explicit query may expire it.
+        assert_eq!(
+            budget_complete(
+                &pool,
+                &uuid,
+                &serde_json::json!({"id":id,"target":10}),
+                &test_uuid(&random_ip())
+            )
+            .await?,
+            StatusCode::OK
+        );
+        let old: (i64, i64) =
+            sqlx::query_as("SELECT reserved,issued FROM economy_budgets WHERE day=current_date-1")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(old, (0, 250));
+        assert_eq!(coins_of(&pool, &uuid).await?, 350);
+        // A second already-promised legacy delivery must remain ordered too.
+        let second_id = new_round_id().unwrap();
+        sqlx::query("INSERT INTO economy_contracts(id,uuid,target,reward,policy_level,reward_iron,reward_xp) VALUES($1,$2,10,0,0,8,5)").bind(&second_id).bind(&uuid).execute(&pool).await?;
+        let second = budget_contract(&pool, &uuid, false).await?;
+        assert_eq!(
+            budget_complete(&pool, &uuid, &second, &test_uuid(&random_ip())).await?,
+            StatusCode::OK
+        );
+        let token = test_service_token();
+        let ip = random_ip();
+        let tasks = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/tasks/sync",
+                Some(&token),
+                serde_json::json!({}),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(tasks.as_array().unwrap().len(), 1);
+        assert_eq!(tasks[0]["id"], id);
+        let mut ack = serde_json::json!({"id":id,"uuid":uuid,"status":"conflict"});
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/tasks/report",
+                Some(&token),
+                ack.clone(),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        ack["status"] = serde_json::json!("done");
+        for _ in 0..2 {
+            assert_eq!(
+                post_internal(
+                    &pool,
+                    "/internal/economy/tasks/report",
+                    Some(&token),
+                    ack.clone(),
+                    &ip
+                )
+                .await?
+                .status(),
+                StatusCode::OK
+            );
+        }
+        let tasks = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/tasks/sync",
+                Some(&token),
+                serde_json::json!({}),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(tasks[0]["id"], second["id"]);
+        assert_eq!(tasks[0]["iron"], 8);
+        assert_eq!(tasks[0]["bread"], 0);
+        assert_eq!(legacy_starter_contract_items(4, true), (0, 0, 5));
+        assert_eq!(legacy_starter_contract_items(10, true), (0, 0, 0));
+        assert_eq!(legacy_starter_contract_items(0, false), (0, 0, 5));
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[tokio::test]
+    async fn economy_budget_freezes_fair_daily_shares_and_counts_commitments() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let a = test_uuid(&random_ip());
+        let b = test_uuid(&random_ip());
+        let arrival = test_uuid(&random_ip());
+        for uuid in [&a, &b] {
+            budget_identity(&pool, uuid).await?;
+            sqlx::query("UPDATE economy_players SET starter_granted_at=now()-interval '2 days' WHERE uuid=$1").bind(uuid).execute(&pool).await?;
+            sqlx::query("INSERT INTO economy_activity(uuid,day,active_seconds) SELECT $1,current_date-d,2400 FROM generate_series(1,3)d").bind(uuid).execute(&pool).await?;
+        }
+        sqlx::query("DELETE FROM economy_budgets WHERE day=current_date")
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM economy_reviews WHERE day=current_date")
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE economy_policy SET reviewed_day=NULL,active_ema=0,money_ema=0,issuance_budget=0,burn_ema=0 WHERE singleton").execute(&pool).await?;
+        review_economy(&pool).await.unwrap();
+        let rows: Vec<i64> =
+            sqlx::query_scalar("SELECT allowance FROM economy_allowances ORDER BY uuid")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(rows, vec![25, 25]);
+        budget_identity(&pool, &arrival).await?;
+        sqlx::query("UPDATE economy_players SET starter_completed=false WHERE uuid=$1")
+            .bind(&arrival)
+            .execute(&pool)
+            .await?;
+        let newcomer = budget_contract(&pool, &arrival, true).await?;
+        assert_eq!(newcomer["reward"], 0);
+        assert_eq!(newcomer["iron"], 0);
+        assert_eq!(newcomer["kind"], "starter_iron");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM economy_allowances")
+                .fetch_one(&pool)
+                .await?,
+            2
+        );
+        let accepted = budget_contract(&pool, &a, true).await?;
+        assert_eq!(accepted["reward"], 25);
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE economy_policy SET reviewed_day=NULL WHERE singleton")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM economy_reviews WHERE day=current_date")
+            .execute(&mut *tx)
+            .await?;
+        review_economy_tx(&mut tx).await.unwrap();
+        let money: i64 =
+            sqlx::query_scalar("SELECT active_money FROM economy_reviews WHERE day=current_date")
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            money, 225,
+            "reserved rewards are committed supply, not an invisible future mint"
+        );
+        tx.rollback().await?;
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[tokio::test]
+    async fn economy_repairs_are_quoted_idempotent_refundable_and_travel_is_unavailable()
+    -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let uuid = test_uuid(&random_ip());
+        budget_identity(&pool, &uuid).await?;
+        sqlx::query("UPDATE player_stats SET coins=2000 WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        let token = test_service_token();
+        let ip = random_ip();
+        let mut body = serde_json::json!({"id":test_uuid(&random_ip()),"uuid":uuid,"username":"BudgetHunter","slot":0,"key":"minecraft:iron_axe","fingerprint":"a".repeat(64),"damage":200,"max_damage":250});
+        let quote = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/repair/quote",
+                Some(&token),
+                body.clone(),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(quote["price"], 30);
+        body["expected_price"] = quote["price"].clone();
+        body["expected_units"] = quote["units"].clone();
+        body["quote_expires"] = quote["quote_expires"].clone();
+        let (a, b) = tokio::join!(
+            post_internal(
+                &pool,
+                "/internal/economy/repair",
+                Some(&token),
+                body.clone(),
+                &ip
+            ),
+            post_internal(
+                &pool,
+                "/internal/economy/repair",
+                Some(&token),
+                body.clone(),
+                &ip
+            )
+        );
+        assert_eq!(a?.status(), StatusCode::OK);
+        assert_eq!(b?.status(), StatusCode::OK);
+        assert_eq!(coins_of(&pool, &uuid).await?, 1970);
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/repair/quote",
+                Some(&token),
+                body.clone(),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let ack = serde_json::json!({"id":body["id"],"uuid":uuid,"status":"conflict"});
+        for _ in 0..2 {
+            assert_eq!(
+                post_internal(
+                    &pool,
+                    "/internal/economy/tasks/report",
+                    Some(&token),
+                    ack.clone(),
+                    &ip
+                )
+                .await?
+                .status(),
+                StatusCode::OK
+            );
+        }
+        assert_eq!(coins_of(&pool, &uuid).await?, 2000);
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/repair",
+                Some(&token),
+                body.clone(),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            coins_of(&pool, &uuid).await?,
+            2000,
+            "recovering a refunded request never charges again"
+        );
+        body["id"] = serde_json::json!(test_uuid(&random_ip()));
+        let quote = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/repair/quote",
+                Some(&token),
+                body.clone(),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        body["quote_expires"] = quote["quote_expires"].clone();
+        body["expected_price"] = serde_json::json!(20);
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/repair",
+                Some(&token),
+                body.clone(),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::PRECONDITION_FAILED
+        );
+        body["expected_price"] = quote["price"].clone();
+        sqlx::query("UPDATE player_stats SET coins=1029 WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/repair",
+                Some(&token),
+                body.clone(),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::PAYMENT_REQUIRED
+        );
+        assert_eq!(coins_of(&pool, &uuid).await?, 1029);
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/travel",
+                Some(&token),
+                serde_json::json!({"uuid":uuid}),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/tasks/sync",
+                None,
+                serde_json::json!({}),
+                &ip
+            )
+            .await?
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            coins_of(&pool, &uuid).await?,
+            1029,
+            "unavailable private-block travel cannot debit"
+        );
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+}
+
+// Test-only virtual world. There is no route, production RNG seed or real wallet.
+#[cfg(test)]
+mod economy_simulation {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const DAYS: usize = 365;
+    const SEEDS: [u64; 8] = [7, 19, 42, 101, 365, 2026, 65537, 99991];
+    const SCENARIOS: [&str; 12] = [
+        "stable_20",
+        "growth_5_to_20",
+        "half_leave",
+        "wealthy_return",
+        "low_turnover",
+        "heavy_minigames",
+        "hoarders",
+        "alternate_accounts",
+        "item_shortage",
+        "afk_accounts",
+        "abundant_goods",
+        "low_item_demand",
+    ];
+
+    // Uncalibrated sensitivity envelope, not estimates of Minecraft productivity.
+    #[derive(Clone, Copy, Debug, serde::Serialize)]
+    struct Model {
+        name: &'static str,
+        iron_per_hour: i64,
+        food_per_hour: i64,
+        kills_per_minute: i64,
+        iron_wear_per_hour: i64,
+    }
+    const MODELS: [Model; 5] = [
+        Model {
+            name: "reference",
+            iron_per_hour: 24,
+            food_per_hour: 12,
+            kills_per_minute: 2,
+            iron_wear_per_hour: 2,
+        },
+        Model {
+            name: "constrained_supply",
+            iron_per_hour: 6,
+            food_per_hour: 3,
+            kills_per_minute: 2,
+            iron_wear_per_hour: 2,
+        },
+        Model {
+            name: "productive_supply",
+            iron_per_hour: 72,
+            food_per_hour: 36,
+            kills_per_minute: 2,
+            iron_wear_per_hour: 2,
+        },
+        Model {
+            name: "slow_combat",
+            iron_per_hour: 24,
+            food_per_hour: 12,
+            kills_per_minute: 1,
+            iron_wear_per_hour: 2,
+        },
+        Model {
+            name: "high_wear",
+            iron_per_hour: 24,
+            food_per_hour: 12,
+            kills_per_minute: 2,
+            iron_wear_per_hour: 6,
+        },
+    ];
+
+    #[derive(Clone, Copy, Debug, serde::Serialize)]
+    struct Experiment {
+        name: &'static str,
+        recovery_days: i64,
+        service_uptake_percent: u64,
+        starter_materials: bool,
+        travel_available: bool,
+        production_timing: bool,
+    }
+    const IMPLEMENTED: Experiment = Experiment { name: "implemented", recovery_days: ECONOMY_RECOVERY_DAYS, service_uptake_percent: 35, starter_materials: false, travel_available: false, production_timing: true };
+    const EXPERIMENTS: [Experiment; 6] = [
+        Experiment {
+            name: "budget_30",
+            recovery_days: 30,
+            service_uptake_percent: 0,
+            starter_materials: false,
+            travel_available: true,
+            production_timing: false,
+        },
+        Experiment {
+            name: "budget_60",
+            recovery_days: 60,
+            service_uptake_percent: 0,
+            starter_materials: false,
+            travel_available: true,
+            production_timing: false,
+        },
+        Experiment {
+            name: "budget_120",
+            recovery_days: 120,
+            service_uptake_percent: 0,
+            starter_materials: false,
+            travel_available: true,
+            production_timing: false,
+        },
+        Experiment {
+            name: "services_35",
+            recovery_days: 60,
+            service_uptake_percent: 35,
+            starter_materials: false,
+            travel_available: true,
+            production_timing: false,
+        },
+        Experiment {
+            name: "services_70",
+            recovery_days: 60,
+            service_uptake_percent: 70,
+            starter_materials: false,
+            travel_available: true,
+            production_timing: false,
+        },
+        Experiment {
+            name: "starter_materials",
+            recovery_days: 60,
+            service_uptake_percent: 35,
+            starter_materials: true,
+            travel_available: true,
+            production_timing: false,
+        },
+    ];
+    const TRAVEL_PRICE: i64 = ECONOMY_TRAVEL_PRICE;
+    const REPAIR_PRICE: i64 = ECONOMY_REPAIR_PRICE;
+    const NEWCOMER_DAYS: usize = 14;
+    const MAX_DAILY_ALLOWANCE: i64 = 1200;
+
+    // Production arithmetic is shared; historical candidates also explore same-day grants.
+    fn issuance_budget(
+        policy: EconomyControl,
+        burn_ema: i64,
+        grants: i64,
+        previous: i64,
+        eligible: usize,
+        recovery: i64,
+    ) -> i64 {
+        daily_issuance_budget(policy, burn_ema, grants, previous, eligible, recovery)
+    }
+    fn allocate_budget(budget: i64, eligible: &[bool], newcomers: &[bool], rotation: usize) -> Vec<i64> {
+        fair_economy_allowances(budget, eligible, newcomers, rotation)
+    }
+    fn experimental_goods(a: &Agent, experiment: Option<Experiment>) -> [i64; 2] {
+        if !experiment.is_some_and(|e| e.starter_materials) { return [0; 2]; }
+        let (iron, bread, _) = legacy_starter_contract_items(a.contracts_done, !a.has_kit);
+        [i64::from(iron), i64::from(bread) / i64::from(ECONOMY_STARTER_BREAD)]
+    }
+    fn progression_unlocked(a: &Agent) -> bool {
+        a.contracts_done >= 10 && a.mining_minutes >= 120
+    }
+
+    /// SplitMix64 v1, specified here rather than depending on rand's changing defaults.
+    struct SimRng(u64);
+    impl SimRng {
+        fn below(&mut self, bound: u64) -> Result<u64, StatusCode> {
+            assert!(bound > 0);
+            let accepted = u64::MAX - u64::MAX % bound;
+            loop {
+                self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
+                let mut n = self.0;
+                n = (n ^ (n >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+                n = (n ^ (n >> 27)).wrapping_mul(0x94d049bb133111eb);
+                n ^= n >> 31;
+                if n < accepted {
+                    return Ok(n % bound);
+                }
+            }
+        }
+        fn n(&mut self, bound: u64) -> u64 {
+            self.below(bound).unwrap()
+        }
+    }
+
+    #[derive(Clone)]
+    struct Agent {
+        kind: usize, // newcomer/casual/regular/dedicated/trader/gambler/hoarder
+        joined: usize,
+        one_day: bool,
+        balance: i64,
+        earned: i64,
+        grant_count: usize,
+        activity: [i64; 14],
+        stock: [i64; 2], // tradable iron, food bundles, after personal reserves
+        asks: [i64; 2],
+        sold: [i64; 2],
+        kit_iron: i64,
+        kit_food: i64,
+        has_kit: bool,
+        kit_day: Option<usize>,
+        axe_day: Option<usize>,
+        axe_minutes: Option<i64>,
+        kit_minutes: Option<i64>,
+        active_minutes: i64,
+        skill_pct: i64,
+        production_remainder: [i64; 2],
+        wear_remainder: [i64; 2],
+        needs: [i64; 2],
+        contracts_done: i64,
+        mining_minutes: i64,
+        starter_mined: i64,
+        starter_smelting_minutes: i64,
+        starter_done: bool,
+    }
+    impl Agent {
+        fn new(kind: usize, joined: usize, rng: &mut SimRng) -> Self {
+            Self {
+                kind,
+                joined,
+                one_day: false,
+                balance: ECONOMY_STARTER_GRANT,
+                earned: 0,
+                grant_count: 1,
+                activity: [0; 14],
+                stock: [0; 2],
+                asks: [8 + rng.n(9) as i64, 15 + rng.n(16) as i64],
+                sold: [0; 2],
+                kit_iron: 0,
+                kit_food: 0,
+                has_kit: false,
+                kit_day: None,
+                axe_day: None,
+                axe_minutes: None,
+                kit_minutes: None,
+                active_minutes: 0,
+                skill_pct: 75 + rng.n(51) as i64,
+                production_remainder: [0; 2],
+                wear_remainder: [0; 2],
+                needs: [27, 1],
+                contracts_done: 0,
+                mining_minutes: 0,
+                starter_mined: 0,
+                starter_smelting_minutes: 0,
+                starter_done: false,
+            }
+        }
+        fn milestones(&mut self, day: usize) {
+            if self.kit_iron >= 3 && self.axe_day.is_none() {
+                self.axe_day = Some(day);
+                self.axe_minutes = Some(self.active_minutes);
+            }
+            if self.kit_iron >= 27 && self.kit_food >= 1 && !self.has_kit {
+                self.has_kit = true;
+                self.kit_day = Some(day);
+                self.kit_minutes = Some(self.active_minutes);
+            }
+        }
+        fn use_goods(&mut self, good: usize, amount: i64) {
+            self.needs[good] -= amount;
+            if !self.has_kit {
+                if good == 0 {
+                    self.kit_iron += amount;
+                } else {
+                    self.kit_food += amount;
+                }
+            }
+        }
+        fn qualifies(&self) -> bool {
+            EconomyActivityRules::default().qualifies(&self.activity)
+        }
+    }
+    #[derive(Default, serde::Serialize)]
+    struct Accounting {
+        opening: i64,
+        grants: i64,
+        quests: i64,
+        stakes: i64,
+        payouts: i64,
+        commission: i64,
+        services: i64,
+        travel_uses: usize,
+        repaired_iron: i64,
+        contract_goods: [i64; 2],
+        trade_volume: i64,
+        trades: usize,
+        rounds: usize,
+        contracts: usize,
+        quest_minutes: i64,
+        gathering_minutes: i64,
+        self_supplied: [i64; 2],
+        produced: [i64; 2],
+        consumed: [i64; 2],
+    }
+    #[derive(Debug, Clone, serde::Serialize, PartialEq)]
+    struct Day {
+        day: usize,
+        identities: usize,
+        present: usize,
+        qualified: i64,
+        total_money: i64,
+        active_money: i64,
+        target: i64,
+        level: i32,
+        fee_bps: i32,
+        issued: i64,
+        net_games: i64,
+        fees: i64,
+        trade_volume: i64,
+        median_balance: i64,
+        top_tenth_share: f64,
+        starter_quote: Option<i64>,
+        beginner_minutes: Option<i64>,
+        beginner_days: Option<usize>,
+        beginner_beyond_year: bool,
+        iron_sale_price: Option<i64>,
+        food_sale_price: Option<i64>,
+        axes_owned: usize,
+        kits_owned: usize,
+        unmet_iron: i64,
+        quest_minutes: i64,
+        gathering_minutes: i64,
+        issuance_budget: Option<i64>,
+        unused_allowance: Option<i64>,
+        newcomer_issued: i64,
+        services: i64,
+        progression_unlocked: usize,
+        fresh_daily_allowance: Option<i64>,
+    }
+    #[derive(serde::Serialize)]
+    struct Run {
+        scenario: String,
+        model: Model,
+        mode: String,
+        experiment: Option<Experiment>,
+        seed: u64,
+        accounting: Accounting,
+        days: Vec<Day>,
+        acceptance: Acceptance,
+        late_newcomers: usize,
+        late_newcomers_with_kit: usize,
+        newcomer_cohorts: Vec<Cohort>,
+    }
+    #[derive(serde::Serialize)]
+    struct Cohort {
+        joined_day: usize,
+        players: usize,
+        axes: usize,
+        kits: usize,
+        kits_within_60_minutes: usize,
+        // Completion-only quantiles are always accompanied by censored counts.
+        incomplete: usize,
+        axe_active_minutes_p90: Option<i64>,
+        kit_active_minutes_p90: Option<i64>,
+        kit_calendar_days_p90: Option<i64>,
+    }
+    fn percentile(mut values: Vec<i64>) -> Option<i64> {
+        values.sort_unstable();
+        (!values.is_empty()).then(|| values[((values.len() - 1) * 90 + 99) / 100])
+    }
+    fn cohort(agents: &[Agent], joined: usize) -> Cohort {
+        let group: Vec<_> = agents
+            .iter()
+            .filter(|a| a.joined == joined && !a.one_day)
+            .collect();
+        let kits = group.iter().filter(|a| a.has_kit).count();
+        Cohort {
+            joined_day: joined + 1,
+            players: group.len(),
+            axes: group.iter().filter(|a| a.axe_day.is_some()).count(),
+            kits,
+            kits_within_60_minutes: group
+                .iter()
+                .filter(|a| a.kit_minutes.is_some_and(|m| m <= 60))
+                .count(),
+            incomplete: group.len() - kits,
+            axe_active_minutes_p90: percentile(
+                group.iter().filter_map(|a| a.axe_minutes).collect(),
+            ),
+            kit_active_minutes_p90: percentile(
+                group.iter().filter_map(|a| a.kit_minutes).collect(),
+            ),
+            kit_calendar_days_p90: percentile(
+                group
+                    .iter()
+                    .filter_map(|a| a.kit_day.map(|d| (d - joined + 1) as i64))
+                    .collect(),
+            ),
+        }
+    }
+    #[derive(Default, serde::Serialize)]
+    struct Acceptance {
+        tail_money_ratio: Option<f64>,
+        tail_basket_availability: f64,
+        tail_beginner_minutes_p90: Option<i64>,
+        tail_beginner_beyond_year_days: usize,
+        money_target_met: bool,
+        starter_affordability_met: bool,
+    }
+    fn present(scenario: &str, id: usize, day: usize, joined: usize, one_day: bool) -> bool {
+        if day < joined {
+            return false;
+        }
+        if scenario == "half_leave" && day >= 120 && id < 10 {
+            return false;
+        }
+        if scenario == "wealthy_return" && id < 3 && (45..240).contains(&day) {
+            return false;
+        }
+        if one_day && day != joined {
+            return false;
+        }
+        if day >= 300 && (17..20).contains(&id) {
+            return false;
+        }
+        true
+    }
+    fn minutes(kind: usize) -> i64 {
+        [30, 20, 60, 120, 60, 90, 90][kind]
+    }
+
+    // A hypothetical fresh player starts with the actual grant and completes the
+    // actual progression curve. Prices/level are held at today's observed quote;
+    // this is an affordability probe, not additional coins in the simulated world.
+    fn affordability(price: i64, level: i32, model: Model) -> Option<(i64, usize)> {
+        affordability_with_allowance(price, level, model, None)
+    }
+    fn affordability_with_allowance(
+        price: i64,
+        level: i32,
+        model: Model,
+        allowance: Option<i64>,
+    ) -> Option<(i64, usize)> {
+        affordability_with_delay(price, level, model, allowance, 0)
+    }
+    fn affordability_with_delay(price:i64, level:i32, model:Model, allowance:Option<i64>, delay:usize)->Option<(i64,usize)> {
+        let (mut balance, mut earned, mut time) = (ECONOMY_STARTER_GRANT, 0, 0);
+        if balance >= price {
+            return Some((0, 0));
+        }
+        for day in (1+delay)..=DAYS {
+            let mut left = allowance.unwrap_or(i64::MAX);
+            for _ in 0..ECONOMY_DAILY_CONTRACT_LIMIT {
+                let (kills, base) = contract_terms(earned, level);
+                let reward = base.min(left);
+                if reward == 0 {
+                    break;
+                }
+                time += contract_minutes(i64::from(kills), model);
+                balance += reward;
+                earned += reward;
+                left -= reward;
+                if balance >= price {
+                    return Some((time, day));
+                }
+            }
+        }
+        None
+    }
+    fn contract_minutes(kills: i64, model: Model) -> i64 {
+        3 + (kills + model.kills_per_minute - 1) / model.kills_per_minute
+    }
+    // Private use values are at the player's own reservation price. Sale values
+    // use yesterday's posted price and a lagged, observed sell-through fraction.
+    // Agents never inspect future transactions or unopened minigame cells.
+    fn gather_choice(a: &Agent, rates: [i64; 2], sell_through: [f64; 2], bps: i32) -> (usize, f64) {
+        (0..2)
+            .map(|g| {
+                let demand = if a.needs[g] > 0 { 1.0 } else { sell_through[g] };
+                let net = if a.needs[g] > 0 {
+                    1.0
+                } else {
+                    1.0 - f64::from(bps) / 10000.0
+                };
+                (
+                    g,
+                    rates[g] as f64 / 6000.0 * a.asks[g] as f64 * demand * net,
+                )
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap()
+    }
+    fn gathering_rates(
+        model: Model,
+        kind: usize,
+        skill: i64,
+        weather: i64,
+        supply: i64,
+        scarcity: i64,
+    ) -> [i64; 2] {
+        let specialty = if kind == 4 { 150 } else { 100 };
+        [model.iron_per_hour, model.food_per_hour].map(|rate| {
+            (rate * 100 * supply * skill * specialty * weather / 1_000_000 / scarcity).max(1)
+        })
+    }
+    fn produce_minute(remainder: &mut i64, hundredths_per_hour: i64) -> i64 {
+        *remainder += hundredths_per_hour;
+        let units = *remainder / 6000;
+        *remainder %= 6000;
+        units
+    }
+    fn prefer_contract(reward: i64, duration: i64, gathering_value: f64) -> bool {
+        reward as f64 / duration as f64 >= gathering_value
+    }
+    fn quote(agents: &[Agent], present: &[bool]) -> Option<i64> {
+        let mut total = 0;
+        for (good, required) in [(0, 27), (1, 1)] {
+            let mut offers: Vec<(i64, i64)> = agents
+                .iter()
+                .zip(present)
+                .filter(|(_, p)| **p)
+                .filter(|(a, _)| a.stock[good] > 0)
+                .map(|(a, _)| (a.asks[good], a.stock[good]))
+                .collect();
+            offers.sort_unstable();
+            let mut remaining = required;
+            for (price, stock) in offers {
+                let amount = remaining.min(stock);
+                total += amount * price;
+                remaining -= amount;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            if remaining > 0 {
+                return None;
+            }
+        }
+        Some(total)
+    }
+    fn buy(
+        agents: &mut [Agent],
+        present: &[bool],
+        buyer: usize,
+        good: usize,
+        wanted: i64,
+        bps: i32,
+        accounting: &mut Accounting,
+        prices: &mut Vec<i64>,
+        mut budget: i64,
+    ) -> i64 {
+        let mut offers: Vec<usize> = (0..agents.len())
+            .filter(|&i| i != buyer && present[i] && agents[i].stock[good] > 0)
+            .collect();
+        offers.sort_by_key(|&i| (agents[i].asks[good], i));
+        let mut remaining = wanted;
+        for seller in offers {
+            let price = agents[seller].asks[good];
+            let amount = remaining
+                .min(agents[seller].stock[good])
+                .min(agents[buyer].balance.min(budget) / price);
+            if amount == 0 {
+                continue;
+            }
+            // Each offer is one newly quoted listing. A single purchase closes
+            // that simulated offer; it pays the real cumulative-ceiling helper.
+            let gross = amount * price;
+            let fee = market_commission(0, gross, i64::from(bps));
+            agents[buyer].balance -= gross;
+            agents[seller].balance += gross - fee;
+            agents[seller].stock[good] -= amount;
+            agents[seller].sold[good] += amount;
+            accounting.consumed[good] += amount;
+            budget -= gross;
+            accounting.trade_volume += gross;
+            accounting.commission += fee;
+            accounting.trades += 1;
+            prices.push(price);
+            remaining -= amount;
+            if remaining == 0 {
+                break;
+            }
+        }
+        wanted - remaining
+    }
+    fn play(
+        agents: &mut [Agent],
+        id: usize,
+        level: i32,
+        heavy: bool,
+        rng: &mut SimRng,
+        accounting: &mut Accounting,
+    ) {
+        let rounds = if heavy {
+            30
+        } else if agents[id].kind == 5 {
+            8
+        } else {
+            1
+        };
+        for round in 0..rounds {
+            if agents[id].balance < MINIGAME_MIN_BET {
+                break;
+            }
+            let fraction = if heavy { 10 } else { 4 };
+            let bet =
+                (agents[id].balance * fraction / 100).clamp(MINIGAME_MIN_BET, MINIGAME_MAX_BET);
+            agents[id].balance -= bet;
+            accounting.stakes += bet;
+            accounting.rounds += 1;
+            let multiplier = if round % 2 == 0 {
+                spin_chest_using(level, |b| rng.below(b)).unwrap().mult_x100
+            } else {
+                let preset = &MINES_PRESETS[rng.n(4) as usize];
+                let board = new_mines_state_using(preset, level, |b| rng.below(b)).unwrap();
+                let mut multiplier = MINES_START_X100;
+                // Blind, fixed-depth strategy: no access to unopened values when
+                // choosing cells. Reveals use the production Fisher-Yates deal.
+                let depth = if heavy { 2 + rng.n(3) as usize } else { 2 };
+                for content in board.board.iter().take(depth) {
+                    if content == "tnt" {
+                        multiplier = 0;
+                        break;
+                    }
+                    multiplier += mines_boost(preset, content);
+                }
+                multiplier
+            };
+            let payout = bet * multiplier / 100;
+            agents[id].balance += payout;
+            accounting.payouts += payout;
+        }
+    }
+    fn median(values: &mut [i64]) -> Option<i64> {
+        if values.is_empty() {
+            None
+        } else {
+            values.sort_unstable();
+            Some(values[values.len() / 2])
+        }
+    }
+    fn simulate(scenario: &str, seed: u64, adaptive: bool, days: usize) -> Run {
+        simulate_model(scenario, seed, adaptive, days, MODELS[0])
+    }
+    fn simulate_model(scenario: &str, seed: u64, adaptive: bool, days: usize, model: Model) -> Run {
+        simulate_experiment(scenario, seed, adaptive, days, model, if adaptive {Some(IMPLEMENTED)} else {None})
+    }
+    fn simulate_experiment(
+        scenario: &str,
+        seed: u64,
+        adaptive: bool,
+        days: usize,
+        model: Model,
+        experiment: Option<Experiment>,
+    ) -> Run {
+        let mut rng = SimRng(seed);
+        let mut identity_rng = SimRng(seed ^ 0x8ebc6af09c88c6e3);
+        let initial = if scenario == "growth_5_to_20" {
+            5
+        } else if scenario == "afk_accounts" {
+            40
+        } else {
+            20
+        };
+        let mut agents: Vec<Agent> = (0..initial)
+            .map(|id| {
+                Agent::new(
+                    if scenario == "hoarders" { 6 } else { id % 7 },
+                    0,
+                    &mut identity_rng,
+                )
+            })
+            .collect();
+        let mut accounting = Accounting {
+            grants: initial as i64 * ECONOMY_STARTER_GRANT,
+            ..Accounting::default()
+        };
+        if scenario == "wealthy_return" {
+            // Explicit opening endowments, not quest issuance or real balances.
+            for a in agents.iter_mut().take(3) {
+                a.balance += 500_000;
+                accounting.opening += 500_000;
+            }
+        }
+        let mut policy = EconomyControl::default();
+        let mut trace = Vec::new();
+        let mut sell_through = [0.25_f64; 2]; // unmeasured initial expectation; updated from actual offers/sales
+        let mut burn_ema = 0;
+        let mut previous_budget = 0;
+        let mut prior_grants = 0;
+        let mut previous_day_grants = 0;
+        for day in 0..days {
+            if scenario == "growth_5_to_20" && (10..160).contains(&day) && day % 10 == 0 {
+                agents.push(Agent::new(0, day, &mut identity_rng));
+                accounting.grants += ECONOMY_STARTER_GRANT;
+            }
+            // Replace three regulars with newcomers on day 300. Old wallets stay
+            // intact and age out of the activity window; current headcount is stable.
+            if day == 300 {
+                for _ in 0..3 {
+                    agents.push(Agent::new(0, day, &mut identity_rng));
+                    accounting.grants += ECONOMY_STARTER_GRANT;
+                }
+            }
+            if scenario == "alternate_accounts" && day % 7 == 0 {
+                for _ in 0..4 {
+                    let mut alt = Agent::new(0, day, &mut identity_rng);
+                    alt.one_day = true;
+                    agents.push(alt);
+                    accounting.grants += ECONOMY_STARTER_GRANT;
+                }
+            }
+            let present: Vec<bool> = agents
+                .iter()
+                .enumerate()
+                .map(|(id, a)| present(scenario, id, day, a.joined, a.one_day))
+                .collect();
+            for a in &mut agents {
+                a.activity[day % 14] = 0;
+                a.sold = [0; 2];
+            }
+            // Review at the start of the UTC day, as the production worker does.
+            let qualified: Vec<&Agent> = agents.iter().filter(|a| a.qualifies()).collect();
+            let active_money = qualified.iter().map(|a| a.balance).sum();
+            let active = qualified.len() as i64;
+            let prior = policy;
+            policy = next_economy_control(policy, active, active_money);
+            if !adaptive {
+                policy.level = 0;
+                policy.commission_bps = 200;
+            }
+            assert!((-2..=2).contains(&policy.level));
+            assert!((0..=500).contains(&policy.commission_bps));
+            assert!((policy.commission_bps - prior.commission_bps).abs() <= 25);
+            let eligible: Vec<bool> = agents
+                .iter()
+                .enumerate()
+                .map(|(id, a)| {
+                    if experiment.is_some_and(|e| e.production_timing) {
+                        a.joined < day && a.activity.iter().sum::<i64>() >= 300
+                    } else {present[id] && (a.joined == day || a.activity.iter().sum::<i64>() >= 300)}
+                })
+                .collect();
+            let newcomer: Vec<bool> = agents
+                .iter()
+                .map(|a| day - a.joined < NEWCOMER_DAYS)
+                .collect();
+            let budget = experiment.map(|e| {
+                issuance_budget(
+                    policy,
+                    burn_ema,
+                    if e.production_timing {previous_day_grants} else {accounting.grants - prior_grants},
+                    previous_budget,
+                    eligible.iter().filter(|&&v| v).count(),
+                    e.recovery_days,
+                )
+            });
+            previous_day_grants = accounting.grants - prior_grants;
+            prior_grants = accounting.grants;
+            previous_budget = budget.unwrap_or(0);
+            let mut allowances = budget.map(|b| allocate_budget(b, &eligible, &newcomer, day));
+            // Separate hypothetical entrant, not an extra wallet or a drawn grant.
+            let fresh_allowance = budget.map(|b| {
+                let mut elig = eligible.clone();
+                elig.push(true);
+                let mut new = newcomer.clone();
+                new.push(true);
+                *allocate_budget(b, &elig, &new, day).last().unwrap()
+            });
+            let before_services = accounting.services;
+            let mut newcomer_issued = 0;
+            let before_issued = accounting.quests;
+            let before_games = accounting.stakes - accounting.payouts;
+            let before_fees = accounting.commission;
+            let before_volume = accounting.trade_volume;
+            let before_quest_minutes = accounting.quest_minutes;
+            let before_gathering_minutes = accounting.gathering_minutes;
+            for id in 0..agents.len() {
+                if !present[id] {
+                    continue;
+                }
+                let afk = scenario == "afk_accounts" && (20..40).contains(&id);
+                let mut playing = minutes(agents[id].kind);
+                if agents[id].one_day {
+                    playing = 10;
+                }
+                // Common exogenous draws: policy/game branches cannot shift next
+                // day's attendance or productivity in the paired run.
+                let mut daily_rng = SimRng(
+                    seed ^ (day as u64 + 1).wrapping_mul(0xa0761d6478bd642f)
+                        ^ (id as u64 + 1).wrapping_mul(0xe7037ed1a0b428db),
+                );
+                if !afk && daily_rng.n(100) < 15 {
+                    playing /= 2;
+                }
+                if afk {
+                    playing = 0;
+                }
+                agents[id].activity[day % 14] = playing * 60;
+                agents[id].active_minutes += playing;
+                if afk {
+                    continue;
+                }
+                let mut service_rng = SimRng(
+                    seed ^ (day as u64 + 1).wrapping_mul(0x589965cc75374cc3)
+                        ^ (id as u64 + 1).wrapping_mul(0x1d8e4e27c47d124f),
+                );
+                let uses_services = experiment
+                    .is_some_and(|e| service_rng.n(100) < e.service_uptake_percent)
+                    && scenario != "hoarders"
+                    && agents[id].kind != 6;
+                if agents[id].has_kit {
+                    // Wear/food demand follows actual play, with carried fractional
+                    // units. Outstanding needs are capped: no infinite backlog.
+                    for g in 0..2 {
+                        let rate = if g == 0 {
+                            if scenario == "low_item_demand" {
+                                1
+                            } else {
+                                model.iron_wear_per_hour
+                            }
+                        } else {
+                            1
+                        };
+                        agents[id].wear_remainder[g] += playing * rate;
+                        let units = agents[id].wear_remainder[g] / 60;
+                        agents[id].wear_remainder[g] %= 60;
+                        agents[id].needs[g] =
+                            (agents[id].needs[g] + units).min(if g == 0 { 12 } else { 3 });
+                    }
+                }
+                // Repair substitutes for wear demand, not tradable iron. The
+                // agent may decline, and protects its first 1,000 coins.
+                if uses_services && agents[id].has_kit && agents[id].asks[0] > REPAIR_PRICE {
+                    let units = agents[id].needs[0]
+                        .min(3)
+                        .min((agents[id].balance - 1000).max(0) / REPAIR_PRICE);
+                    agents[id].balance -= units * REPAIR_PRICE;
+                    agents[id].needs[0] -= units;
+                    accounting.services += units * REPAIR_PRICE;
+                    accounting.repaired_iron += units;
+                }
+                let scarcity = if scenario == "item_shortage" && day >= 120 {
+                    8
+                } else {
+                    1
+                };
+                let supply = if scenario == "abundant_goods" { 3 } else { 1 };
+                let weather = 80 + daily_rng.n(41) as i64;
+                let rates = gathering_rates(
+                    model,
+                    agents[id].kind,
+                    agents[id].skill_pct,
+                    weather,
+                    supply,
+                    scarcity,
+                );
+                let mut remaining = playing;
+                let mut completed = 0;
+                let mut gathered = 0;
+                let mut worked = 0;
+                while remaining > 0 {
+                    if experiment.is_some_and(|e| e.production_timing) && !agents[id].starter_done {
+                        // Current onboarding produces its iron through actual shared labor;
+                        // it never gives NPC iron or extra XP. Five smelting minutes is an
+                        // explicit synthetic assumption, not a Minecraft benchmark.
+                        remaining-=1;
+                        if agents[id].starter_mined<10 {
+                            gathered+=1;agents[id].mining_minutes+=1;
+                            let units=produce_minute(&mut agents[id].production_remainder[0],rates[0]);
+                            agents[id].starter_mined+=units;agents[id].stock[0]+=units;accounting.produced[0]+=units;
+                        } else {
+                            worked+=1;agents[id].starter_smelting_minutes+=1;
+                            if agents[id].starter_smelting_minutes==5 {
+                                agents[id].starter_done=true;agents[id].contracts_done+=1;completed+=1;accounting.contracts+=1;
+                            }
+                        }
+                        continue;
+                    }
+                    // Put existing reserves to use before considering a purchase.
+                    for g in 0..2 {
+                        let used = agents[id].stock[g].min(agents[id].needs[g]);
+                        agents[id].stock[g] -= used;
+                        agents[id].use_goods(g, used);
+                        accounting.consumed[g] += used;
+                        accounting.self_supplied[g] += used;
+                    }
+                    agents[id].milestones(day);
+                    let (target, base_reward) = contract_terms(agents[id].earned, policy.level);
+                    let reward = allowances
+                        .as_ref()
+                        .map_or(base_reward, |a| base_reward.min(a[id]));
+                    let goods = experimental_goods(&agents[id], experiment);
+                    let material_value: i64 = (0..2)
+                        .map(|g| goods[g].min(agents[id].needs[g]) * agents[id].asks[g])
+                        .sum();
+                    // Nontransferable progression has a small explicit assumed
+                    // utility until ten contracts; it is never counted as coins.
+                    let progression_value =
+                        if experiment.is_some_and(|e| !e.production_timing) && agents[id].contracts_done < 10 {
+                            5
+                        } else {
+                            0
+                        };
+                    let utility = reward + material_value + progression_value;
+                    let normal_duration = contract_minutes(i64::from(target), model);
+                    let travel = experiment.is_some_and(|e| e.travel_available) && uses_services
+                        && agents[id].balance >= 1000 + TRAVEL_PRICE
+                        && utility * 2 > TRAVEL_PRICE * normal_duration;
+                    let duration = normal_duration - if travel { 2 } else { 0 };
+                    let travel_cost = if travel { TRAVEL_PRICE } else { 0 };
+                    let (good, gathering_value) =
+                        gather_choice(&agents[id], rates, sell_through, policy.commission_bps);
+                    if completed < ECONOMY_DAILY_CONTRACT_LIMIT
+                        && remaining >= duration
+                        && utility > travel_cost
+                        && (scenario == "hoarders"
+                            || prefer_contract(utility - travel_cost, duration, gathering_value))
+                    {
+                        remaining -= duration;
+                        worked += duration;
+                        completed += 1;
+                        agents[id].balance += reward - travel_cost;
+                        agents[id].earned += reward;
+                        agents[id].contracts_done += 1;
+                        if let Some(a) = &mut allowances {
+                            a[id] -= reward;
+                        }
+                        if newcomer[id] {
+                            newcomer_issued += reward;
+                        }
+                        accounting.quests += reward;
+                        accounting.services += travel_cost;
+                        accounting.travel_uses += usize::from(travel);
+                        accounting.contracts += 1;
+                        for g in 0..2 {
+                            agents[id].stock[g] += goods[g];
+                            accounting.contract_goods[g] += goods[g];
+                        }
+                    } else {
+                        // One minute goes to ONE good. Fractional yield survives
+                        // short sessions instead of disappearing on daily rounding.
+                        remaining -= 1;
+                        gathered += 1;
+                        if good == 0 {
+                            agents[id].mining_minutes += 1;
+                        }
+                        let units =
+                            produce_minute(&mut agents[id].production_remainder[good], rates[good]);
+                        agents[id].stock[good] += units;
+                        accounting.produced[good] += units;
+                    }
+                }
+                // Last-minute production is available for personal use today.
+                for g in 0..2 {
+                    let used = agents[id].stock[g].min(agents[id].needs[g]);
+                    agents[id].stock[g] -= used;
+                    agents[id].use_goods(g, used);
+                    accounting.consumed[g] += used;
+                    accounting.self_supplied[g] += used;
+                }
+                agents[id].milestones(day);
+                accounting.quest_minutes += worked;
+                accounting.gathering_minutes += gathered;
+                assert_eq!(
+                    worked + gathered,
+                    playing,
+                    "labor cannot produce two goods and quest simultaneously"
+                );
+                assert!(completed <= ECONOMY_DAILY_CONTRACT_LIMIT);
+                assert_eq!(agents[id].grant_count, 1);
+                if scenario != "hoarders"
+                    && scenario != "low_turnover"
+                    && (agents[id].kind == 5 || scenario == "heavy_minigames")
+                {
+                    play(
+                        &mut agents,
+                        id,
+                        policy.level,
+                        scenario == "heavy_minigames",
+                        &mut rng,
+                        &mut accounting,
+                    );
+                }
+            }
+            let trading_open =
+                scenario != "hoarders" && (scenario != "low_turnover" || day % 7 == 0);
+            let price = if trading_open {
+                quote(&agents, &present)
+            } else {
+                None
+            };
+            let offered: [i64; 2] = std::array::from_fn(|g| {
+                agents
+                    .iter()
+                    .zip(&present)
+                    .filter(|(_, p)| **p)
+                    .map(|(a, _)| a.stock[g])
+                    .sum()
+            });
+            let mut iron_prices = Vec::new();
+            let mut food_prices = Vec::new();
+            // Shuffle buyers: no permanent source-order advantage in scarce markets.
+            let mut buyers: Vec<usize> = (0..agents.len()).filter(|&id| present[id]).collect();
+            for index in (1..buyers.len()).rev() {
+                let swap = rng.n(index as u64 + 1) as usize;
+                buyers.swap(index, swap);
+            }
+            if trading_open {
+                for buyer in buyers {
+                    if scenario == "afk_accounts" && (20..40).contains(&buyer) {
+                        continue;
+                    }
+                    let new = !agents[buyer].has_kit;
+                    let wanted = agents[buyer].needs[0];
+                    // Established buyers spend at most half the current wallet on
+                    // iron; newcomers prioritize completing their starter kit.
+                    let budget = if new {
+                        agents[buyer].balance
+                    } else {
+                        agents[buyer].balance / 2
+                    };
+                    let iron = buy(
+                        &mut agents,
+                        &present,
+                        buyer,
+                        0,
+                        wanted,
+                        policy.commission_bps,
+                        &mut accounting,
+                        &mut iron_prices,
+                        budget,
+                    );
+                    let budget = agents[buyer].balance;
+                    let food_wanted = agents[buyer].needs[1];
+                    let food = buy(
+                        &mut agents,
+                        &present,
+                        buyer,
+                        1,
+                        food_wanted,
+                        policy.commission_bps,
+                        &mut accounting,
+                        &mut food_prices,
+                        budget,
+                    );
+                    agents[buyer].use_goods(0, iron);
+                    agents[buyer].use_goods(1, food);
+                    agents[buyer].milestones(day);
+                }
+            }
+            for g in 0..2 {
+                let sold: i64 = agents.iter().map(|a| a.sold[g]).sum();
+                let observed = if offered[g] > 0 {
+                    sold as f64 / offered[g] as f64
+                } else {
+                    0.0
+                };
+                sell_through[g] = 0.75 * sell_through[g] + 0.25 * observed;
+            }
+            // Seller reservation prices respond to inventory and actual sales,
+            // never directly to the 70k monetary target. Bounds are platform coin
+            // limits, not an imposed price-stability result.
+            for (id, a) in agents.iter_mut().enumerate() {
+                if !present[id] {
+                    continue;
+                }
+                for good in 0..2 {
+                    if a.sold[good] > 0 && a.stock[good] < 10 {
+                        a.asks[good] =
+                            (a.asks[good] + (a.asks[good] / 20).max(1)).min(1_000_000_000);
+                    } else if a.sold[good] == 0 && a.stock[good] > 20 {
+                        a.asks[good] = (a.asks[good] - (a.asks[good] / 50).max(1)).max(1);
+                    }
+                }
+            }
+            let total = agents.iter().map(|a| a.balance).sum::<i64>();
+            assert!(agents.iter().all(|a| a.balance >= 0));
+            assert_eq!(
+                total,
+                accounting.opening + accounting.grants + accounting.quests + accounting.payouts
+                    - accounting.stakes
+                    - accounting.commission
+                    - accounting.services,
+                "coin conservation {scenario} seed {seed} day {day}"
+            );
+            for good in 0..2 {
+                assert_eq!(
+                    accounting.produced[good] + accounting.contract_goods[good],
+                    accounting.consumed[good] + agents.iter().map(|a| a.stock[good]).sum::<i64>(),
+                    "goods conservation {scenario} day {day}"
+                );
+            }
+            let daily_issued = accounting.quests - before_issued;
+            if let Some(b) = budget {
+                assert!(daily_issued <= b);
+            }
+            let removed = accounting.stakes - accounting.payouts - before_games
+                + accounting.commission
+                - before_fees
+                + accounting.services
+                - before_services;
+            burn_ema = (burn_ema * 6 + removed) / 7;
+            let probe = price.and_then(|p| {
+                if experiment.is_some() {
+                    let delay=usize::from(experiment.is_some_and(|e| e.production_timing));
+                    affordability_with_delay(p, policy.level, model, fresh_allowance, delay).map(|(minutes,days)| {
+                        if delay>0 && p>ECONOMY_STARTER_GRANT {(minutes+(600+model.iron_per_hour-1)/model.iron_per_hour+5,days)} else {(minutes,days)}
+                    })
+                } else {
+                    affordability(p, policy.level, model)
+                }
+            });
+            let mut balances: Vec<i64> = agents
+                .iter()
+                .zip(&present)
+                .filter(|(_, p)| **p)
+                .map(|(a, _)| a.balance)
+                .collect();
+            let mid = median(&mut balances).unwrap_or(0);
+            let present_money: i64 = balances.iter().sum();
+            let top = balances
+                .iter()
+                .rev()
+                .take((balances.len() + 9) / 10)
+                .sum::<i64>();
+            trace.push(Day {
+                day: day + 1,
+                identities: agents.len(),
+                present: present.iter().filter(|&&p| p).count(),
+                qualified: active,
+                total_money: total,
+                active_money,
+                target: policy.active_ema * policy.target_per_player / 1000,
+                level: policy.level,
+                fee_bps: policy.commission_bps,
+                issued: accounting.quests - before_issued,
+                net_games: accounting.stakes - accounting.payouts - before_games,
+                fees: accounting.commission - before_fees,
+                trade_volume: accounting.trade_volume - before_volume,
+                median_balance: mid,
+                top_tenth_share: if present_money > 0 {
+                    top as f64 / present_money as f64
+                } else {
+                    0.0
+                },
+                starter_quote: price,
+                beginner_minutes: probe.map(|p| p.0),
+                beginner_days: probe.map(|p| p.1),
+                beginner_beyond_year: price.is_some() && probe.is_none(),
+                iron_sale_price: median(&mut iron_prices),
+                food_sale_price: median(&mut food_prices),
+                axes_owned: agents
+                    .iter()
+                    .zip(&present)
+                    .filter(|(a, p)| **p && a.axe_day.is_some())
+                    .count(),
+                kits_owned: agents
+                    .iter()
+                    .zip(&present)
+                    .filter(|(a, p)| **p && a.has_kit)
+                    .count(),
+                unmet_iron: agents
+                    .iter()
+                    .zip(&present)
+                    .filter(|(_, p)| **p)
+                    .map(|(a, _)| a.needs[0])
+                    .sum(),
+                quest_minutes: accounting.quest_minutes - before_quest_minutes,
+                gathering_minutes: accounting.gathering_minutes - before_gathering_minutes,
+                issuance_budget: budget,
+                unused_allowance: budget.map(|b| b - daily_issued),
+                newcomer_issued,
+                services: accounting.services - before_services,
+                progression_unlocked: agents
+                    .iter()
+                    .zip(&present)
+                    .filter(|(a, p)| **p && progression_unlocked(a))
+                    .count(),
+                fresh_daily_allowance: fresh_allowance,
+            });
+        }
+        let tail = &trace[trace.len().saturating_sub(90)..];
+        let ratios: Vec<f64> = tail
+            .iter()
+            .filter(|d| d.qualified > 0)
+            .map(|d| {
+                d.active_money as f64
+                    / (d.qualified * EconomyControl::default().target_per_player) as f64
+            })
+            .collect();
+        let ratio = if ratios.is_empty() {
+            None
+        } else {
+            Some(ratios.iter().sum::<f64>() / ratios.len() as f64)
+        };
+        let availability =
+            tail.iter().filter(|d| d.starter_quote.is_some()).count() as f64 / tail.len() as f64;
+        let mut times: Vec<i64> = tail
+            .iter()
+            .filter(|d| d.starter_quote.is_some())
+            .map(|d| d.beginner_minutes.unwrap_or(i64::MAX))
+            .collect();
+        times.sort_unstable();
+        let p90 = if times.is_empty() {
+            None
+        } else {
+            let value = times[((times.len() - 1) * 90 + 99) / 100];
+            if value == i64::MAX { None } else { Some(value) }
+        };
+        let beyond = tail.iter().filter(|d| d.beginner_beyond_year).count();
+        let late: Vec<&Agent> = agents.iter().filter(|a| a.joined == 300).collect();
+        Run {
+            late_newcomers: late.len(),
+            late_newcomers_with_kit: late.iter().filter(|a| a.has_kit).count(),
+            scenario: scenario.into(),
+            model,
+            experiment,
+            newcomer_cohorts: [0, 300]
+                .into_iter()
+                .filter(|&d| d < days)
+                .map(|d| cohort(&agents, d))
+                .collect(),
+            mode: if adaptive {
+                "adaptive"
+            } else {
+                "fixed_baseline"
+            }
+            .into(),
+            seed,
+            accounting,
+            days: trace,
+            acceptance: Acceptance {
+                tail_money_ratio: ratio,
+                tail_basket_availability: availability,
+                tail_beginner_minutes_p90: p90,
+                tail_beginner_beyond_year_days: beyond,
+                money_target_met: ratio.is_some_and(|r| (0.5..=1.5).contains(&r)),
+                starter_affordability_met: availability >= 0.8 && p90.is_some_and(|m| m <= 60),
+            },
+        }
+    }
+
+    #[test]
+    fn economy_simulation_is_reproducible_and_exposes_missing_sinks() {
+        let a = simulate_experiment("hoarders", 42, true, 365, MODELS[0], None);
+        let b = simulate_experiment("hoarders", 42, true, 365, MODELS[0], None);
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+        assert_eq!(a.accounting.commission, 0);
+        assert_eq!(a.accounting.stakes, 0);
+        assert!(
+            a.days.iter().all(|d| d.starter_quote.is_none()),
+            "private hoards are not market offers"
+        );
+        assert!(
+            !a.acceptance.money_target_met,
+            "a controller with positive issuance and no sinks cannot promise a bounded money supply"
+        );
+        assert!(
+            a.days
+                .windows(2)
+                .all(|w| w[1].total_money >= w[0].total_money)
+        );
+        let afk = simulate("afk_accounts", 7, true, 30);
+        assert!(afk.days.iter().all(|d| d.qualified <= 20));
+        assert!(afk.days.last().unwrap().identities == 40);
+    }
+
+    #[test]
+    fn economy_simulation_rng_and_fractional_productivity_have_fixed_units() {
+        let mut rng = SimRng(0);
+        assert_eq!(rng.n(1_u64 << 32), 0x7b1dcdaf);
+        assert_eq!(rng.n(1_u64 << 32), 0xa1b965f4);
+        assert_eq!(gathering_rates(MODELS[0], 2, 100, 100, 1, 1), [2400, 1200]);
+        assert_eq!(gathering_rates(MODELS[0], 2, 100, 100, 1, 8), [300, 150]);
+        let mut remainder = 0;
+        assert_eq!(
+            (0..60)
+                .map(|_| produce_minute(&mut remainder, 2400))
+                .sum::<i64>(),
+            24
+        );
+        assert_eq!(remainder, 0);
+        assert_eq!(
+            (0..60)
+                .map(|_| produce_minute(&mut remainder, 37))
+                .sum::<i64>(),
+            0
+        );
+        assert_eq!(
+            (0..120)
+                .map(|_| produce_minute(&mut remainder, 37))
+                .sum::<i64>(),
+            1
+        );
+        assert_eq!(remainder, 660, "small yields survive separate sessions");
+        assert_eq!(percentile(vec![]), None);
+    }
+
+    #[test]
+    fn economy_simulation_players_respond_to_work_value_and_keep_partial_gear() {
+        assert!(prefer_contract(250, 8, 2.0));
+        assert!(!prefer_contract(250, 8, 50.0));
+        let mut a = Agent::new(0, 0, &mut SimRng(42));
+        let rates = [2400, 1200]; // hundredths of a good/hour
+        let private = gather_choice(&a, rates, [0.0; 2], 500);
+        assert!(private.1 > 0.0, "private needs survive an empty market");
+        a.needs = [0; 2];
+        assert_eq!(gather_choice(&a, rates, [0.0; 2], 500).1, 0.0);
+        assert!(
+            gather_choice(&a, rates, [1.0; 2], 0).1 > gather_choice(&a, rates, [1.0; 2], 500).1
+        );
+        a.needs = [27, 1];
+        a.active_minutes = 30;
+        a.use_goods(0, 3);
+        a.milestones(0);
+        assert_eq!(a.axe_day, Some(0));
+        assert!(
+            !a.has_kit,
+            "an axe is a useful milestone before a full armor set"
+        );
+        a.use_goods(0, 24);
+        a.use_goods(1, 1);
+        a.milestones(1);
+        assert!(a.has_kit);
+        let unfinished = Agent::new(0, 0, &mut SimRng(43));
+        let c = cohort(&[a, unfinished], 0);
+        assert_eq!((c.players, c.kits, c.incomplete), (2, 1, 1));
+    }
+
+    #[test]
+    fn economy_simulation_sensitivity_and_common_attendance() {
+        let slow = simulate_model("stable_20", 42, true, 45, MODELS[1]);
+        let fast = simulate_model("stable_20", 42, true, 45, MODELS[2]);
+        assert!(fast.accounting.self_supplied[0] > 0);
+        assert!(fast.accounting.gathering_minutes > 0 && fast.accounting.quest_minutes > 0);
+        assert!(fast.accounting.produced[0] > slow.accounting.produced[0]);
+        for model in MODELS {
+            let a = simulate_model("stable_20", 7, true, 320, model);
+            let b = simulate_model("stable_20", 7, false, 320, model);
+            assert_eq!(
+                a.days.iter().map(|d| d.qualified).collect::<Vec<_>>(),
+                b.days.iter().map(|d| d.qualified).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                a.accounting.quest_minutes + a.accounting.gathering_minutes,
+                b.accounting.quest_minutes + b.accounting.gathering_minutes
+            );
+        }
+    }
+
+    #[test]
+    fn economy_experiment_budget_is_bounded_fair_and_reserves_newcomers() {
+        let policy = EconomyControl {
+            active_ema: 20_000,
+            money_ema: 1_400_000,
+            ..EconomyControl::default()
+        };
+        assert_eq!(issuance_budget(policy, 0, 0, 0, 20, 60), 0);
+        assert_eq!(
+            issuance_budget(policy, 2000, 0, 0, 20, 60),
+            500,
+            "daily expansion bounded"
+        );
+        assert_eq!(
+            issuance_budget(policy, 2000, 2000, 0, 20, 60),
+            0,
+            "new grants consume funding"
+        );
+        assert_eq!(
+            issuance_budget(EconomyControl::default(), 1000, 0, 2000, 20, 60),
+            0
+        );
+        let a = allocate_budget(
+            1000,
+            &[true, true, true, false],
+            &[false, false, true, true],
+            0,
+        );
+        assert_eq!(a.iter().sum::<i64>(), 1000);
+        assert_eq!(a[3], 0);
+        assert!(a[2] > a[0] && a[2] > a[1]);
+        let mut totals = [0; 3];
+        for day in 0..3 {
+            let a = allocate_budget(2, &[true; 3], &[false; 3], day);
+            for i in 0..3 {
+                totals[i] += a[i];
+            }
+        }
+        assert_eq!(
+            totals, [2; 3],
+            "rounding cannot permanently favor login order"
+        );
+        assert_eq!(
+            affordability_with_allowance(101, 0, MODELS[0], Some(0)),
+            None
+        );
+        assert_eq!(affordability_with_delay(101,0,MODELS[0],Some(1),1),Some((8,2)));
+        assert_eq!(
+            affordability_with_allowance(101, 0, MODELS[0], Some(1)),
+            Some((8, 1))
+        );
+        let mut a = Agent::new(0, 0, &mut SimRng(42));
+        a.balance = 1_000_000;
+        a.contracts_done = 10;
+        assert!(
+            !progression_unlocked(&a),
+            "money cannot substitute for personal mining"
+        );
+        a.mining_minutes = 120;
+        assert!(progression_unlocked(&a));
+        let mut goods = [0; 2];
+        for count in 0..10 {
+            a.contracts_done = count;
+            let reward = experimental_goods(&a, Some(EXPERIMENTS[5]));
+            for g in 0..2 {
+                goods[g] += reward[g];
+            }
+        }
+        assert_eq!(goods, [27, 1], "starter materials are finite per identity");
+    }
+
+    #[test]
+    fn economy_current_onboarding_uses_personal_labor_without_free_materials() {
+        let run=simulate("stable_20",42,true,90);
+        assert_eq!(run.accounting.contract_goods,[0,0]);assert_eq!(run.accounting.travel_uses,0);
+        assert!(run.accounting.produced[0]>0 && run.accounting.gathering_minutes>0);
+        assert!(run.days.iter().all(|day|day.issued<=day.issuance_budget.unwrap()));
+    }
+    #[test]
+    fn economy_experiment_variants_reconcile_and_do_not_require_service_use() {
+        for experiment in EXPERIMENTS.into_iter().chain([IMPLEMENTED]) {
+            let run = simulate_experiment("stable_20", 42, true, 90, MODELS[0], Some(experiment));
+            assert!(
+                run.days
+                    .iter()
+                    .all(|d| d.issued <= d.issuance_budget.unwrap())
+            );
+            assert!(
+                run.days
+                    .iter()
+                    .all(|d| d.issued + d.unused_allowance.unwrap() == d.issuance_budget.unwrap())
+            );
+            assert!(run.days.iter().all(|d| d.newcomer_issued <= d.issued));
+            if experiment.service_uptake_percent == 0 {
+                assert_eq!(run.accounting.services, 0);
+            } else if experiment.travel_available {
+                assert!(run.accounting.travel_uses > 0);
+            } else {
+                assert_eq!(run.accounting.travel_uses, 0);
+            }
+            if !experiment.starter_materials {
+                assert_eq!(run.accounting.contract_goods, [0; 2]);
+            }
+        }
+        let no_sinks =
+            simulate_experiment("hoarders", 7, true, DAYS, MODELS[0], Some(EXPERIMENTS[3]));
+        assert_eq!(no_sinks.accounting.services, 0);
+        assert_eq!(no_sinks.accounting.stakes, 0);
+        assert!(
+            no_sinks.days.last().unwrap().total_money < 2_000_000,
+            "budget must bound issuance even when voluntary sinks are unused"
+        );
+        let a = simulate_experiment(
+            "item_shortage",
+            19,
+            true,
+            150,
+            MODELS[1],
+            Some(EXPERIMENTS[5]),
+        );
+        let b = simulate_experiment(
+            "item_shortage",
+            19,
+            true,
+            150,
+            MODELS[1],
+            Some(EXPERIMENTS[5]),
+        );
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+    }
+
+    fn comparison_record(r: &Run, name: &str) -> serde_json::Value {
+        serde_json::json!({"variant":name,"model":r.model,"scenario":r.scenario,"seed":r.seed,
+            "acceptance":r.acceptance,"accounting":r.accounting,"newcomer_cohorts":r.newcomer_cohorts,
+            "final_day":r.days.last(),
+            "reference_money_path":if r.model.name=="reference" && r.scenario=="stable_20" {
+                r.days.iter().map(|d|if d.qualified>0 {Some(d.active_money as f64/(d.qualified*70000) as f64)} else {None}).collect::<Vec<_>>()
+            } else {vec![]},
+            "tail_mean_quest_minutes": r.days.iter().rev().take(90).map(|d|d.quest_minutes).sum::<i64>() as f64 /90.0,
+            "tail_mean_gathering_minutes":r.days.iter().rev().take(90).map(|d|d.gathering_minutes).sum::<i64>() as f64 /90.0})
+    }
+    fn run_experiments(output: &str, baseline: &[Run]) {
+        let mut records: Vec<_> = baseline
+            .iter()
+            .filter(|r| r.mode == "adaptive")
+            .map(|r| comparison_record(r, "current"))
+            .collect();
+        for experiment in EXPERIMENTS {
+            let mut runs = Vec::new();
+            for model in MODELS {
+                for scenario in SCENARIOS {
+                    for seed in SEEDS {
+                        runs.push(simulate_experiment(
+                            scenario,
+                            seed,
+                            true,
+                            DAYS,
+                            model,
+                            Some(experiment),
+                        ));
+                    }
+                }
+            }
+            let directory = format!("{output}/experiments/{}", experiment.name);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                format!("{directory}/runs.json"),
+                serde_json::to_vec(&runs).unwrap(),
+            )
+            .unwrap();
+            for r in &runs {
+                records.push(comparison_record(r, experiment.name));
+            }
+            eprintln!(
+                "Experimental variant {}: 480 virtual years, all accounting/labor/budget invariants passed",
+                experiment.name
+            );
+        }
+        std::fs::write(
+            format!("{output}/comparison.json"),
+            serde_json::to_vec(&records).unwrap(),
+        )
+        .unwrap();
+        let mut text = String::from(
+            "# Experimental economy comparison\n\nCurrent means the implemented coin-only budget policy and iron-work onboarding, with private-block travel disabled and prior-day eligibility. All assumptions, prices and service participation are uncalibrated. Each variant runs all five assumption sets, twelve scenarios and eight seeds; current production and frozen-neutral controls remain in the parent report. Candidate results cannot unlock the current release gate.\n\nNormal-population results below pool stable and growing populations: sixteen runs and 48 late newcomers per row. Money and market goals retain their previous thresholds; kit completion within 60 session minutes is an additional separate diagnostic. Unfinished players remain in the denominator.\n\n| Variant / assumptions | Money passed | Market affordability passed | Both passed | Late kits | Late kits within 60 min |\n|---|---:|---:|---:|---:|---:|\n",
+        );
+        let mut verdicts = Vec::new();
+        for name in std::iter::once("current").chain(EXPERIMENTS.iter().map(|e| e.name)) {
+            let mut full = 0;
+            for model in MODELS {
+                let group: Vec<_> = records
+                    .iter()
+                    .filter(|r| {
+                        r["variant"] == name
+                            && r["model"]["name"] == model.name
+                            && matches!(
+                                r["scenario"].as_str(),
+                                Some("stable_20" | "growth_5_to_20")
+                            )
+                    })
+                    .collect();
+                let money = group
+                    .iter()
+                    .filter(|r| r["acceptance"]["money_target_met"] == true)
+                    .count();
+                let market = group
+                    .iter()
+                    .filter(|r| r["acceptance"]["starter_affordability_met"] == true)
+                    .count();
+                let both = group
+                    .iter()
+                    .filter(|r| {
+                        r["acceptance"]["money_target_met"] == true
+                            && r["acceptance"]["starter_affordability_met"] == true
+                    })
+                    .count();
+                full += both;
+                let cohorts: Vec<_> = group
+                    .iter()
+                    .flat_map(|r| r["newcomer_cohorts"].as_array().unwrap())
+                    .filter(|c| c["joined_day"] == 301)
+                    .collect();
+                let total: u64 = cohorts.iter().map(|c| c["players"].as_u64().unwrap()).sum();
+                let kits: u64 = cohorts.iter().map(|c| c["kits"].as_u64().unwrap()).sum();
+                let timely: u64 = cohorts
+                    .iter()
+                    .map(|c| c["kits_within_60_minutes"].as_u64().unwrap())
+                    .sum();
+                text.push_str(&format!("| {name} / {} | {money}/16 | {market}/16 | {both}/16 | {kits}/{total} | {timely}/{total} |\n",model.name));
+            }
+            verdicts.push(serde_json::json!({"variant":name,"normal_runs":80,"both_passed":full,"passed":full==80}));
+        }
+        text.push_str("\n## Declared experiments\n\nIssuance replaces unlimited contract coins with recent signed net removal plus a smoothed target-supply correction over 30/60/120 days. New grants subtract from that budget; expansion/contraction is limited to max(10% of yesterday, 25 coins per eligible player) per day. Funding is capped at 1,200/eligible identity/day. Twenty percent is reserved for identities in their first fourteen days. Current uses known prior-day identities with five recent active minutes, whether present today or absent; historical candidates use present identities and immediate arrivals. Current subtracts yesterday's grants; historical candidates subtract same-day grants. Rounding priority rotates daily, no first-come pool. Unspent allowances expire, not promised rewards; there are no pending multi-day contracts in this model. Each offered reward is fixed before its simulated work.\n\nServices cost 25 coins to save two contract-travel minutes, or 10 coins per iron-equivalent repair (up to three/day). They require a protected 1,000-coin wallet reserve and economic benefit at the player's reservation values. Willingness is 0%, 35% or 70% per day; hoarders always refuse. Actual spend is lower than willingness, never automatically imposed. Repairs meet wear needs without creating tradable ingots. A starter-material variant grants 3/8/8/8 iron and one initial food bundle through at most the first four completed contracts while still unequipped: finite NPC-created goods, separately reconciled from mining.\n\nBudgeted variants value the first ten nontransferable contract progress points at an assumed five coins each, to model some noncurrency motivation. Difficulty retains the production lifetime-coin earning curve; noncurrency progression is tracked separately. The reported personal progression gate requires ten contracts and 120 iron-gathering minutes; it does not model advanced recipes, item trading or player demand for those recipes. It is not evidence that rich players will choose mining.\n\nMarket affordability probes use the actual candidate daily allowance for a hypothetical new entrant, fixed at the day's budget/price/policy for up to a year. Materials, self-gathering and service benefits are excluded from that coin-only probe and included in actual cohort progression. The baseline probe remains unchanged. Zero allowance is not treated as unlimited income.\n\nLimitations: daily allowances can offer smaller coin rewards; agents may choose gathering instead. Historical candidates include hypothetical travel; current production has no travel benefit or charge. Current has repairs and an iron-work starter objective; no new free materials or bonus XP. Historical material/XP assumptions remain candidate comparisons. The current agent model uses the hunting repeatable route; API/plugin tests cover fishing and farming, whose action rates are not calibrated here. SQL/API tests verify production reservations and durable delivery; multi-day promises, outages and multi-session quest progress are not represented in this agent model. Current coin-only affordability probes include a one-day onboarding delay; they then hold the hypothetical next-day share fixed. The repair benefit is approximated as iron-equivalent wear, rather than executing Bukkit durability rules. Historical XP has assumed utility; the diagnostic mining gate is not a production crafting restriction. Onboarding assumes acceptance on arrival (zero coins), ten personally gathered iron and five smelting minutes. Carried agent progress does not emulate 24-hour expiry or furnace parallelism; do not infer live completion times from it. Raw full traces are in experiments/<variant>/runs.json; comparison.json includes every scenario, accounting totals and censored cohorts. Do not deploy a candidate solely because its pooled averages look favorable.\n");
+        std::fs::write(format!("{output}/comparison.md"), &text).unwrap();
+        std::fs::write(
+            format!("{output}/experiment-acceptance.json"),
+            serde_json::to_vec_pretty(&verdicts).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[ignore = "full seeded year suite; run by CI and scripts/simulate-economy.sh"]
+    fn economy_simulation_year() {
+        let output =
+            std::env::var("ECONOMY_SIM_OUTPUT").unwrap_or_else(|_| "reports/economy".into());
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(format!("{output}/manifest.json"),serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version":5,"implemented_policy":IMPLEMENTED,"models":MODELS,"experiments":EXPERIMENTS,"experiment_rules":{"newcomer_days":NEWCOMER_DAYS,"newcomer_reserve_percent":20,"max_daily_allowance":MAX_DAILY_ALLOWANCE,"travel_price":TRAVEL_PRICE,"repair_price":REPAIR_PRICE,"daily_budget_step_percent":10,"daily_budget_step_floor_per_player":25,"burn_ema_new_weight":"1/7","progression_contracts":10,"progression_mining_minutes":120,"progression_point_assumed_coin_utility":5,"starter_contract_iron":[3,8,8,8],"starter_contract_food":[1,0,0,0],"release_gate":"implemented policy only; thresholds unchanged"},"rng":"SplitMix64 v1 with rejection sampling","days":DAYS,"seeds":SEEDS,"scenarios":SCENARIOS,
+            "source_sha256":hash_token(include_str!("main.rs")),"initial_policy":EconomyControl::default(),"activity_rules":EconomyActivityRules::default(),
+            "assumptions":{"calibration":"synthetic sensitivity envelope; no live measurements","labor":"minute budget shared between combat, iron and food; gathering adapts to private needs and lagged sell-through","eligible_kills_per_minute":"per model","travel_minutes_per_contract":3,"daily_play_minutes_by_kind":[30,20,60,120,60,90,90],"skill_percent_range":[75,125],"daily_productivity_percent_range":[80,120],"trader_productivity_percent":150,"starter_axe_iron":3,"starter_iron":27,"starter_food_bundles":1,"food_use_per_active_hour":1,"outstanding_need_caps":[12,3],"sell_through_ema_new_weight":0.25,"initial_sell_through":0.25,"price_sample":"market open after self-use, before purchases; concurrent full basket availability","kit_probe_limit_contracts":DAYS*ECONOMY_DAILY_CONTRACT_LIMIT as usize,"cohort_timing":"active minutes measured through end of completion session, conservative; incomplete players censored","release_gate_scenarios":["stable_20","growth_5_to_20"],"release_gate_models":"all five; existing thresholds unchanged","paired_exogenous_streams":["attendance","productivity"],"limitations":["no measured Minecraft productivity","current quests: iron-work starter then hunting route; fishing/farming action rates uncalibrated","current starter: 10 mined iron plus five assumed smelting minutes, no NPC items or XP; agent expiry not emulated","repair benefit approximates iron-equivalent wear; no equipment durability or crafting engine","pending commitments covered by SQL tests rather than agent model","diagnostic mining gate is not a production crafting restriction","no long-lived pinned listings","no causal claim from endogenous RNG branches"]}
+        })).unwrap()).unwrap();
+        let mut runs = Vec::new();
+        for model in MODELS {
+            for scenario in SCENARIOS {
+                for seed in SEEDS {
+                    for adaptive in [true, false] {
+                        runs.push(simulate_model(scenario, seed, adaptive, DAYS, model));
+                    }
+                }
+            }
+        }
+        let mut aggregate = BTreeMap::<String, Vec<&Run>>::new();
+        for run in &runs {
+            aggregate
+                .entry(format!(
+                    "{} / {} / {}",
+                    run.model.name, run.scenario, run.mode
+                ))
+                .or_default()
+                .push(run);
+        }
+        let mut summary = String::from(
+            "# Economy simulation results\n\nSynthetic scenarios, not observed Minecraft prices. Production rules, five assumption sets × twelve scenarios × eight seeds × two policies = 960 virtual years; adaptive policy is paired with frozen neutral policy.\n\nAcceptance thresholds chosen before running: last-90-day mean active money per qualifying player between 0.5× and 1.5×70,000; starter basket available on at least 80% of those days and its 90th-percentile beginner earning time at most 60 active minutes. Model basket: 27 iron ingots and one food bundle; common sticks assumed freely available. Market quotes are sampled before purchases. This remains a quest-funded full-market-basket test; actual self-gathered and mixed-route progression is reported separately without weakening the gate.\n\n| Scenario / policy | Money target passed | Starter affordability passed | Median final total coins |\n|---|---:|---:|---:|\n",
+        );
+        for (name, group) in &aggregate {
+            let mut totals: Vec<i64> = group
+                .iter()
+                .map(|r| r.days.last().unwrap().total_money)
+                .collect();
+            let money = group
+                .iter()
+                .filter(|r| r.acceptance.money_target_met)
+                .count();
+            let prices = group
+                .iter()
+                .filter(|r| r.acceptance.starter_affordability_met)
+                .count();
+            summary.push_str(&format!(
+                "| {name} | {money}/8 | {prices}/8 | {} |\n",
+                median(&mut totals).unwrap()
+            ));
+        }
+        summary.push_str("\nFinal total includes inactive wallets; money acceptance uses qualifying wallets only. Three original regulars retire on day 300 and three newcomers replace them; old balances are retained.\n\n| Reference assumptions, adaptive, seed 42 | Day-30 starter quote | Day-365 starter quote | Day-365 earning minutes | Late newcomers with kit by year end |\n|---|---:|---:|---:|---:|\n");
+        for r in runs
+            .iter()
+            .filter(|r| r.mode == "adaptive" && r.seed == 42 && r.model.name == "reference")
+        {
+            let old = &r.days[29];
+            let last = r.days.last().unwrap();
+            let quote = |d: &Day| {
+                d.starter_quote
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "No complete basket".into())
+            };
+            let time = last
+                .beginner_minutes
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| {
+                    if last.beginner_beyond_year {
+                        "Beyond one-year probe".into()
+                    } else {
+                        "No complete basket".into()
+                    }
+                });
+            summary.push_str(&format!(
+                "| {} | {} | {} | {} | {}/{} |\n",
+                r.scenario,
+                quote(old),
+                quote(last),
+                time,
+                r.late_newcomers_with_kit,
+                r.late_newcomers
+            ));
+        }
+        summary.push_str("\n### Assumption sensitivity (adaptive policy, stable population)\n\nThese are uncalibrated hypotheses, not measured mining rates. Each result includes eight seeds. Cohort minutes count entire sessions; unfinished players remain in the completion denominator.\n\n| Assumptions | Money passed | Market affordability passed | Late kits acquired | Completed late kit minutes p90 |\n|---|---:|---:|---:|---:|\n");
+        for model in MODELS {
+            let group: Vec<_> = runs
+                .iter()
+                .filter(|r| {
+                    r.model.name == model.name && r.scenario == "stable_20" && r.mode == "adaptive"
+                })
+                .collect();
+            let late: Vec<_> = group
+                .iter()
+                .flat_map(|r| r.newcomer_cohorts.iter().filter(|c| c.joined_day == 301))
+                .collect();
+            let done: usize = late.iter().map(|c| c.kits).sum();
+            let all: usize = late.iter().map(|c| c.players).sum();
+            let p90s: Vec<_> = late
+                .iter()
+                .filter_map(|c| c.kit_active_minutes_p90)
+                .collect();
+            summary.push_str(&format!(
+                "| {} | {}/8 | {}/8 | {done}/{all} | {} |\n",
+                model.name,
+                group
+                    .iter()
+                    .filter(|r| r.acceptance.money_target_met)
+                    .count(),
+                group
+                    .iter()
+                    .filter(|r| r.acceptance.starter_affordability_met)
+                    .count(),
+                percentile(p90s)
+                    .map(|v| format!("{v} (p90 of cohort p90s)"))
+                    .unwrap_or_else(|| "No completed kits".into())
+            ));
+        }
+        summary.push_str("\nAxes (3 iron), full kits, calendar days, active minutes and incomplete counts for starting and late cohorts are in runs.json. Day-301 newcomers face the actual evolving market, spend a finite play budget, self-gather and buy individual pieces; they do not use the frozen-price probe. Starter basket availability can fail while players successfully equip themselves. Labor choice uses posted personal reservation prices and lagged sales, without future information.\n");
+        summary.push_str("\nKnown limits: gathering rates, eligible kills/minute, demand, seller price changes and minigame participation are explicit behavioral assumptions. The model does not reproduce Minecraft navigation, AuthMe, spawn tagging, client behavior or bot detection. Empty markets have no invented price. Hoarding and inactive alternate accounts can break monetary targets; extra accounts are identities, not proven humans. Existing SQL tests cover transactional retries and concurrency; this suite covers long-run arithmetic and modeled behavior.\n");
+        summary.push_str("\n[Experimental policy comparison](comparison.md) evaluates six alternatives across all assumption sets and scenarios (2,880 additional virtual years). These experimental rules are not deployed; the current release gate above remains in force.\n");
+        std::fs::write(format!("{output}/summary.md"), &summary).unwrap();
+        std::fs::write(
+            format!("{output}/runs.json"),
+            serde_json::to_vec(&runs).unwrap(),
+        )
+        .unwrap();
+        let mut csv = String::from(
+            "model,scenario,mode,seed,day,identities,present,qualified,total_money,active_money,target,level,fee_bps,issued,net_games,fees,trade_volume,median_balance,top_tenth_share,starter_quote,beginner_minutes,beginner_days,beginner_beyond_year,iron_sale_price,food_sale_price,axes_owned,kits_owned,unmet_iron,quest_minutes,gathering_minutes\n",
+        );
+        for r in &runs {
+            for d in &r.days {
+                let opt = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_default();
+                csv.push_str(&format!(
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.6},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    r.model.name,
+                    r.scenario,
+                    r.mode,
+                    r.seed,
+                    d.day,
+                    d.identities,
+                    d.present,
+                    d.qualified,
+                    d.total_money,
+                    d.active_money,
+                    d.target,
+                    d.level,
+                    d.fee_bps,
+                    d.issued,
+                    d.net_games,
+                    d.fees,
+                    d.trade_volume,
+                    d.median_balance,
+                    d.top_tenth_share,
+                    opt(d.starter_quote),
+                    opt(d.beginner_minutes),
+                    d.beginner_days.map(|x| x.to_string()).unwrap_or_default(),
+                    d.beginner_beyond_year,
+                    opt(d.iron_sale_price),
+                    opt(d.food_sale_price),
+                    d.axes_owned, d.kits_owned, d.unmet_iron, d.quest_minutes, d.gathering_minutes
+                ));
+            }
+        }
+        std::fs::write(format!("{output}/daily.csv"), csv).unwrap();
+        println!("{summary}");
+        let failures: Vec<String> = runs
+            .iter()
+            .filter(|r| {
+                r.mode == "adaptive"
+                    && matches!(r.scenario.as_str(), "stable_20" | "growth_5_to_20")
+                    && (!r.acceptance.money_target_met || !r.acceptance.starter_affordability_met)
+            })
+            .map(|r| {
+                format!(
+                    "{} / {} seed {}: money={}, affordability={}",
+                    r.model.name,
+                    r.scenario,
+                    r.seed,
+                    r.acceptance.money_target_met,
+                    r.acceptance.starter_affordability_met
+                )
+            })
+            .collect();
+        std::fs::write(format!("{output}/acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":failures.is_empty(),"failures":failures,"strict":std::env::var("ECONOMY_SIM_STRICT").as_deref()==Ok("1")})).unwrap()).unwrap();
+        run_experiments(&output, &runs);
+        if !failures.is_empty() {
+            eprintln!(
+                "Economic acceptance FAILED in {} normal-population runs; accounting invariants passed. See {output}/acceptance.json",
+                failures.len()
+            );
+        }
+        if std::env::var("ECONOMY_SIM_STRICT").as_deref() == Ok("1") {
+            assert!(
+                failures.is_empty(),
+                "economic release acceptance failed; see {output}/summary.md and acceptance.json"
+            );
+        }
+    }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { ApiError, sendInventoryToMarket, getPlayerInventory, type InventorySlot, type InventoryView } from '../lib/api'
+import { ApiError, getMarketQuote, type MarketQuote, sendInventoryToMarket, getPlayerInventory, type InventorySlot, type InventoryView } from '../lib/api'
 import ItemBubble from '../components/ItemBubble'
 import { itemName, slotDescription } from '../lib/inventory'
 
@@ -16,6 +16,19 @@ export default function InventoryPage({ uuid, username, visible }: { uuid: strin
   const [quantity, setQuantity] = useState('1')
   const [unitPrice, setUnitPrice] = useState('')
   const [lotPrice, setLotPrice] = useState('')
+  const [quote, setQuote] = useState<{ key: string; value: MarketQuote } | null>(null)
+  const quoteKey = JSON.stringify([quantity, unitPrice, lotPrice])
+  const currentQuote = quote?.key === quoteKey ? quote.value : null
+  useEffect(() => {
+    if (!selected || (!unitPrice && !lotPrice)) return
+    let active = true
+    const timer = window.setTimeout(() => {
+      void getMarketQuote({ quantity: Number(quantity), unit_price: unitPrice ? Number(unitPrice) : null, lot_price: lotPrice ? Number(lotPrice) : null })
+        .then((value) => { if (active) setQuote({ key: quoteKey, value }) })
+        .catch(() => { if (active) setQuote(null) })
+    }, 250)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [selected, quantity, unitPrice, lotPrice, quoteKey, version])
   const selectionId = useId()
   const selectionHeading = useRef<HTMLHeadingElement>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
@@ -29,14 +42,16 @@ export default function InventoryPage({ uuid, username, visible }: { uuid: strin
   const dismiss = () => { setSelected(null); returnFocus.current?.focus() }
   const sendToMarket = async (event: FormEvent) => {
     event.preventDefault()
-    if (!selected?.item.fingerprint || submitting) return
+    if (!selected?.item.fingerprint || !currentQuote || submitting) return
     setSubmitting(true); setActionError('')
     try {
-      await sendInventoryToMarket(uuid, { slot: selected.index, fingerprint: selected.item.fingerprint, quantity: Number(quantity), unit_price: unitPrice ? Number(unitPrice) : null, lot_price: lotPrice ? Number(lotPrice) : null })
+      await sendInventoryToMarket(uuid, { expected_commission_bps: currentQuote.commission_bps, slot: selected.index, fingerprint: selected.item.fingerprint, quantity: Number(quantity), unit_price: unitPrice ? Number(unitPrice) : null, lot_price: lotPrice ? Number(lotPrice) : null })
       setActionMessage('Transfer requested. Your listing appears after the game server confirms the items were sent.')
       dismiss()
     } catch (error) {
-      setActionError(error instanceof ApiError && error.status === 409
+      setActionError(error instanceof ApiError && error.status === 412
+        ? 'The commission changed. Review the refreshed proceeds and submit again.'
+        : error instanceof ApiError && error.status === 409
         ? 'The stack changed or another inventory transfer is pending. Refresh and select the item again.'
         : error instanceof ApiError && error.status === 429 ? 'You have reached the limit of 100 active listings for this player. Finish or cancel a listing first.' : 'Could not confirm the transfer request. Refresh before trying again.')
     } finally { setSubmitting(false); setVersion((value) => value + 1) }
@@ -88,8 +103,13 @@ export default function InventoryPage({ uuid, username, visible }: { uuid: strin
       </div>
       <p>Set either price or both. The whole-lot price is independent, so you can offer a bulk discount. After a partial sale, its price reduces proportionally, rounded up to a whole coin.</p>
       {!selected.item.fingerprint && <p>This snapshot has no item fingerprint. After the inventory refreshes, close these details and select the item again to send it.</p>}
+      {(unitPrice || lotPrice) && <div aria-live="polite">{currentQuote ? <>
+        <p>Seller commission: {currentQuote.commission_bps / 100}%, fixed for this listing. Charged only on completed sales; fractions round up cumulatively across partial sales.</p>
+        {currentQuote.unit && <p>If all selected items sell at the unit price: {currentQuote.unit.proceeds.toLocaleString()} coins to you · {currentQuote.unit.fee.toLocaleString()} coins commission.</p>}
+        {currentQuote.lot && <p>If the whole lot sells now: {currentQuote.lot.proceeds.toLocaleString()} coins to you · {currentQuote.lot.fee.toLocaleString()} coins commission.</p>}
+      </> : <p>Enter valid prices to load seller proceeds. If unavailable, <button type="button" className="btn btn-quiet" onClick={() => setVersion((value) => value + 1)}>Retry quote</button></p>}</div>}
       <div className="inv-actions">
-        <button type="submit" className="btn btn-primary" disabled={submitting || !selected.item.fingerprint || (!unitPrice && !lotPrice) || inventory?.marketplace?.status === 'pending'}>{submitting ? 'Sending…' : 'Send to Marketplace'}</button>
+        <button type="submit" className="btn btn-primary" disabled={submitting || !currentQuote || !selected.item.fingerprint || (!unitPrice && !lotPrice) || inventory?.marketplace?.status === 'pending'}>{submitting ? 'Sending…' : 'Send to Marketplace'}</button>
         <button type="button" className="btn" disabled={submitting} onClick={dismiss}>Cancel</button>
       </div>
       {actionError && <p role="alert">{actionError}</p>}

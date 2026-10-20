@@ -65,6 +65,7 @@ export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer
         playSound(next.payout > 0 ? 'done' : 'close')
       } else playSound('click')
     } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 412) window.dispatchEvent(new Event('economy-policy-changed'))
       setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message)
       invalidateServerData('stats')
     } finally { sending.current = false; setBusy(false) }
@@ -116,14 +117,15 @@ export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer
               : <p>TNT ends the round. Clear every safe cell to collect automatically.</p>}
         </div>
         {playing ? <button className="btn btn-primary game-primary" disabled={busy || opened < round.min_safe} onClick={() => { void act(() => cashOutMines(round.round_id)) }}>{busy ? 'Checking…' : `Cash out · ${formatCoins(round.cashout)} coins`}</button>
-          : <button className="btn btn-primary game-primary" disabled={busy || !validBet} onClick={() => { void act(() => startMines({ uuid: payer.uuid, bet, mines })) }}>{busy ? 'Dealing…' : `${round ? 'Play again' : 'Start round'} · ${formatCoins(bet)} coins`}</button>}
+          : <button className="btn btn-primary game-primary" disabled={busy || !validBet} onClick={() => { void act(() => startMines({ uuid: payer.uuid, bet, mines, economy_level: rules.economy.level })) }}>{busy ? 'Dealing…' : `${round ? 'Play again' : 'Start round'} · ${formatCoins(bet)} coins`}</button>}
       </section>
       <div className="game-options">
         <fieldset className="game-difficulty" disabled={playing || busy}><legend>Difficulty</legend><div>{rules.mines.presets.map((value) => <button key={value.mines} className="btn btn-quiet" aria-pressed={mines === value.mines} onClick={() => setMines(value.mines)}>{PRESETS[value.mines]}<small>{value.mines} TNT</small></button>)}</div></fieldset>
         <GameBetControls id="mines-stake" bet={bet} balance={balance} rules={rules} disabled={playing || busy} onChange={setBet} />
-        <p className="game-rules">Expected return at earliest cash-out: {formatReturn(preset.rtp_x10000)}. A round expires 15 minutes after it starts. Leaving this page keeps it available until then.</p>
+        <p className="game-rules">Expected return at earliest cash-out: {formatReturn(playing && round ? round.rtp_x10000 : preset.rtp_x10000)}. A round expires 15 minutes after it starts. Leaving this page keeps it available until then.</p>
       </div>
     </div>
+    {!playing && <p className="game-rules">For new fields: {preset.ore_adjustment === 'none' ? 'standard ore distribution' : `${formatReturn(preset.ore_adjustment_chance_x10000)} chance to replace one ${preset.ore_adjustment === 'iron_to_gold' ? 'iron with gold' : 'gold with iron'}`}. TNT count and ore rewards stay as shown. Each field keeps its dealt rules.</p>}
     {showTable && <section className="game-paytable"><h2>Ore rewards · {preset.mines} TNT</h2><p className="page-sub">Each ore adds to your multiplier. Find at least {rules.mines.min_safe} ores before cashing out.</p><table><thead><tr><th>Find</th><th>Reward</th></tr></thead><tbody>
       {(['iron', 'gold', 'diamond'] as const).map((ore) => <tr key={ore}><th><img src={ITEMS[ore]} alt="" />{ORE_LABELS[ore]}</th><td>{formatBoost(boost(ore))}</td></tr>)}
       <tr><th><img src={tnt} alt="" />TNT</th><td>Stake lost</td></tr>

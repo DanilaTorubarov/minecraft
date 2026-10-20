@@ -305,13 +305,15 @@ export type InventoryView = {
   slots: InventorySlot[] | null
 }
 
-export type MarketListingInput = { slot: number; fingerprint: string; quantity: number; unit_price: number | null; lot_price: number | null }
+export type MarketListingInput = { expected_commission_bps: number; slot: number; fingerprint: string; quantity: number; unit_price: number | null; lot_price: number | null }
 export type MarketListing = {
   id: string; seller: string; mine: boolean; item: NonNullable<InventorySlot>;
+  commission_bps: number; gross_sold: number; fee_paid: number;
   quantity: number; remaining: number; unit_price: number | null; lot_price: number | null;
   status: 'pending' | 'active' | 'conflict' | 'closed'
 }
 export type MarketView = {
+  commission_bps: number;
   next_cursor: string | null;
   listings: MarketListing[];
   deliveries: { id: string; username: string; quantity: number; status: 'pending' | 'done'; item: NonNullable<InventorySlot> }[]
@@ -324,6 +326,12 @@ async function marketWrite(path: string, body: unknown): Promise<void> {
       headers: { 'Content-Type': 'application/json', 'X-Marketplace': 'trade' }, body: JSON.stringify(body) })
   } catch { throw new ApiError(0) }
   if (!response.ok) throw new ApiError(response.status)
+}
+export type MarketQuote = { commission_bps: number; unit: { gross: number; fee: number; proceeds: number } | null; lot: { gross: number; fee: number; proceeds: number } | null }
+export async function getMarketQuote(input: { quantity: number; unit_price: number | null; lot_price: number | null }): Promise<MarketQuote> {
+  const response = await send('POST', '/api/marketplace/quote', input)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as MarketQuote
 }
 export async function sendInventoryToMarket(uuid: string, body: MarketListingInput): Promise<void> {
   await marketWrite(`/api/players/${encodeURIComponent(uuid)}/inventory/marketplace`, body)
@@ -388,13 +396,13 @@ export async function getMinigameState(): Promise<MinesRound | null> {
  * `client_id` identifies the spin rather than the round: sending it again after a
  * lost response returns the same spin and never charges twice.
  */
-export async function spinChest(input: { uuid: string; bet: number; client_id: string }): Promise<ChestSpin> {
+export async function spinChest(input: { uuid: string; bet: number; client_id: string; economy_level?: number }): Promise<ChestSpin> {
   const response = await send('POST', '/api/minigames/chest/spin', input)
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as ChestSpin
 }
 
-export async function startMines(input: { uuid: string; bet: number; mines: number }): Promise<MinesRound> {
+export async function startMines(input: { uuid: string; bet: number; mines: number; economy_level?: number }): Promise<MinesRound> {
   const response = await send('POST', '/api/minigames/mines/start', input)
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as MinesRound

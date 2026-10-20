@@ -229,7 +229,7 @@ test('an unresolved chest request survives reload and retains the exact stake an
   const { readChestRequest, writeChestRequest } = await import('../src/lib/chestRetry.ts')
   const entries = new Map<string, string>()
   const storage = { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => { entries.set(key, value) }, removeItem: (key: string) => { entries.delete(key) } }
-  const request = { uuid: 'player-a', bet: 50, client_id: newClientId() }
+  const request = { uuid: 'player-a', bet: 50, client_id: newClientId(), economy_level: -1 }
   writeChestRequest(storage, 'user-1', request)
   const reloaded = readChestRequest(storage, 'user-1')
   assert.deepEqual(reloaded, request)
@@ -249,4 +249,10 @@ test('an unresolved chest request survives reload and retains the exact stake an
   entries.set('bad', '{broken')
   assert.equal(readChestRequest(storage, 'bad'), null)
   assert.equal(readChestRequest(null, 'user-1'), null)
+})
+
+
+test('changed economic rules are a refusal, never an insufficient-balance claim', () => {
+  assert.equal(minigameFailure(412).kind, 'invalid')
+  assert.match(minigameFailure(412).message, /No stake was charged/)
 })

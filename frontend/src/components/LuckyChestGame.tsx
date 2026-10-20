@@ -107,7 +107,7 @@ export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer,
   const spin = async () => {
     if (sending.current || busy || (!pending && !validBet)) return
     sending.current = true
-    const request = pending ?? { uuid: payer.uuid, bet, client_id: newClientId() }
+    const request = pending ?? { uuid: payer.uuid, bet, economy_level: rules.economy.level, client_id: newClientId() }
     setPending(request)
     writeChestRequest(tabStorage(), requestKey, request)
     setError(''); setResult(null); setPhase('spinning')
@@ -132,9 +132,10 @@ export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer,
       if (!mounted.current) return
       const status = failure instanceof ApiError ? failure.status : 0
       // Only a definitive validation/balance refusal permits a fresh stake.
-      if (status === 400 || status === 409) {
+      if (status === 400 || status === 409 || status === 412) {
         setPending(null); writeChestRequest(tabStorage(), requestKey, null)
       }
+      if (status === 412) window.dispatchEvent(new Event('economy-policy-changed'))
       setError(minigameFailure(status).message)
       invalidateServerData('stats')
     } finally {

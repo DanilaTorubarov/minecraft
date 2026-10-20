@@ -47,15 +47,19 @@ export function useMinigameRules() {
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let active = true
-    getMinigameRules()
-      .then((loaded) => {
-        if (active) setRules(loaded)
-      })
-      .catch((failure: unknown) => {
-        if (active) setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message)
-      })
+    const refresh = () => {
+      void getMinigameRules().then((loaded) => { if (active) { setRules(loaded); setError('') } })
+        .catch((failure: unknown) => { if (active) setError(minigameFailure(failure instanceof ApiError ? failure.status : 0).message) })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 60000)
+    window.addEventListener('focus', refresh)
+    window.addEventListener('economy-policy-changed', refresh)
     return () => {
       active = false
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener('economy-policy-changed', refresh)
     }
   }, [attempt])
   return {

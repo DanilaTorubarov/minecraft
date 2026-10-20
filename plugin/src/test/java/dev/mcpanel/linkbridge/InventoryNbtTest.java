@@ -31,6 +31,8 @@ public final class InventoryNbtTest {
             out.writeByte(10); out.writeUTF("equipment");
             for(String name:InventoryNbt.EQUIPMENT) { out.writeByte(10); out.writeUTF(name); item(out,-1,"minecraft:diamond"); }
             out.writeByte(0);
+            out.writeByte(10); out.writeUTF("BukkitValues");
+            string(out,"linkbridge:economy_task","{\"id\":\"paid-contract\",\"status\":\"done\"}");out.writeByte(0);
             string(out,"unrelated","preserve me");
             out.writeByte(7); out.writeUTF("bytes"); out.writeInt(3); out.write(new byte[]{0,1,-1});
             out.writeByte(11); out.writeUTF("ints"); out.writeInt(2); out.writeInt(42); out.writeInt(-42);
@@ -88,11 +90,23 @@ public final class InventoryNbtTest {
         check(!partial.slots().containsKey(40),"Off-hand escrow removes equipment entry");
         partial.marketReceipt("{\"id\":\"durable\",\"status\":\"done\",\"item_bytes\":\"saved\"}");
         var persisted=InventoryNbt.read(partial.bytes());
+        check(persisted.economyReceipt().equals(nbt.economyReceipt()) && persisted.economyReceipt().contains("paid-contract"),"Economy delivery receipt survives marketplace writes and restart independently");
         check(persisted.marketReceipt().contains("saved"),"Escrow bytes persist with the player receipt for replay");
         check(persisted.root.get("unrelated").value().equals("preserve me"),"Market mutation preserves player tags");
         boolean rejected=false;
         try { InventoryNbt.read(new byte[]{1,2,3}); } catch(IOException expected) { rejected=true; }
         check(rejected,"Malformed file rejected");
+        var counters=new LinkBridgePlugin.EconomyCount();
+        counters.fish=10001;counters.crops=3;counters.mined=10;counters.smelted=9;
+        long[] accepted=counters.snapshot();counters.crops+=2;counters.smelted++;
+        counters.subtract(accepted);
+        check(Arrays.equals(counters.snapshot(),new long[]{0,0,1,2,0,1}),"Quest report acceptance preserves events arriving during the request and capped remainders");
+        check(!counters.empty(),"Non-hunting progress must not be discarded as idle");
+        counters.subtract(counters.snapshot());check(counters.empty(),"All objective counters drain after acceptance");
+        check(LinkBridgePlugin.QuestRules.fish("COD")&&LinkBridgePlugin.QuestRules.fish("PUFFERFISH"),"Real fish qualify");
+        check(!LinkBridgePlugin.QuestRules.fish("BOW")&&!LinkBridgePlugin.QuestRules.fish("LILY_PAD"),"Treasure and junk are not fish");
+        check(LinkBridgePlugin.QuestRules.harvest("WHEAT",7,7)&&LinkBridgePlugin.QuestRules.harvest("BEETROOTS",3,3),"Mature supported crops qualify");
+        check(!LinkBridgePlugin.QuestRules.harvest("WHEAT",6,7)&&!LinkBridgePlugin.QuestRules.harvest("WHEAT",0,7)&&!LinkBridgePlugin.QuestRules.harvest("COCOA",2,2),"Young replanted and unsupported crops cannot farm progress");
         System.out.println("Inventory NBT regression checks passed");
     }
 }

@@ -77,6 +77,7 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
   const listings = market?.listings ?? []
   return <>
     <div className="page-head"><h1>Marketplace</h1><p className="page-sub">Trade items with other players for coins. Every listing is backed by items the game server has received.</p></div>
+    {market && <p className="note">Commission on new listings: {market.commission_bps / 100}%. Sellers keep their accepted rate for the life of each listing. Buyers pay the displayed price.</p>}
     <div className="market-toolbar">
       <label className="market-search">Find items or sellers<input type="search" value={search} maxLength={128} onChange={(event) => { setSearch(event.target.value); setCursors([]) }} placeholder="Search Marketplace" /></label>
       <div className="inv-actions" role="group" aria-label="Listings">
@@ -90,6 +91,7 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
     {selected && <section key={selected.id} className="note inv-selection" aria-labelledby={formId} onKeyDown={(event) => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); dismiss() } }}>
       <h2 ref={heading} tabIndex={-1} id={formId}>{itemName(selected.item)}</h2>
       <p>{slotDescription(selected.item)} · Seller: {selected.seller}</p>
+      <p>Seller commission: {selected.commission_bps / 100}%, included in the displayed price. {selected.mine && `${selected.gross_sold.toLocaleString()} coins sold · ${selected.fee_paid.toLocaleString()} coins commission charged.`}</p>
       {selected.status !== 'active' ? <p>{selected.status === 'pending' ? 'Waiting for the game server to transfer these items.' : selected.status === 'conflict' ? 'The stack changed or could not be transferred. Nothing was listed.' : 'This listing is closed.'}</p>
         : selected.mine ? <><p>{selected.remaining} unsold items. Cancel this listing to return them to {selected.seller}’s inventory. Delivery waits for an empty storage slot.</p><button className="btn" disabled={busy} onClick={() => { void trade(true) }}>{busy ? 'Cancelling…' : 'Cancel listing & return items'}</button></>
         : <form onSubmit={(event) => { event.preventDefault(); void trade() }}>

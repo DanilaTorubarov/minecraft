@@ -1,0 +1,2 @@
+# Reporting only; the Rust simulation and CI acceptance do not depend on Python.
+matplotlib==3.10.9

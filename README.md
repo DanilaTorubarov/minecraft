@@ -303,9 +303,11 @@ Linked saved inventories rotate through a read at most once per 30 seconds (up t
 
 Open **Marketplace** from the menu or dock. Browse confirmed escrow using the inventory's bubbles, search by item or seller, and choose a listing to inspect its prices. **My listings** includes your waiting, active, unsuccessful and closed listings. Search runs on the server and cursor pagination returns up to 50 listings per page; other users see only active offers and seller nicknames, never raw item data or private inventory.
 
+Sellers review server-calculated proceeds and the current 0–5% commission before listing; that rate is fixed for the listing. Pre-economy listings retain zero commission. Buyers pay the displayed price.
+
 Choose a linked buyer, then either a quantity at the unit price or all remaining items at the whole-lot price. Both may be offered at different rates. After a partial sale, the remaining whole-lot quote is `ceil(original lot price × remaining / original quantity)`. For example, 12 items at 10 coins each may also have a whole-lot price of 90 coins: buying 3 individually costs 30; the remaining 9-item lot costs 68. Buyers confirm the exact remaining amount and total; stale quotes return `409`, insufficient funds `422`. A website account cannot buy its own listings, even through another linked player.
 
-The purchase transaction locks the listing and both coin balances, charges once, credits the seller, reduces remaining stock and records a durable delivery. The browser retains the order ID and original quote after a lost response for safe retry. Accepted purchases are final. **Cancel listing & return items** removes an active offer and queues its unsold quantity for return to its seller. Transfers, purchases and returns survive restarts in migration `0013`.
+The purchase transaction locks the listing and both coin balances, charges once, credits the seller minus the accepted commission, reduces remaining stock and records a durable delivery. The browser retains the order ID and original quote after a lost response for safe retry. Accepted purchases are final. **Cancel listing & return items** removes an active offer and queues its unsold quantity for return to its seller. Transfers, purchases and returns survive restarts in migration `0013`.
 
 Deliveries wait for sufficient **empty storage slots**, splitting over native stack limits when needed. They never overwrite items, use armor slots or drop overflow. The recipient can stay offline; online delivery requires AuthMe authentication. The website distinguishes waiting from game-server-confirmed delivery. While a player has waiting/active listings or pending deliveries, unlink returns `409` to prevent abandoning escrow. Finish or cancel the offers and let deliveries complete first. Escrow and trade receipts are durable; do not remove them manually.
 
@@ -331,7 +333,9 @@ The builder runs NBT regression checks and installs LinkBridge 1.7.0. Database m
 
 ## Coins
 
-Each Minecraft account (offline UUID) has its own persistent balance in the panel database. After AuthMe login, every successful, uncancelled player block break earns **1 coin**, automatically, in every game mode. Placing blocks does not earn coins; placing and breaking the same block again does. Coins can be spent on Marketplace, where the price transfers to the seller. There is no real-money conversion, interest, or retroactive reward for historical statistics. Existing accounts start at zero when migration `0007` is installed.
+Each Minecraft UUID owns one persistent wallet shared by the server and website. Test block-break income has been removed. After upgrading, the first authenticated visit grants 100 coins once; `/quests start` begins a mine-and-smelt-ten-iron starter objective; afterward `/quests start hunting`, `fishing` or `farming` selects a repeatable coin quest. `/quests` shows progress. New quests give no bonus iron or XP; existing promises are honored. Contracts pay automatically, become harder as lifetime quest earnings grow, and retain their accepted reward. Existing balances are preserved, and balances/grant history survive unlinking.
+
+[ECONOMY.md](ECONOMY.md) describes the append-only ledger, daily activity qualification, 70,000-coin target, gradual controller, 0–5% seller commission, small public minigame probability adjustments, configuration, protocol and coordinated API/plugin rollout. These are monetary controls; price stability still needs observation and tuning.
 
 - `/bal` and `/balance` show the authenticated player's own balance. No target-player argument is accepted. The command flushes pending earnings before reading the database and reports unavailability if syncing fails, rather than showing a stale number. It shares the `/website` cooldown.
 - Statistics shows coins for each linked Minecraft account and the total across those accounts. Earnings also accumulate before linking, survive unlinking, and appear when the UUID is linked again.
@@ -369,7 +373,7 @@ Details:
 
 - **The server decides everything.** The browser sends a stake, or the cell it wants to open, and never an outcome; it displays the balance the response carries. There is no client-side RNG, no client-side balance, and no sandbox mode.
 - **One account pays.** Coins live on a single Minecraft UUID, so one linked account is the payer: the window shows a picker when the user has several and remembers the choice (`minecraft-minigame-payer`). With no linked account the page shows the ordinary “Link an account” pointer instead — nothing is simulated.
-- **The house keeps about 8%.** Lucky Chest returns **91.8%** of every coin staked. Each Minesweeper table (8, 10, 13 or 16 TNT) returns **92.6–92.8%** when cashing out at the earliest allowed moment, and the per-cell reward rises with the TNT count so the harder tables are wilder rather than worse. An automated test proves that no deeper cash-out beats that return, and the window displays the same figures `chest_rtp_x10000`/`mines_rtp_x10000` compute.
+- **Baseline player returns are about 92%, with small public economic adjustments.** At neutral policy, Lucky Chest has an expected return of **91.8%**. At baseline, each Minesweeper table (8, 10, 13 or 16 TNT) returns **92.6–92.8%** when cashing out at the earliest allowed moment, and the per-cell reward rises with the TNT count so the harder tables are wilder rather than worse. An automated test proves that no deeper cash-out beats that return, and the window displays the same figures `chest_rtp_x10000`/`mines_rtp_x10000` compute.
 - **One live round per user and game.** Reloading resumes the round already paid for. A round the player walks away from forfeits its stake after **15 minutes** (`MINIGAME_ROUND_TTL_SECONDS`); refunding it would let anyone scout a field for free. A chest spin carries a browser-generated `client_id`, so a retried request returns the same spin instead of charging twice, and a repeated cash-out or reveal returns the settled round.
 - **Minesweeper never leaks the field.** Until a cell is opened a response says only how many TNT the table holds. Once a round is settled — cashed out, blown up, or expired — it reveals the whole board.
 - Every coin change is one statement, `UPDATE player_stats SET coins = coins ± $1 WHERE uuid = $2 AND coins >= $1`, inside the round's transaction. The `coins >=` guard and the column's `CHECK (coins >= 0)` mean a balance can never go negative, even with two requests racing.
@@ -653,3 +657,17 @@ Sign-in accepts either an email address or a login name, trimmed and case-insens
 Minigames is entirely in English. Lucky Chest retains an unresolved spin’s exact request in session storage for the current website user; **Recover spin** retries that same stake, including after reloading the tab. Allow the recovery to finish before placing a new stake. Minesweeper identifies the original paying player when restoring a round and enforces its fifteen-minute deadline on reveal and cash-out as well as state loading. Its classic raised cells support arrow-key navigation.
 
 Migration `0015_market_task_rotation.sql` adds the last-checked time for Marketplace task rotation. Sync still returns only each player’s oldest pending task, but rotates between players so full inventories cannot hold up everyone else’s deliveries.
+
+### Economy simulation
+
+Run `./scripts/simulate-economy.sh` for 3,840 seeded virtual years across controls and six candidate policies without a running
+game or database. Add `--strict` to enforce the economic release objectives.
+Reports are saved under `reports/economy/`; `comparison.md` compares experimental
+issuance budgets, optional services and finite starter materials. [ECONOMY.md](ECONOMY.md#reproducible-virtual-world-simulation-and-ci)
+describes assumptions, charts and CI behavior. The production workflow now runs
+the strict gate and uploads results even on failure. **Strict acceptance is checked against the implemented rules; candidate success
+cannot bypass a failed gate.** The source now implements migrations 0017/0018 and
+LinkBridge 1.10.0: bounded daily issuance, newcomer shares, iron-work onboarding,
+fishing/farming/hunting objectives, and `/services repair` with a confirmed quote. `/services travel` waits
+for private blocks and charges nothing. See ECONOMY.md for startup timing,
+legacy promises and rollout requirements; local source changes are not a deployment.

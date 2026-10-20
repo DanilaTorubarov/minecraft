@@ -1,4 +1,4 @@
-export type ChestRequest = { uuid: string; bet: number; client_id: string }
+export type ChestRequest = { uuid: string; bet: number; client_id: string; economy_level?: number }
 type RequestStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 /** An unresolved stake survives navigating away or reloading this tab. */

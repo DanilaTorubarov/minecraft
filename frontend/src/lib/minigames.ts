@@ -23,6 +23,8 @@ export type ChestRules = {
 }
 
 export type MinesPresetRules = {
+  ore_adjustment_chance_x10000: number
+  ore_adjustment: 'none' | 'iron_to_gold' | 'gold_to_iron'
   mines: number
   min_safe: number
   boost_iron: number
@@ -39,6 +41,7 @@ export type MinesRules = {
 }
 
 export type MinigameRules = {
+  economy: { level: number; commission_bps: number; target_per_player: number }
   min_bet: number
   max_bet: number
   chest: ChestRules
@@ -47,6 +50,8 @@ export type MinigameRules = {
 
 /** One paid-for chest spin. The reels are the server's roll, not the browser's. */
 export type ChestSpin = {
+  economy_level: number
+  rtp_x10000: number
   round_id: string
   bet: number
   reels: string[]
@@ -64,6 +69,8 @@ export type MinesCell = {
 
 /** The Minesweeper round as the server describes it; only revealed cells are named. */
 export type MinesRound = {
+  economy_level: number
+  rtp_x10000: number
   round_id: string
   payer_uuid: string
   bet: number
@@ -156,6 +163,7 @@ export function minigameFailure(status: number): MinigameFailure {
   if (status === 409) {
     return { kind: 'balance', message: 'This player does not have enough coins for that stake.' }
   }
+  if (status === 412) return { kind: 'invalid', message: 'Economic rules changed. No stake was charged. Review the updated paytable and try again.' }
   if (status === 400) {
     return { kind: 'invalid', message: 'The request was refused. Check the stake and difficulty.' }
   }

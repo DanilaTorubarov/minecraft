@@ -112,9 +112,9 @@ function StatisticsPage({ onGoToAccount, scope, onSelectAccount, stats, loadErro
               <span className="count">{account.coins.toLocaleString()} coins</span>
             </div>
             <p className="page-sub">
-              Earn 1 coin for every block you break after logging in to
-              Minecraft. Earnings keep accruing before the account is linked,
-              too, and use /bal in game to check this balance.
+              Earn coins through hunting contracts after logging in to
+              Minecraft. Use /quests start to accept a contract and /bal to check your balance.
+              You can earn coins before linking this account.
             </p>
           </section>
           {detail !== null ? (
@@ -158,9 +158,8 @@ function StatisticsPage({ onGoToAccount, scope, onSelectAccount, stats, loadErro
           <span className="count">{summary.coins.toLocaleString()} coins</span>
         </div>
         <p className="page-sub">
-          Total across your linked Minecraft accounts. Earn 1 coin for every block
-          you break after logging in; updates automatically, and earnings appear
-          when the connection returns if syncing is interrupted.
+          Total across your linked Minecraft accounts. Use /quests start in game to earn coins.
+          Balances update automatically after the game server confirms earnings.
         </p>
       </section>
 
