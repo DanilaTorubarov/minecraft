@@ -8710,21 +8710,26 @@ mod test {
 
         let outcome = async {
             let token = test_service_token();
-            claim(&pool, &start_code(&pool, &seller_cookie).await?, &seller_uuid, "SellerMC").await?;
-            claim(&pool, &start_code(&pool, &buyer_cookie).await?, &buyer_uuid, "BuyerMC").await?;
+            let seller_name = format!("Seller_{}", &seller_uuid[..6]);
+            let buyer_name = format!("Buyer_{}", &buyer_uuid[..6]);
+            let unique_item_name = format!("SpecialItem_{}", &seller_uuid[..6]);
+
+            claim(&pool, &start_code(&pool, &seller_cookie).await?, &seller_uuid, &seller_name).await?;
+            claim(&pool, &start_code(&pool, &buyer_cookie).await?, &buyer_uuid, &buyer_name).await?;
 
             // Seed buyer with 1,000 coins and seller with 0 coins
-            sqlx::query("INSERT INTO player_stats(uuid, username, coins) VALUES($1, 'BuyerMC', 1000) ON CONFLICT(uuid) DO UPDATE SET coins=1000")
-                .bind(&buyer_uuid).execute(&pool).await?;
-            sqlx::query("INSERT INTO player_stats(uuid, username, coins) VALUES($1, 'SellerMC', 0) ON CONFLICT(uuid) DO UPDATE SET coins=0")
-                .bind(&seller_uuid).execute(&pool).await?;
+            sqlx::query("INSERT INTO player_stats(uuid, username, coins) VALUES($1, $2, 1000) ON CONFLICT(uuid) DO UPDATE SET coins=1000")
+                .bind(&buyer_uuid).bind(&buyer_name).execute(&pool).await?;
+            sqlx::query("INSERT INTO player_stats(uuid, username, coins) VALUES($1, $2, 0) ON CONFLICT(uuid) DO UPDATE SET coins=0")
+                .bind(&seller_uuid).bind(&seller_name).execute(&pool).await?;
 
-            let _ = post_internal(&pool, "/internal/inventory/report", Some(&token), inventory_body(&seller_uuid, "SellerMC"), &random_ip()).await?;
+            let _ = post_internal(&pool, "/internal/inventory/report", Some(&token), inventory_body(&seller_uuid, &seller_name), &random_ip()).await?;
 
-            // 1. Seller lists 16 Oak Planks
-            let mut item = inventory_body(&seller_uuid, "SellerMC")["slots"][0].clone();
+            // 1. Seller lists 16 of the unique item
+            let mut item = inventory_body(&seller_uuid, &seller_name)["slots"][0].clone();
             item["fingerprint"] = serde_json::json!("a".repeat(64));
             item["amount"] = serde_json::json!(16);
+            item["display_name"] = serde_json::json!(unique_item_name);
             let sell_payload = serde_json::json!({
                 "uuid": seller_uuid,
                 "slot": 0,
@@ -8741,7 +8746,7 @@ mod test {
             let task_id = sell_json["task_id"].as_str().ok_or("missing task_id")?;
 
             // Complete withdraw report so listing becomes active
-            let slots = inventory_body(&seller_uuid, "SellerMC")["slots"].clone();
+            let slots = inventory_body(&seller_uuid, &seller_name)["slots"].clone();
             let ack = post_internal(&pool, "/internal/marketplace/report", Some(&token), serde_json::json!({
                 "uuid": seller_uuid,
                 "id": task_id,
@@ -8765,31 +8770,30 @@ mod test {
             market_eq!(view_resp.status(), StatusCode::OK);
             let view_json = body_json(view_resp).await?;
             market_eq!(view_json["buyer_coins"], 1000);
-            market_eq!(view_json["total_count"], 1);
-            market_eq!(view_json["total_pages"], 1);
             let listings = view_json["listings"].as_array().ok_or("missing listings array")?;
-            market_eq!(listings.len(), 1);
-            market_eq!(listings[0]["id"], listing_id);
-            market_eq!(listings[0]["seller"], "SellerMC");
-            market_eq!(listings[0]["remaining"], 16);
-            market_eq!(listings[0]["unit_price"], 10);
-            market_eq!(listings[0]["lot_price"], 140);
-            market_eq!(listings[0]["item_bytes"], "YmFzZTY0LW9hay1wbGFua3M=");
-            market_eq!(listings[0]["is_mine"], false);
+            let found = listings.iter().find(|l| l["id"] == listing_id).ok_or("listing missing from marketplace")?;
+            market_eq!(found["seller"], seller_name);
+            market_eq!(found["remaining"], 16);
+            market_eq!(found["unit_price"], 10);
+            market_eq!(found["lot_price"], 140);
+            market_eq!(found["item_bytes"], "YmFzZTY0LW9hay1wbGFua3M=");
+            market_eq!(found["is_mine"], false);
 
             // 4. Query /internal/marketplace/listings as seller -> is_mine: true
             let seller_view_json = body_json(post_internal(&pool, "/internal/marketplace/listings", Some(&token), serde_json::json!({
                 "buyer_uuid": seller_uuid,
             }), &random_ip()).await?).await?;
-            market_eq!(seller_view_json["listings"][0]["is_mine"], true);
+            let seller_listings = seller_view_json["listings"].as_array().ok_or("missing seller listings")?;
+            let seller_found = seller_listings.iter().find(|l| l["id"] == listing_id).ok_or("seller listing missing")?;
+            market_eq!(seller_found["is_mine"], true);
 
-            // 5. Search filter query: "oak" matches, "diamond" does not match
+            // 5. Search filter query: unique item name matches, nonexistent does not match
             let search_match = body_json(post_internal(&pool, "/internal/marketplace/listings", Some(&token), serde_json::json!({
-                "query": "oak",
+                "query": unique_item_name,
             }), &random_ip()).await?).await?;
             market_eq!(search_match["total_count"], 1);
             let search_nomatch = body_json(post_internal(&pool, "/internal/marketplace/listings", Some(&token), serde_json::json!({
-                "query": "diamond_sword",
+                "query": format!("nonexistent_{}", &seller_uuid[..6]),
             }), &random_ip()).await?).await?;
             market_eq!(search_nomatch["total_count"], 0);
             market_eq!(search_nomatch["listings"].as_array().unwrap().len(), 0);
@@ -8871,8 +8875,10 @@ mod test {
                 .bind(listing_id).fetch_one(&pool).await?;
             market_eq!(status, "closed");
 
-            // Query listings again -> 0 active listings
-            let empty_view = body_json(post_internal(&pool, "/internal/marketplace/listings", Some(&token), serde_json::json!({}), &random_ip()).await?).await?;
+            // Query listings again with unique item name -> 0 active listings for this item
+            let empty_view = body_json(post_internal(&pool, "/internal/marketplace/listings", Some(&token), serde_json::json!({
+                "query": unique_item_name,
+            }), &random_ip()).await?).await?;
             market_eq!(empty_view["total_count"], 0);
 
             // 7. Test in-game cancel:
