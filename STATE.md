@@ -15,6 +15,7 @@
   - `POST /internal/marketplace/cancel`: allows sellers to cancel active listings and returns unsold items back to inventory via escrow delivery.
 - Test coverage:
   - Added Rust integration test `in_game_marketplace_listings_and_buy_workflow` in `src/main.rs` covering unauthenticated requests, unlinked accounts, self-purchase conflicts, quantity/total mismatch, unit and lot purchases, remaining balance updates, and listing cancellations.
+  - Isolated test inputs in `in_game_marketplace_listings_and_buy_workflow` with unique per-run names and ID matching so concurrent test runs against the shared database never collide.
   - Added Java unit test cases in `InventoryNbtTest.java` verifying `MarketRules` pagination parsing, lot/unit purchase quantity and price math, and GUI title formatting.
 - Verified `cargo check --tests`, `npm test` (60/60 tests), `npm run lint`, and `npm run build`.
 
