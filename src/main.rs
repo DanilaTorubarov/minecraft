@@ -79,6 +79,12 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/economy/travel", post(unavailable_private_block_travel))
         .route("/internal/economy/tasks/sync", post(sync_economy_tasks))
         .route("/internal/economy/tasks/report", post(report_economy_task))
+        .route("/internal/private/buy", post(buy_private_block))
+        .route("/internal/private/list", get(list_private_blocks))
+        .route("/internal/private/sync", post(sync_private_block))
+        .route("/internal/minershop/buy", post(buy_miner_pickaxe))
+        .route("/internal/mine/enter", post(enter_mine))
+        .route("/internal/mine/status", get(mine_status))
         .route("/api/minigames/config", get(minigame_config))
         .route("/api/minigames/state", get(minigame_state))
         .route("/api/minigames/chest/spin", post(spin_lucky_chest))
@@ -5013,6 +5019,326 @@ async fn report_economy_task(
     tx.commit().await.map_err(market_db)?;
     Ok(StatusCode::OK)
 }
+
+// --- Private blocks and mining dimension -----------------------------------
+
+const PRIVATE_BLOCK_PRICES: [i64; 3] = [500, 20_000, 50_000];
+const MINER_PICKAXE_PRICES: [i64; 4] = [150, 1_000, 5_000, 20_000];
+const MINE_EXPEDITION_COOLDOWN_SECONDS: i64 = 4 * 3600; // 4 hours
+const MINE_EXPEDITION_DURATION_SECONDS: i64 = 300; // 5 minutes
+
+#[derive(serde::Deserialize)]
+struct BuyPrivateBlockRequest {
+    uuid: String,
+    username: String,
+}
+
+async fn buy_private_block(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<BuyPrivateBlockRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid) || !is_minecraft_username(&body.username) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM private_blocks WHERE uuid=$1")
+        .bind(&body.uuid)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(market_db)?;
+
+    if count >= 3 {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let block_index = (count + 1) as i32;
+    let price = PRIVATE_BLOCK_PRICES[count as usize];
+
+    coin_reason(&mut tx, "private_block_buy", &format!("{}:{}", body.uuid, block_index)).await?;
+    let balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1 AND coins>=$2+$3 RETURNING coins",
+    )
+    .bind(&body.uuid)
+    .bind(price)
+    .bind(ECONOMY_SERVICE_RESERVE)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    if balance.is_none() {
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+
+    let id: String = sqlx::query_scalar(
+        "INSERT INTO private_blocks (uuid, block_index, placed) VALUES ($1, $2, false) RETURNING id::text",
+    )
+    .bind(&body.uuid)
+    .bind(block_index)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "block_index": block_index,
+        "price": price,
+        "remaining_coins": balance.unwrap()
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct ListPrivateBlocksQuery {
+    uuid: String,
+}
+
+async fn list_private_blocks(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ListPrivateBlocksQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&query.uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let rows = sqlx::query(
+        "SELECT id::text AS id, block_index, world, x, y, z, placed, radius, fuel_seconds, fuel_tier, members FROM private_blocks WHERE uuid=$1 ORDER BY block_index ASC",
+    )
+    .bind(&query.uuid)
+    .fetch_all(&pool)
+    .await
+    .map_err(market_db)?;
+
+    let mut blocks = Vec::new();
+    for r in rows {
+        let radius: i32 = r.get("radius");
+        let size = 2 * radius + 1;
+        blocks.push(serde_json::json!({
+            "id": r.get::<String, _>("id"),
+            "block_index": r.get::<i32, _>("block_index"),
+            "world": r.get::<String, _>("world"),
+            "x": r.get::<i32, _>("x"),
+            "y": r.get::<i32, _>("y"),
+            "z": r.get::<i32, _>("z"),
+            "placed": r.get::<bool, _>("placed"),
+            "radius": radius,
+            "size": size,
+            "fuel_seconds": r.get::<i64, _>("fuel_seconds"),
+            "fuel_tier": r.get::<i32, _>("fuel_tier"),
+            "members": r.get::<serde_json::Value, _>("members")
+        }));
+    }
+    Ok(Json(serde_json::Value::Array(blocks)))
+}
+
+#[derive(serde::Deserialize)]
+struct SyncPrivateBlockRequest {
+    uuid: String,
+    block_index: i32,
+    world: String,
+    x: i32,
+    y: i32,
+    z: i32,
+    placed: bool,
+    radius: i32,
+    fuel_seconds: i64,
+    fuel_tier: i32,
+    members: serde_json::Value,
+}
+
+async fn sync_private_block(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<SyncPrivateBlockRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid)
+        || !(1..=3).contains(&body.block_index)
+        || !matches!(body.radius, 1 | 3 | 5 | 7)
+        || !(1..=4).contains(&body.fuel_tier)
+        || body.fuel_seconds < 0
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let res = sqlx::query(
+        "UPDATE private_blocks SET world=$3, x=$4, y=$5, z=$6, placed=$7, radius=$8, fuel_seconds=$9, fuel_tier=$10, members=$11, updated_at=now() WHERE uuid=$1 AND block_index=$2",
+    )
+    .bind(&body.uuid)
+    .bind(body.block_index)
+    .bind(&body.world)
+    .bind(body.x)
+    .bind(body.y)
+    .bind(body.z)
+    .bind(body.placed)
+    .bind(body.radius)
+    .bind(body.fuel_seconds)
+    .bind(body.fuel_tier)
+    .bind(&body.members)
+    .execute(&pool)
+    .await
+    .map_err(market_db)?;
+
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct BuyMinerPickaxeRequest {
+    uuid: String,
+    username: String,
+    tier: i32,
+}
+
+async fn buy_miner_pickaxe(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<BuyMinerPickaxeRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid)
+        || !is_minecraft_username(&body.username)
+        || !(1..=4).contains(&body.tier)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let price = MINER_PICKAXE_PRICES[(body.tier - 1) as usize];
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+
+    coin_reason(&mut tx, "minershop_pickaxe", &format!("{}:tier{}", body.uuid, body.tier)).await?;
+    let balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1 AND coins>=$2+$3 RETURNING coins",
+    )
+    .bind(&body.uuid)
+    .bind(price)
+    .bind(ECONOMY_SERVICE_RESERVE)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    if balance.is_none() {
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+
+    tx.commit().await.map_err(market_db)?;
+    let name = match body.tier {
+        1 => "Apprentice Prospector Pickaxe",
+        2 => "Surveyor Prospector Pickaxe",
+        3 => "Excavator Prospector Pickaxe",
+        4 => "Master Core Drill",
+        _ => "Prospector Pickaxe",
+    };
+    Ok(Json(serde_json::json!({
+        "tier": body.tier,
+        "name": name,
+        "price": price,
+        "remaining_coins": balance.unwrap()
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct MineEnterRequest {
+    uuid: String,
+    username: String,
+}
+
+async fn enter_mine(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<MineEnterRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid) || !is_minecraft_username(&body.username) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+
+    let row = sqlx::query(
+        "SELECT extract(epoch FROM (now() - last_entered_at))::bigint AS elapsed FROM mine_expeditions WHERE uuid=$1 FOR UPDATE",
+    )
+    .bind(&body.uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    if let Some(r) = row {
+        let elapsed: i64 = r.get("elapsed");
+        if elapsed < MINE_EXPEDITION_COOLDOWN_SECONDS {
+            let remaining = MINE_EXPEDITION_COOLDOWN_SECONDS - elapsed;
+            return Ok(Json(serde_json::json!({
+                "allowed": false,
+                "cooldown_remaining": remaining,
+                "duration_seconds": MINE_EXPEDITION_DURATION_SECONDS
+            })));
+        }
+    }
+
+    sqlx::query(
+        "INSERT INTO mine_expeditions (uuid, last_entered_at, expedition_count) VALUES ($1, now(), 1) ON CONFLICT (uuid) DO UPDATE SET last_entered_at = now(), expedition_count = mine_expeditions.expedition_count + 1",
+    )
+    .bind(&body.uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(serde_json::json!({
+        "allowed": true,
+        "cooldown_remaining": 0,
+        "duration_seconds": MINE_EXPEDITION_DURATION_SECONDS
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct MineStatusQuery {
+    uuid: String,
+}
+
+async fn mine_status(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<MineStatusQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&query.uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row = sqlx::query(
+        "SELECT extract(epoch FROM (now() - last_entered_at))::bigint AS elapsed FROM mine_expeditions WHERE uuid=$1",
+    )
+    .bind(&query.uuid)
+    .fetch_optional(&pool)
+    .await
+    .map_err(market_db)?;
+
+    let (allowed, remaining) = match row {
+        Some(r) => {
+            let elapsed: i64 = r.get("elapsed");
+            if elapsed < MINE_EXPEDITION_COOLDOWN_SECONDS {
+                (false, MINE_EXPEDITION_COOLDOWN_SECONDS - elapsed)
+            } else {
+                (true, 0)
+            }
+        }
+        None => (true, 0),
+    };
+
+    Ok(Json(serde_json::json!({
+        "allowed": allowed,
+        "cooldown_remaining": remaining,
+        "duration_seconds": MINE_EXPEDITION_DURATION_SECONDS
+    })))
+}
 // --- Player skins ----------------------------------------------------------
 
 const MAX_SKIN_BYTES: usize = 256 * 1024;
@@ -5676,6 +6002,22 @@ mod test {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
         Ok(app(pool.clone()).oneshot(builder.body(Body::from(body.to_string()))?).await?)
+    }
+
+    async fn get_internal(
+        pool: &sqlx::PgPool,
+        uri: &str,
+        token: Option<&str>,
+        ip: &str,
+    ) -> Result<axum::response::Response, Box<dyn std::error::Error>> {
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("x-real-ip", ip);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        Ok(app(pool.clone()).oneshot(builder.body(Body::empty())?).await?)
     }
 
     // Start a link flow for a logged-in user and return the one-time code.
@@ -11148,6 +11490,104 @@ mod test {
         assert_eq!(eco["repair_unit_prices"]["gold"], 15);
         assert_eq!(eco["repair_unit_prices"]["diamond"], 60);
         assert_eq!(eco["repair_unit_prices"]["netherite"], 175);
+
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[tokio::test]
+    async fn private_blocks_and_mine_expedition_workflow() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let uuid = test_uuid(&random_ip());
+        budget_identity(&pool, &uuid).await?;
+        sqlx::query("UPDATE player_stats SET coins=100000 WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        let token = test_service_token();
+        let ip = random_ip();
+
+        let buy1_body = serde_json::json!({"uuid": uuid, "username": "MinerPro"});
+        let res1 = post_internal(&pool, "/internal/private/buy", Some(&token), buy1_body.clone(), &ip).await?;
+        assert_eq!(res1.status(), StatusCode::OK);
+        let b1 = body_json(res1).await?;
+        assert_eq!(b1["block_index"], 1);
+        assert_eq!(b1["price"], 500);
+        assert_eq!(coins_of(&pool, &uuid).await?, 99500);
+
+        let res2 = post_internal(&pool, "/internal/private/buy", Some(&token), buy1_body.clone(), &ip).await?;
+        assert_eq!(res2.status(), StatusCode::OK);
+        let b2 = body_json(res2).await?;
+        assert_eq!(b2["block_index"], 2);
+        assert_eq!(b2["price"], 20000);
+        assert_eq!(coins_of(&pool, &uuid).await?, 79500);
+
+        let res3 = post_internal(&pool, "/internal/private/buy", Some(&token), buy1_body.clone(), &ip).await?;
+        assert_eq!(res3.status(), StatusCode::OK);
+        let b3 = body_json(res3).await?;
+        assert_eq!(b3["block_index"], 3);
+        assert_eq!(b3["price"], 50000);
+        assert_eq!(coins_of(&pool, &uuid).await?, 29500);
+
+        let res4 = post_internal(&pool, "/internal/private/buy", Some(&token), buy1_body.clone(), &ip).await?;
+        assert_eq!(res4.status(), StatusCode::CONFLICT);
+
+        let list_res = get_internal(&pool, &format!("/internal/private/list?uuid={uuid}"), Some(&token), &ip).await?;
+        assert_eq!(list_res.status(), StatusCode::OK);
+        let list = body_json(list_res).await?;
+        assert_eq!(list.as_array().unwrap().len(), 3);
+
+        let sync_body = serde_json::json!({
+            "uuid": uuid,
+            "block_index": 1,
+            "world": "world",
+            "x": 100,
+            "y": 64,
+            "z": 200,
+            "placed": true,
+            "radius": 7,
+            "fuel_seconds": 21600,
+            "fuel_tier": 4,
+            "members": [test_uuid(&random_ip())]
+        });
+        let sync_res = post_internal(&pool, "/internal/private/sync", Some(&token), sync_body, &ip).await?;
+        assert_eq!(sync_res.status(), StatusCode::OK);
+
+        let list_res2 = get_internal(&pool, &format!("/internal/private/list?uuid={uuid}"), Some(&token), &ip).await?;
+        let list2 = body_json(list_res2).await?;
+        assert_eq!(list2[0]["size"], 15);
+        assert_eq!(list2[0]["fuel_tier"], 4);
+        assert_eq!(list2[0]["fuel_seconds"], 21600);
+
+        let pick1 = body_json(post_internal(&pool, "/internal/minershop/buy", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro", "tier": 1
+        }), &ip).await?).await?;
+        assert_eq!(pick1["price"], 150);
+        assert_eq!(pick1["tier"], 1);
+
+        let pick4 = body_json(post_internal(&pool, "/internal/minershop/buy", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro", "tier": 4
+        }), &ip).await?).await?;
+        assert_eq!(pick4["price"], 20000);
+        assert_eq!(pick4["tier"], 4);
+
+        let status1 = body_json(get_internal(&pool, &format!("/internal/mine/status?uuid={uuid}"), Some(&token), &ip).await?).await?;
+        assert_eq!(status1["allowed"], true);
+        assert_eq!(status1["duration_seconds"], 300);
+
+        let enter1 = body_json(post_internal(&pool, "/internal/mine/enter", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro"
+        }), &ip).await?).await?;
+        assert_eq!(enter1["allowed"], true);
+        assert_eq!(enter1["cooldown_remaining"], 0);
+
+        let enter2 = body_json(post_internal(&pool, "/internal/mine/enter", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro"
+        }), &ip).await?).await?;
+        assert_eq!(enter2["allowed"], false);
+        assert!(enter2["cooldown_remaining"].as_i64().unwrap() > 0);
+
+        let status2 = body_json(get_internal(&pool, &format!("/internal/mine/status?uuid={uuid}"), Some(&token), &ip).await?).await?;
+        assert_eq!(status2["allowed"], false);
+        assert!(status2["cooldown_remaining"].as_i64().unwrap() > 0);
 
         drop_budget_pool(admin, pool, schema).await
     }

@@ -33,14 +33,19 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.Particle;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
@@ -220,6 +225,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         initializeEconomy();
         initializeEconomyServices();
+        initializePrivateAndMining();
         lastTickAt = System.currentTimeMillis();
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, this::tickPlayTime, PLAY_TICK_TICKS, PLAY_TICK_TICKS);
@@ -351,6 +357,30 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return true;
             }
             marketCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("ps") || command.getName().equalsIgnoreCase("private") || command.getName().equalsIgnoreCase("protection")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Private] Wait a few seconds and try again.");
+                return true;
+            }
+            psCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("mine")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Mine] Wait a few seconds and try again.");
+                return true;
+            }
+            mineCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("minershop")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Miners] Wait a few seconds and try again.");
+                return true;
+            }
+            minershopCommand(player, args);
             return true;
         }
 
@@ -640,6 +670,153 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             if (isDiamondArmor(materialName)) return 60L;
             if (isNetheriteArmor(materialName)) return 175L;
             return null;
+        }
+    }
+
+    public static final class PrivateRules {
+        public static final long[] PRICES = {500L, 20000L, 50000L};
+        public static final int MAX_BLOCKS = 3;
+
+        public static long nextBlockPrice(int currentCount) {
+            if (currentCount < 0 || currentCount >= MAX_BLOCKS) return -1L;
+            return PRICES[currentCount];
+        }
+
+        public static int radiusToSize(int radius) {
+            return 2 * radius + 1;
+        }
+
+        public static int sizeToRadius(int size) {
+            return (size - 1) / 2;
+        }
+
+        public static boolean isInside(int x, int z, int coreX, int coreZ, int radius) {
+            return Math.abs(x - coreX) <= radius && Math.abs(z - coreZ) <= radius;
+        }
+
+        public static boolean canAccess(UUID player, UUID owner, List<UUID> members) {
+            if (player == null || owner == null) return false;
+            if (player.equals(owner)) return true;
+            return members != null && members.contains(player);
+        }
+    }
+
+    public static final class FuelRules {
+        public static final long MAX_STORED_FUEL = 72 * 3600L;
+
+        public static long fuelDuration(int tier) {
+            return switch (tier) {
+                case 1 -> 7200L;
+                case 2 -> 10800L;
+                case 3 -> 14400L;
+                case 4 -> 21600L;
+                default -> 0L;
+            };
+        }
+
+        public static int fuelRadius(int tier) {
+            return switch (tier) {
+                case 1 -> 1;
+                case 2 -> 3;
+                case 3 -> 5;
+                case 4 -> 7;
+                default -> 1;
+            };
+        }
+
+        public static int calculateNewTier(int currentTier, int crystalTier) {
+            return Math.max(1, Math.max(currentTier, crystalTier));
+        }
+
+        public static long calculateNewFuel(long currentFuelSeconds, int crystalTier) {
+            return Math.min(MAX_STORED_FUEL, Math.max(0L, currentFuelSeconds) + fuelDuration(crystalTier));
+        }
+
+        public static int oreTier(String materialName) {
+            if (materialName == null) return 0;
+            if (materialName.contains("COPPER")) return 1;
+            if (materialName.contains("LAPIS")) return 2;
+            if (materialName.contains("REDSTONE")) return 3;
+            if (materialName.contains("AMETHYST") || materialName.contains("EMERALD") || materialName.contains("ECHO")) return 4;
+            return 0;
+        }
+    }
+
+    public static final class PickaxeRules {
+        public static final long[] PRICES = {150L, 1000L, 5000L, 20000L};
+
+        public static long pickaxePrice(int tier) {
+            if (tier < 1 || tier > 4) return -1L;
+            return PRICES[tier - 1];
+        }
+
+        public static String pickaxeName(int tier) {
+            return switch (tier) {
+                case 1 -> "Apprentice Prospector Pickaxe";
+                case 2 -> "Surveyor Prospector Pickaxe";
+                case 3 -> "Excavator Prospector Pickaxe";
+                case 4 -> "Master Core Drill";
+                default -> "Prospector Pickaxe";
+            };
+        }
+
+        public static boolean canMineTier(int pickaxeTier, int oreTier) {
+            if (oreTier <= 0) return true;
+            return pickaxeTier >= oreTier;
+        }
+    }
+
+    public static final class ExpeditionRules {
+        public static final long DURATION_SECONDS = 300L;
+        public static final long COOLDOWN_SECONDS = 14400L;
+
+        public static boolean canEnter(long lastEnteredEpoch, long nowEpoch) {
+            if (lastEnteredEpoch <= 0) return true;
+            return nowEpoch - lastEnteredEpoch >= COOLDOWN_SECONDS;
+        }
+
+        public static long remainingCooldown(long lastEnteredEpoch, long nowEpoch) {
+            if (lastEnteredEpoch <= 0) return 0L;
+            return Math.max(0L, COOLDOWN_SECONDS - (nowEpoch - lastEnteredEpoch));
+        }
+
+        public static String formatDuration(long seconds) {
+            long s = Math.max(0L, seconds);
+            return String.format("%02d:%02d", s / 60, s % 60);
+        }
+    }
+
+    public static final class PlacedPrivateBlock {
+        public String id;
+        public UUID ownerUuid;
+        public String ownerName;
+        public int blockIndex;
+        public String world;
+        public int x;
+        public int y;
+        public int z;
+        public boolean placed;
+        public int radius;
+        public long fuelSeconds;
+        public int fuelTier;
+        public List<UUID> members = new CopyOnWriteArrayList<>();
+
+        public PlacedPrivateBlock(String id, UUID ownerUuid, String ownerName, int blockIndex,
+                                  String world, int x, int y, int z, boolean placed,
+                                  int radius, long fuelSeconds, int fuelTier, List<UUID> members) {
+            this.id = id;
+            this.ownerUuid = ownerUuid;
+            this.ownerName = ownerName;
+            this.blockIndex = blockIndex;
+            this.world = world;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.placed = placed;
+            this.radius = radius;
+            this.fuelSeconds = fuelSeconds;
+            this.fuelTier = fuelTier;
+            if (members != null) this.members.addAll(members);
         }
     }
 
@@ -1233,9 +1410,25 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private String economyPending;
     private Map<EconomyKey, long[]> economyPendingCounts = Map.of();
     private String economyBase;
+    private String internalBase;
+    private final Map<String, PlacedPrivateBlock> placedPrivateBlocks = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> activeMineExpeditions = new ConcurrentHashMap<>();
+    private final Map<UUID, net.kyori.adventure.bossbar.BossBar> expeditionBossBars = new ConcurrentHashMap<>();
+    private final Map<Location, RegeneratingOreNode> regeneratingNodes = new ConcurrentHashMap<>();
+    private final Map<UUID, PlacedPrivateBlock> activeCoreGuis = new ConcurrentHashMap<>();
+
+    private static final class RegeneratingOreNode {
+        final Material originalMaterial;
+        final long regenAtMs;
+        RegeneratingOreNode(Material originalMaterial, long regenAtMs) {
+            this.originalMaterial = originalMaterial;
+            this.regenAtMs = regenAtMs;
+        }
+    }
 
     private void initializeEconomy() {
-        economyBase = statsUrl.substring(0, statsUrl.length()-"/internal/stats/report".length()) + "/internal/economy";
+        internalBase = statsUrl.substring(0, statsUrl.length()-"/internal/stats/report".length()) + "/internal";
+        economyBase = internalBase + "/economy";
         economyOutbox = getDataFolder().toPath().resolve("pending-economy.json");
         try { if (Files.exists(economyOutbox)) economyPending = Files.readString(economyOutbox); }
         catch (IOException error) { throw new IllegalStateException("Cannot recover economy outbox", error); }
@@ -2610,6 +2803,25 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
     }
 
+    private HttpResponse<String> get(String url, Duration timeout) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(timeout)
+                .header("Authorization", "Bearer " + serviceToken)
+                .GET()
+                .build();
+
+            return http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            getLogger().warning("Could not reach the panel at " + url + ": " + e);
+            return null;
+        }
+    }
+
     private void respond(Player player, int status) {
         if (!isEnabled()) {
             return;
@@ -2646,6 +2858,803 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     private static String jsonEscape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    public ItemStack createProtectionCoreItem(int blockIndex) {
+        ItemStack item = new ItemStack(Material.LODESTONE, 1);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text("§6§l[Protection Core]"));
+        meta.lore(List.of(
+            Component.text("§7Private Block #" + blockIndex),
+            Component.text("§ePlace on the ground to establish a private zone."),
+            Component.text("§7Deposit fuel crystals to power and expand (3x3 up to 15x15).")
+        ));
+        var pdc = meta.getPersistentDataContainer();
+        pdc.set(new NamespacedKey(this, "private_core"), org.bukkit.persistence.PersistentDataType.INTEGER, blockIndex);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public ItemStack createFuelCrystalItem(int tier) {
+        Material mat = switch (tier) {
+            case 1 -> Material.RAW_COPPER;
+            case 2 -> Material.PRISMARINE_CRYSTALS;
+            case 3 -> Material.REDSTONE;
+            case 4 -> Material.ECHO_SHARD;
+            default -> Material.COAL;
+        };
+        String name = switch (tier) {
+            case 1 -> "§6[Tier 1 Fuel: Ember Shard]";
+            case 2 -> "§b[Tier 2 Fuel: Cobalt Crystal]";
+            case 3 -> "§c[Tier 3 Fuel: Crimson Core]";
+            case 4 -> "§d[Tier 4 Fuel: Astral Void Crystal]";
+            default -> "§f[Fuel Crystal]";
+        };
+        List<Component> lore = switch (tier) {
+            case 1 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+2 Hours Fuel (3x3 footprint)"), Component.text("§8Exclusive Private Fuel"));
+            case 2 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+3 Hours Fuel (7x7 footprint)"), Component.text("§8Exclusive Private Fuel"));
+            case 3 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+4 Hours Fuel (11x11 footprint)"), Component.text("§8Exclusive Private Fuel"));
+            case 4 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+6 Hours Fuel (15x15 footprint - MAX)"), Component.text("§8Exclusive Private Fuel"));
+            default -> List.of(Component.text("§7Deposit in Protection Core for fuel"));
+        };
+        ItemStack item = new ItemStack(mat, 1);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text(name));
+        meta.lore(lore);
+        var pdc = meta.getPersistentDataContainer();
+        pdc.set(new NamespacedKey(this, "fuel_tier"), org.bukkit.persistence.PersistentDataType.INTEGER, tier);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public ItemStack createProspectorPickaxeItem(int tier) {
+        Material mat = switch (tier) {
+            case 1 -> Material.GOLDEN_PICKAXE;
+            case 2 -> Material.IRON_PICKAXE;
+            case 3 -> Material.DIAMOND_PICKAXE;
+            case 4 -> Material.NETHERITE_PICKAXE;
+            default -> Material.IRON_PICKAXE;
+        };
+        String name = PickaxeRules.pickaxeName(tier);
+        ItemStack item = new ItemStack(mat, 1);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text(name));
+        meta.lore(List.of(
+            Component.text("§7Prospector Mining Tool"),
+            Component.text("§eCan harvest up to Tier " + tier + " fuel crystals."),
+            Component.text("§8Exclusive Mining Dimension Tool")
+        ));
+        var pdc = meta.getPersistentDataContainer();
+        pdc.set(new NamespacedKey(this, "prospector_tier"), org.bukkit.persistence.PersistentDataType.INTEGER, tier);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private void initializePrivateAndMining() {
+        if (getCommand("ps") != null) {
+            getCommand("ps").setExecutor(this);
+            getCommand("ps").setTabCompleter((sender, cmd, alias, args) -> {
+                if (args.length == 1) {
+                    return List.of("buy", "list", "add", "remove", "info").stream()
+                        .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                }
+                return List.of();
+            });
+        }
+        if (getCommand("mine") != null) {
+            getCommand("mine").setExecutor(this);
+            getCommand("mine").setTabCompleter((sender, cmd, alias, args) -> {
+                if (args.length == 1) {
+                    return List.of("enter", "time", "leave", "shop").stream()
+                        .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                }
+                return List.of();
+            });
+        }
+        if (getCommand("minershop") != null) {
+            getCommand("minershop").setExecutor(this);
+            getCommand("minershop").setTabCompleter((sender, cmd, alias, args) -> {
+                if (args.length == 1) {
+                    return List.of("buy").stream().filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                }
+                if (args.length == 2 && args[0].equalsIgnoreCase("buy")) {
+                    return List.of("1", "2", "3", "4").stream().filter(s -> s.startsWith(args[1])).toList();
+                }
+                return List.of();
+            });
+        }
+
+        try {
+            World mineWorld = getServer().getWorld("mine_world");
+            if (mineWorld == null) {
+                var creator = new org.bukkit.WorldCreator("mine_world");
+                creator.environment(World.Environment.NORMAL);
+                mineWorld = creator.createWorld();
+            }
+            if (mineWorld != null) {
+                mineWorld.setGameRule(org.bukkit.GameRule.DO_MOB_SPAWNING, true);
+                mineWorld.setSpawnLocation(0, 40, 0);
+            }
+        } catch (Exception error) {
+            getLogger().warning("Could not initialize mine_world: " + error.getMessage());
+        }
+
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            long now = System.currentTimeMillis();
+
+            // 1. Expedition timer
+            for (var entry : activeMineExpeditions.entrySet()) {
+                UUID u = entry.getKey();
+                long expires = entry.getValue();
+                Player p = getServer().getPlayer(u);
+                if (p == null || !p.isOnline()) {
+                    activeMineExpeditions.remove(u);
+                    var b = expeditionBossBars.remove(u);
+                    continue;
+                }
+                long leftSeconds = (expires - now) / 1000L;
+                if (leftSeconds <= 0) {
+                    endMineExpedition(p, "Expedition time expired! You have been returned to the surface.");
+                } else {
+                    var bar = expeditionBossBars.get(u);
+                    if (bar != null) {
+                        float progress = Math.max(0.0f, Math.min(1.0f, (float) leftSeconds / 300.0f));
+                        bar.progress(progress);
+                        bar.name(Component.text("⏳ [Mine Expedition] " + ExpeditionRules.formatDuration(leftSeconds) + " remaining"));
+                    }
+                }
+            }
+
+            // 2. Ore regeneration
+            var it = regeneratingNodes.entrySet().iterator();
+            while (it.hasNext()) {
+                var entry = it.next();
+                if (now >= entry.getValue().regenAtMs) {
+                    Location loc = entry.getKey();
+                    if (loc.getWorld() != null && loc.getBlock().getType() == Material.BEDROCK) {
+                        loc.getBlock().setType(entry.getValue().originalMaterial);
+                        loc.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, loc.clone().add(0.5, 0.5, 0.5), 10);
+                        loc.getWorld().playSound(loc, org.bukkit.Sound.BLOCK_AMETHYST_BLOCK_CHIME, 1.0f, 1.2f);
+                    }
+                    it.remove();
+                }
+            }
+
+            // 3. Fuel burn
+            for (var pb : placedPrivateBlocks.values()) {
+                if (pb.placed && pb.fuelSeconds > 0) {
+                    pb.fuelSeconds--;
+                }
+            }
+        }, 20L, 20L);
+    }
+
+    private void endMineExpedition(Player player, String message) {
+        UUID uuid = player.getUniqueId();
+        activeMineExpeditions.remove(uuid);
+        var bar = expeditionBossBars.remove(uuid);
+        if (bar != null) {
+            player.hideBossBar(bar);
+        }
+        World overworld = getServer().getWorlds().getFirst();
+        player.teleport(overworld.getSpawnLocation());
+        player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_CHEST_CLOSE, 1.0f, 1.0f);
+        if (message != null && !message.isBlank()) {
+            player.sendMessage("§e[Mine] " + message);
+        }
+    }
+
+    private String blockKey(Location loc) {
+        return loc.getWorld().getName() + ":" + loc.getBlockX() + ":" + loc.getBlockY() + ":" + loc.getBlockZ();
+    }
+
+    private PlacedPrivateBlock getPlacedCoreAt(Location loc) {
+        return placedPrivateBlocks.get(blockKey(loc));
+    }
+
+    private PlacedPrivateBlock getProtectingBlock(Location loc) {
+        String world = loc.getWorld().getName();
+        int x = loc.getBlockX();
+        int z = loc.getBlockZ();
+        for (PlacedPrivateBlock pb : placedPrivateBlocks.values()) {
+            if (pb.placed && pb.fuelSeconds > 0 && pb.world.equals(world)) {
+                if (PrivateRules.isInside(x, z, pb.x, pb.z, pb.radius)) {
+                    return pb;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void syncPrivateBlockAsync(PlacedPrivateBlock pb) {
+        var body = new com.google.gson.JsonObject();
+        body.addProperty("uuid", pb.ownerUuid.toString());
+        body.addProperty("block_index", pb.blockIndex);
+        body.addProperty("world", pb.world);
+        body.addProperty("x", pb.x);
+        body.addProperty("y", pb.y);
+        body.addProperty("z", pb.z);
+        body.addProperty("placed", pb.placed);
+        body.addProperty("radius", pb.radius);
+        body.addProperty("fuel_seconds", pb.fuelSeconds);
+        body.addProperty("fuel_tier", pb.fuelTier);
+        var arr = new com.google.gson.JsonArray();
+        for (UUID u : pb.members) arr.add(u.toString());
+        body.add("members", arr);
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            post(internalBase + "/private/sync", body.toString(), requestTimeout);
+        });
+    }
+
+    private void psCommand(Player player, String[] args) {
+        if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+            player.sendMessage("§6=== Private Block System ===");
+            player.sendMessage("§e/ps buy §7— Buy next private block (1/3: 500c, 2/3: 20k, 3/3: 50k)");
+            player.sendMessage("§e/ps list §7— List your private blocks and remaining fuel");
+            player.sendMessage("§e/ps add <player> §7— Add a trusted friend to current private block");
+            player.sendMessage("§e/ps remove <player> §7— Remove friend from current private block");
+            player.sendMessage("§e/ps info §7— View details of the private block where you stand");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("buy")) {
+            UUID uuid = player.getUniqueId();
+            String username = player.getName();
+            player.sendMessage("[Private] Contacting server to purchase private block...");
+            getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                var response = post(internalBase + "/private/buy",
+                    "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\"}", requestTimeout);
+                getServer().getScheduler().runTask(this, () -> {
+                    if (response == null) {
+                        player.sendMessage("[Private] Server did not respond. No coins charged.");
+                        return;
+                    }
+                    if (response.statusCode() == 200) {
+                        try {
+                            var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                            int blockIndex = json.get("block_index").getAsInt();
+                            long price = json.get("price").getAsLong();
+                            ItemStack core = createProtectionCoreItem(blockIndex);
+                            player.getInventory().addItem(core);
+                            player.sendMessage(String.format(Locale.ROOT,
+                                "[Private] Purchased Private Block #%d for %,d coins! Place it to establish your zone.",
+                                blockIndex, price));
+                        } catch (Exception e) {
+                            player.sendMessage("[Private] Error reading purchase response.");
+                        }
+                    } else if (response.statusCode() == 409) {
+                        player.sendMessage("[Private] You already own the maximum of 3 private blocks!");
+                    } else if (response.statusCode() == 402) {
+                        player.sendMessage("[Private] Insufficient coins! Keep at least 1,000 coins in reserve.");
+                    } else {
+                        player.sendMessage("[Private] Cannot purchase private block at this time (" + response.statusCode() + ").");
+                    }
+                });
+            });
+            return;
+        }
+        if (args[0].equalsIgnoreCase("list")) {
+            UUID uuid = player.getUniqueId();
+            getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                var response = get(internalBase + "/private/list?uuid=" + uuid, requestTimeout);
+                getServer().getScheduler().runTask(this, () -> {
+                    if (response == null || response.statusCode() != 200) {
+                        player.sendMessage("[Private] Cannot fetch your private blocks right now.");
+                        return;
+                    }
+                    try {
+                        var array = com.google.gson.JsonParser.parseString(response.body()).getAsJsonArray();
+                        if (array.isEmpty()) {
+                            player.sendMessage("[Private] You do not own any private blocks. Use /ps buy to purchase one!");
+                            return;
+                        }
+                        player.sendMessage("§6=== Your Private Blocks (" + array.size() + "/3) ===");
+                        for (var elem : array) {
+                            var obj = elem.getAsJsonObject();
+                            int idx = obj.get("block_index").getAsInt();
+                            boolean placed = obj.get("placed").getAsBoolean();
+                            long fuel = obj.get("fuel_seconds").getAsLong();
+                            int size = obj.get("size").getAsInt();
+                            if (placed) {
+                                String loc = String.format(Locale.ROOT, "%s (%d, %d, %d)", obj.get("world").getAsString(), obj.get("x").getAsInt(), obj.get("y").getAsInt(), obj.get("z").getAsInt());
+                                player.sendMessage(String.format(Locale.ROOT,
+                                    "§e#%d: §aPlaced §7at %s | §bSize: %dx%d | §7Fuel: %s",
+                                    idx, loc, size, size, fuel > 0 ? "§a" + ExpeditionRules.formatDuration(fuel) : "§cDormant (No Fuel)"));
+                            } else {
+                                player.sendMessage(String.format(Locale.ROOT, "§e#%d: §7In inventory / Not placed", idx));
+                            }
+                        }
+                    } catch (Exception e) {
+                        player.sendMessage("[Private] Error parsing block list.");
+                    }
+                });
+            });
+            return;
+        }
+        if (args[0].equalsIgnoreCase("info")) {
+            PlacedPrivateBlock pb = getProtectingBlock(player.getLocation());
+            if (pb == null) {
+                player.sendMessage("[Private] You are not currently standing inside any protected zone.");
+                return;
+            }
+            int size = PrivateRules.radiusToSize(pb.radius);
+            player.sendMessage("§6=== Protection Zone Info ===");
+            player.sendMessage("§7Owner: §f" + pb.ownerName);
+            player.sendMessage(String.format(Locale.ROOT, "§7Size: §e%dx%d §7(Radius: %d)", size, size, pb.radius));
+            player.sendMessage("§7Fuel Time: " + (pb.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(pb.fuelSeconds) : "§c00:00 (Inactive)"));
+            player.sendMessage("§7Members: §f" + (pb.members.isEmpty() ? "None" : pb.members.size() + " players"));
+            return;
+        }
+        if (args[0].equalsIgnoreCase("add")) {
+            if (args.length < 2) {
+                player.sendMessage("[Private] Usage: /ps add <player>");
+                return;
+            }
+            PlacedPrivateBlock pb = getProtectingBlock(player.getLocation());
+            if (pb == null || !pb.ownerUuid.equals(player.getUniqueId())) {
+                player.sendMessage("[Private] You must be standing inside a private zone that YOU own!");
+                return;
+            }
+            Player target = getServer().getPlayer(args[1]);
+            if (target == null || !target.isOnline()) {
+                player.sendMessage("[Private] Player '" + args[1] + "' is not online.");
+                return;
+            }
+            if (target.getUniqueId().equals(player.getUniqueId())) {
+                player.sendMessage("[Private] You are already the owner of this zone!");
+                return;
+            }
+            if (!pb.members.contains(target.getUniqueId())) {
+                pb.members.add(target.getUniqueId());
+                syncPrivateBlockAsync(pb);
+                player.sendMessage("[Private] Added " + target.getName() + " as a trusted member of this zone.");
+                target.sendMessage("[Private] You were added as a trusted member to " + player.getName() + "'s private zone!");
+            } else {
+                player.sendMessage("[Private] " + target.getName() + " is already a member of this zone.");
+            }
+            return;
+        }
+        if (args[0].equalsIgnoreCase("remove")) {
+            if (args.length < 2) {
+                player.sendMessage("[Private] Usage: /ps remove <player>");
+                return;
+            }
+            PlacedPrivateBlock pb = getProtectingBlock(player.getLocation());
+            if (pb == null || !pb.ownerUuid.equals(player.getUniqueId())) {
+                player.sendMessage("[Private] You must be standing inside a private zone that YOU own!");
+                return;
+            }
+            Player target = getServer().getPlayer(args[1]);
+            UUID targetUuid = target != null ? target.getUniqueId() : null;
+            if (targetUuid != null && pb.members.remove(targetUuid)) {
+                syncPrivateBlockAsync(pb);
+                player.sendMessage("[Private] Removed " + target.getName() + " from this zone.");
+            } else {
+                player.sendMessage("[Private] Player not found in this zone's member list.");
+            }
+            return;
+        }
+        player.sendMessage("[Private] Unknown subcommand. Use /ps for help.");
+    }
+
+    private void mineCommand(Player player, String[] args) {
+        if (args.length == 0 || args[0].equalsIgnoreCase("enter")) {
+            UUID uuid = player.getUniqueId();
+            if (activeMineExpeditions.containsKey(uuid)) {
+                player.sendMessage("[Mine] You are already inside the Mining Dimension!");
+                return;
+            }
+            String username = player.getName();
+            player.sendMessage("[Mine] Checking expedition clearance...");
+            getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                var response = post(internalBase + "/mine/enter",
+                    "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\"}", requestTimeout);
+                getServer().getScheduler().runTask(this, () -> {
+                    if (response == null || response.statusCode() != 200) {
+                        player.sendMessage("[Mine] Cannot enter the mine right now. Try again shortly.");
+                        return;
+                    }
+                    try {
+                        var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                        boolean allowed = json.get("allowed").getAsBoolean();
+                        if (!allowed) {
+                            long remaining = json.get("cooldown_remaining").getAsLong();
+                            player.sendMessage("§c[Mine] The Mining Dimension is on cooldown! Available in: §e" + ExpeditionRules.formatDuration(remaining) + "§c.");
+                            return;
+                        }
+                        World mineWorld = getServer().getWorld("mine_world");
+                        if (mineWorld == null) {
+                            player.sendMessage("[Mine] Mining world is not loaded. Contact operator.");
+                            return;
+                        }
+                        Location spawn = mineWorld.getSpawnLocation();
+                        player.teleport(spawn);
+                        long expires = System.currentTimeMillis() + 300_000L;
+                        activeMineExpeditions.put(uuid, expires);
+                        var bossBar = net.kyori.adventure.bossbar.BossBar.bossBar(
+                            Component.text("⏳ [Mine Expedition] 05:00 remaining"),
+                            1.0f,
+                            net.kyori.adventure.bossbar.BossBar.Color.BLUE,
+                            net.kyori.adventure.bossbar.BossBar.Overlay.PROGRESS
+                        );
+                        player.showBossBar(bossBar);
+                        expeditionBossBars.put(uuid, bossBar);
+                        player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+                        player.sendMessage("§a[Mine] Welcome to the Mining Caverns!");
+                        player.sendMessage("§eYou have 5 minutes to harvest fuel crystals. Watch out for cave monsters!");
+                        player.sendMessage("§7Type /mine leave at any time to return safely.");
+                    } catch (Exception e) {
+                        player.sendMessage("[Mine] Error reading expedition clearance.");
+                    }
+                });
+            });
+            return;
+        }
+        if (args[0].equalsIgnoreCase("time")) {
+            UUID uuid = player.getUniqueId();
+            Long expires = activeMineExpeditions.get(uuid);
+            if (expires != null) {
+                long left = Math.max(0, (expires - System.currentTimeMillis()) / 1000L);
+                player.sendMessage("§e[Mine] Expedition time remaining: §a" + ExpeditionRules.formatDuration(left));
+            } else {
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var response = get(internalBase + "/mine/status?uuid=" + uuid, requestTimeout);
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (response == null || response.statusCode() != 200) {
+                            player.sendMessage("[Mine] Cannot check status right now.");
+                            return;
+                        }
+                        try {
+                            var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                            boolean allowed = json.get("allowed").getAsBoolean();
+                            if (allowed) {
+                                player.sendMessage("§a[Mine] Expedition is ready! Type /mine enter to start.");
+                            } else {
+                                long rem = json.get("cooldown_remaining").getAsLong();
+                                player.sendMessage("§e[Mine] Cooldown remaining: §c" + ExpeditionRules.formatDuration(rem));
+                            }
+                        } catch (Exception ignored) {}
+                    });
+                });
+            }
+            return;
+        }
+        if (args[0].equalsIgnoreCase("leave")) {
+            UUID uuid = player.getUniqueId();
+            if (!activeMineExpeditions.containsKey(uuid)) {
+                player.sendMessage("[Mine] You are not currently in the Mining Dimension.");
+                return;
+            }
+            endMineExpedition(player, "You returned safely to the surface.");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("shop")) {
+            minershopCommand(player, new String[]{});
+            return;
+        }
+        player.sendMessage("[Mine] Usage: /mine [enter|time|leave|shop]");
+    }
+
+    private void minershopCommand(Player player, String[] args) {
+        if (args.length == 0) {
+            player.sendMessage("§6=== Miner's Pickaxe Shop ===");
+            player.sendMessage("§eTier 1: §fApprentice Prospector Pickaxe §7(§6150 coins§7) — Mines Ember Shards (T1)");
+            player.sendMessage("§eTier 2: §bSurveyor Prospector Pickaxe §7(§61,000 coins§7) — Mines Cobalt Crystals (T2)");
+            player.sendMessage("§eTier 3: §cExcavator Prospector Pickaxe §7(§65,000 coins§7) — Mines Crimson Cores (T3)");
+            player.sendMessage("§eTier 4: §dMaster Core Drill §7(§620,000 coins§7) — Mines Astral Void Crystals (T4)");
+            player.sendMessage("§7Type §e/minershop buy <1-4> §7to purchase with coins.");
+            return;
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("buy")) {
+            int tier;
+            try {
+                tier = Integer.parseInt(args[1].trim());
+                if (tier < 1 || tier > 4) throw new NumberFormatException();
+            } catch (Exception e) {
+                player.sendMessage("[Miners] Tier must be between 1 and 4.");
+                return;
+            }
+            UUID uuid = player.getUniqueId();
+            String username = player.getName();
+            player.sendMessage("[Miners] Purchasing Tier " + tier + " Prospector Pickaxe...");
+            getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                var response = post(internalBase + "/minershop/buy",
+                    "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\",\"tier\":" + tier + "}", requestTimeout);
+                getServer().getScheduler().runTask(this, () -> {
+                    if (response == null) {
+                        player.sendMessage("[Miners] Server did not respond. No coins charged.");
+                        return;
+                    }
+                    if (response.statusCode() == 200) {
+                        try {
+                            var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                            long price = json.get("price").getAsLong();
+                            ItemStack pickaxe = createProspectorPickaxeItem(tier);
+                            player.getInventory().addItem(pickaxe);
+                            player.playSound(player.getLocation(), org.bukkit.Sound.ITEM_ARMOR_EQUIP_NETHERITE, 1.0f, 1.0f);
+                            player.sendMessage(String.format(Locale.ROOT,
+                                "[Miners] Purchased %s for %,d coins!",
+                                PickaxeRules.pickaxeName(tier), price));
+                        } catch (Exception e) {
+                            player.sendMessage("[Miners] Error reading purchase response.");
+                        }
+                    } else if (response.statusCode() == 402) {
+                        player.sendMessage("[Miners] Insufficient coins! Keep at least 1,000 coins in reserve.");
+                    } else {
+                        player.sendMessage("[Miners] Cannot purchase pickaxe at this time (" + response.statusCode() + ").");
+                    }
+                });
+            });
+            return;
+        }
+        player.sendMessage("[Miners] Usage: /minershop or /minershop buy <1-4>");
+    }
+
+    private void openCoreGui(Player player, PlacedPrivateBlock core) {
+        int size = PrivateRules.radiusToSize(core.radius);
+        String title = "Core #" + core.blockIndex + " (" + size + "x" + size + ")";
+        org.bukkit.inventory.Inventory inv = org.bukkit.Bukkit.createInventory(null, 27, Component.text(title));
+
+        ItemStack info = new ItemStack(Material.LODESTONE);
+        ItemMeta im = info.getItemMeta();
+        im.displayName(Component.text("§6§lProtection Core Info"));
+        im.lore(List.of(
+            Component.text("§7Owner: §f" + core.ownerName),
+            Component.text(String.format(Locale.ROOT, "§7Active Size: §e%dx%d §7(Radius %d)", size, size, core.radius)),
+            Component.text("§7Fuel Tier: §bTier " + core.fuelTier),
+            Component.text("§7Remaining Fuel: " + (core.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(core.fuelSeconds) : "§c00:00 (Inactive)")),
+            Component.text("§7Trusted Members: §f" + (core.members.isEmpty() ? "None" : core.members.size() + " players"))
+        ));
+        info.setItemMeta(im);
+        inv.setItem(4, info);
+
+        ItemStack fuelSlot = new ItemStack(Material.HOPPER);
+        ItemMeta fm = fuelSlot.getItemMeta();
+        fm.displayName(Component.text("§e§lDeposit Fuel Crystal"));
+        fm.lore(List.of(
+            Component.text("§7Click here with a fuel crystal in hand"),
+            Component.text("§7to deposit fuel and expand your zone:"),
+            Component.text("§6• Ember Shard (T1): §7+2h (3x3)"),
+            Component.text("§b• Cobalt Crystal (T2): §7+3h (7x7)"),
+            Component.text("§c• Crimson Core (T3): §7+4h (11x11)"),
+            Component.text("§d• Astral Void Crystal (T4): §7+6h (15x15)")
+        ));
+        fuelSlot.setItemMeta(fm);
+        inv.setItem(13, fuelSlot);
+
+        ItemStack dismantle = new ItemStack(Material.BARRIER);
+        ItemMeta dm = dismantle.getItemMeta();
+        dm.displayName(Component.text("§c§lDismantle Core"));
+        dm.lore(List.of(
+            Component.text("§7Click to safely dismantle this core"),
+            Component.text("§7and return it to your inventory.")
+        ));
+        dismantle.setItemMeta(dm);
+        inv.setItem(22, dismantle);
+
+        player.openInventory(inv);
+        activeCoreGuis.put(player.getUniqueId(), core);
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPrivateBlockBreak(BlockBreakEvent event) {
+        Player player = event.getPlayer();
+        Block block = event.getBlock();
+        String worldName = block.getWorld().getName();
+
+        if (worldName.equals("mine_world")) {
+            int oreTier = FuelRules.oreTier(block.getType().name());
+            if (oreTier > 0) {
+                ItemStack hand = player.getInventory().getItemInMainHand();
+                int pickaxeTier = 0;
+                if (hand != null && hand.hasItemMeta()) {
+                    var pdc = hand.getItemMeta().getPersistentDataContainer();
+                    var key = new NamespacedKey(this, "prospector_tier");
+                    if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
+                        pickaxeTier = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
+                    }
+                }
+                if (!PickaxeRules.canMineTier(pickaxeTier, oreTier)) {
+                    event.setCancelled(true);
+                    player.sendMessage("§c[Mine] You need a " + PickaxeRules.pickaxeName(oreTier) + " to extract this fuel crystal!");
+                    player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_ANVIL_LAND, 0.5f, 0.5f);
+                    return;
+                }
+                event.setCancelled(true);
+                Material orig = block.getType();
+                block.setType(Material.BEDROCK);
+                block.getWorld().dropItemNaturally(block.getLocation().add(0.5, 0.5, 0.5), createFuelCrystalItem(oreTier));
+                block.getWorld().playSound(block.getLocation(), org.bukkit.Sound.BLOCK_AMETHYST_CLUSTER_BREAK, 1.0f, 1.0f);
+                long cooldownMs = switch (oreTier) {
+                    case 1 -> 30_000L;
+                    case 2 -> 60_000L;
+                    case 3 -> 90_000L;
+                    case 4 -> 120_000L;
+                    default -> 30_000L;
+                };
+                regeneratingNodes.put(block.getLocation(), new RegeneratingOreNode(orig, System.currentTimeMillis() + cooldownMs));
+                return;
+            }
+            if (block.getType() == Material.BEDROCK) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+
+        PlacedPrivateBlock core = getPlacedCoreAt(block.getLocation());
+        if (core != null) {
+            if (!core.ownerUuid.equals(player.getUniqueId())) {
+                event.setCancelled(true);
+                player.sendMessage("§c[Protected] Only the owner (" + core.ownerName + ") can dismantle this protection core!");
+                return;
+            }
+            event.setCancelled(true);
+            block.setType(Material.AIR);
+            placedPrivateBlocks.remove(blockKey(block.getLocation()));
+            core.placed = false;
+            syncPrivateBlockAsync(core);
+            player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
+            player.sendMessage("§a[Private] Protection core dismantled and returned to inventory.");
+            return;
+        }
+
+        PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
+        if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+            event.setCancelled(true);
+            player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "!"));
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPrivateBlockPlace(BlockPlaceEvent event) {
+        Player player = event.getPlayer();
+        Block block = event.getBlockPlaced();
+        String worldName = block.getWorld().getName();
+
+        if (worldName.equals("mine_world")) {
+            event.setCancelled(true);
+            player.sendMessage("§c[Mine] You cannot place blocks in the Mining Dimension!");
+            return;
+        }
+
+        ItemStack item = event.getItemInHand();
+        if (item != null && item.hasItemMeta()) {
+            var pdc = item.getItemMeta().getPersistentDataContainer();
+            var key = new NamespacedKey(this, "private_core");
+            if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
+                int blockIndex = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
+                Location loc = block.getLocation();
+                PlacedPrivateBlock pb = new PlacedPrivateBlock(
+                    UUID.randomUUID().toString(),
+                    player.getUniqueId(),
+                    player.getName(),
+                    blockIndex,
+                    loc.getWorld().getName(),
+                    loc.getBlockX(),
+                    loc.getBlockY(),
+                    loc.getBlockZ(),
+                    true,
+                    1,
+                    0L,
+                    1,
+                    new ArrayList<>()
+                );
+                placedPrivateBlocks.put(blockKey(loc), pb);
+                syncPrivateBlockAsync(pb);
+                block.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, loc.clone().add(0.5, 0.5, 0.5), 25);
+                player.playSound(loc, org.bukkit.Sound.BLOCK_BEACON_ACTIVATE, 1.0f, 1.0f);
+                player.sendMessage("§6[Private] Protection core placed!");
+                player.sendMessage("§eRight-click the core to deposit fuel crystals and expand your zone.");
+                return;
+            }
+        }
+
+        PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
+        if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+            event.setCancelled(true);
+            player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "!"));
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPrivateInteract(PlayerInteractEvent event) {
+        if (event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) return;
+        Block block = event.getClickedBlock();
+        if (block == null) return;
+        Player player = event.getPlayer();
+
+        PlacedPrivateBlock core = getPlacedCoreAt(block.getLocation());
+        if (core != null) {
+            event.setCancelled(true);
+            if (core.ownerUuid.equals(player.getUniqueId())) {
+                openCoreGui(player, core);
+            } else {
+                int size = PrivateRules.radiusToSize(core.radius);
+                player.sendMessage(String.format(Locale.ROOT,
+                    "§6[Protected] §7Owner: §f%s §7| Size: §e%dx%d §7| Protection: %s",
+                    core.ownerName, size, size, core.fuelSeconds > 0 ? "§aActive" : "§cDormant (No Fuel)"));
+            }
+            return;
+        }
+
+        Material type = block.getType();
+        boolean isProtectedInteractable = type.name().contains("CHEST")
+            || type.name().contains("BARREL")
+            || type.name().contains("SHULKER_BOX")
+            || type.name().contains("FURNACE")
+            || type.name().contains("SMOKER")
+            || type.name().contains("HOPPER")
+            || type.name().contains("DOOR")
+            || type.name().contains("GATE")
+            || type.name().contains("TRAPDOOR")
+            || type.name().contains("BUTTON")
+            || type.name().contains("LEVER");
+
+        if (isProtectedInteractable) {
+            PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
+            if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+                event.setCancelled(true);
+                player.sendActionBar(Component.text("§c[Protected] You cannot use containers in " + pb.ownerName + "'s zone!"));
+            }
+        }
+    }
+
+    @EventHandler
+    public void onPrivateGuiClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        PlacedPrivateBlock core = activeCoreGuis.get(player.getUniqueId());
+        if (core == null) return;
+        event.setCancelled(true);
+        int slot = event.getRawSlot();
+        if (slot == 13) {
+            ItemStack cursor = event.getCursor();
+            int fuelTier = 0;
+            if (cursor != null && cursor.hasItemMeta()) {
+                var pdc = cursor.getItemMeta().getPersistentDataContainer();
+                var key = new NamespacedKey(this, "fuel_tier");
+                if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
+                    fuelTier = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
+                }
+            }
+            if (fuelTier > 0) {
+                cursor.setAmount(cursor.getAmount() - 1);
+                core.fuelTier = FuelRules.calculateNewTier(core.fuelTier, fuelTier);
+                core.radius = FuelRules.fuelRadius(core.fuelTier);
+                core.fuelSeconds = FuelRules.calculateNewFuel(core.fuelSeconds, fuelTier);
+                syncPrivateBlockAsync(core);
+                player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_BEACON_POWER_SELECT, 1.0f, 1.0f);
+                int size = PrivateRules.radiusToSize(core.radius);
+                player.sendMessage(String.format(Locale.ROOT,
+                    "§a[Private] Deposited fuel! New size: %dx%d | Fuel remaining: %s",
+                    size, size, ExpeditionRules.formatDuration(core.fuelSeconds)));
+                openCoreGui(player, core);
+            } else {
+                player.sendMessage("§e[Private] Pick up a fuel crystal (Ember, Cobalt, Crimson, Void) and click the hopper!");
+            }
+        } else if (slot == 22) {
+            player.closeInventory();
+            Location loc = new Location(getServer().getWorld(core.world), core.x, core.y, core.z);
+            if (loc.getBlock().getType() == Material.LODESTONE) {
+                loc.getBlock().setType(Material.AIR);
+            }
+            placedPrivateBlocks.remove(blockKey(loc));
+            core.placed = false;
+            syncPrivateBlockAsync(core);
+            player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
+            player.sendMessage("§a[Private] Protection core dismantled and returned to inventory.");
+        }
+    }
+
+    @EventHandler
+    public void onPrivateGuiClose(org.bukkit.event.inventory.InventoryCloseEvent event) {
+        activeCoreGuis.remove(event.getPlayer().getUniqueId());
+    }
+
+    @EventHandler
+    public void onMinePlayerQuit(PlayerQuitEvent event) {
+        Player player = event.getPlayer();
+        if (activeMineExpeditions.containsKey(player.getUniqueId())) {
+            endMineExpedition(player, null);
+        }
     }
 
     /** Bounded NBT codec. Keeps every player tag, and atomically replaces only the

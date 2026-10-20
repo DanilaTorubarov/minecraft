@@ -1,6 +1,55 @@
 # Project checkpoint — 2026-10-20
 
 
+## Private Block Protection & Mining Dimension System — 2026-10-20
+
+- Implemented Private Block system and Mining Dimension on Paper/Purpur via LinkBridge plugin (`LinkBridgePlugin.java`, `plugin.yml`) and backend (`src/main.rs`).
+- Private Block mechanics:
+  - Purchase: up to 3 Private Blocks per player with coins via `/ps buy` (1st: 500c, 2nd: 20,000c, 3rd: 50,000c; 4th rejected).
+  - Requires 1,000 coins wallet reserve.
+  - Placed block (`Lodestone` with PDC metadata) anchors a protected territory.
+  - Interactive GUI on right-click to view status, remaining fuel, active size, trusted members, and deposit fuel.
+  - Trusted members management via `/ps add <player>` and `/ps remove <player>`.
+  - Core dismantling via GUI or owner break returns core item to inventory.
+  - Protection cancels block breaks, block places, and container interactions (chests, barrels, furnaces, doors, hoppers) for unauthorized players while fueled.
+- Fuel & Footprint scaling:
+  - Powered exclusively by custom fuel crystals mined from the Mining Dimension (no vanilla resource conflicts):
+    - Tier 1 (Ember Shard): 3×3 area (radius 1), +2h fuel duration.
+    - Tier 2 (Cobalt Crystal): 7×7 area (radius 3), +3h fuel duration.
+    - Tier 3 (Crimson Core): 11×11 area (radius 5), +4h fuel duration.
+    - Tier 4 (Astral Void Crystal): 15×15 area (radius 7 - MAX), +6h fuel duration.
+  - Fuel accumulates up to 72 hours max storage; decrements over time and deactivates protection when 0.
+- Mining Dimension (`mine_world`) & Ore Regeneration:
+  - 5-minute timed cave expedition entered via `/mine` or `/mine enter`.
+  - 4-hour cooldown between expeditions (`MINE_EXPEDITION_COOLDOWN_SECONDS = 14400`).
+  - Active BossBar countdown timer (`⏳ [Mine Expedition] MM:SS remaining`).
+  - When timer reaches 0 or player types `/mine leave`, player is safely returned to overworld spawn.
+  - Mined crystal ores turn to Bedrock and automatically regenerate on a cooldown timer (30s to 120s) with chime sound and particles.
+  - Block placement inside the mining world is prevented to avoid griefing.
+- Miner's Shop & Tiered Prospector Pickaxes:
+  - Accessible via `/minershop` or `/mine shop`:
+    - Tier 1 (Apprentice Prospector Pickaxe): 150 coins, mines Tier 1 fuel crystals.
+    - Tier 2 (Surveyor Prospector Pickaxe): 1,000 coins, mines Tiers 1–2.
+    - Tier 3 (Excavator Prospector Pickaxe): 5,000 coins, mines Tiers 1–3.
+    - Tier 4 (Master Core Drill): 20,000 coins, mines all Tiers (1–4).
+  - Attempting to mine crystals with insufficient pickaxe tier prevents breaking and alerts the player.
+- Backend API endpoints:
+  - `POST /internal/private/buy`: atomic block purchase with progressive pricing and reserve checks.
+  - `GET /internal/private/list`: lists owned private blocks, placement status, size, and fuel.
+  - `POST /internal/private/sync`: updates block location, radius, fuel, and member state.
+  - `POST /internal/minershop/buy`: atomic pickaxe purchases.
+  - `POST /internal/mine/enter`: 4-hour cooldown validation and expedition tracking.
+  - `GET /internal/mine/status`: cooldown status query.
+- Database schema (`migrations/0020_private_blocks_and_mining.sql`):
+  - Added `private_blocks` table with constraints for index (1..=3), radius (1, 3, 5, 7), fuel tier (1..=4).
+  - Added `mine_expeditions` table tracking player last entry timestamps and expedition counts.
+- Test coverage & verification:
+  - Added Rust integration test `private_blocks_and_mine_expedition_workflow` in `src/main.rs` (141 passed; 0 failed).
+  - Added Java unit test cases in `InventoryNbtTest.java` verifying `PrivateRules`, `FuelRules`, `PickaxeRules`, and `ExpeditionRules`.
+  - Built plugin jar: `./scripts/build-plugin.sh`.
+  - Passed frontend tests (`npm test` 60/60) and build (`npm run build`).
+
+
 ## Tiered equipment repairs (Iron, Golden, Diamond, Netherite armor) — 2026-10-20
 
 - Added support for repairing Golden, Diamond, and Netherite armor pieces via `/services repair [confirm]` in game alongside existing iron equipment.

@@ -207,6 +207,59 @@ public final class InventoryNbtTest {
         check(!LinkBridgePlugin.RepairRules.isRepairableMaterial("DIRT"), "Dirt is not repairable");
         check(LinkBridgePlugin.RepairRules.unitPrice("LEATHER_CHESTPLATE") == null, "Unrepairable item has null unit price");
 
+        // Private block rules
+        check(LinkBridgePlugin.PrivateRules.nextBlockPrice(0) == 500L, "1st private block price is 500");
+        check(LinkBridgePlugin.PrivateRules.nextBlockPrice(1) == 20000L, "2nd private block price is 20000");
+        check(LinkBridgePlugin.PrivateRules.nextBlockPrice(2) == 50000L, "3rd private block price is 50000");
+        check(LinkBridgePlugin.PrivateRules.nextBlockPrice(3) == -1L, "4th private block is rejected");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(1) == 3, "Radius 1 is size 3x3");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(3) == 7, "Radius 3 is size 7x7");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(5) == 11, "Radius 5 is size 11x11");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(7) == 15, "Radius 7 is size 15x15");
+        check(LinkBridgePlugin.PrivateRules.sizeToRadius(15) == 7, "Size 15 has radius 7");
+        check(LinkBridgePlugin.PrivateRules.isInside(107, 207, 100, 200, 7), "Coordinate inside 15x15 boundary");
+        check(!LinkBridgePlugin.PrivateRules.isInside(108, 200, 100, 200, 7), "Coordinate outside 15x15 boundary");
+        var owner = UUID.randomUUID();
+        var member = UUID.randomUUID();
+        var stranger = UUID.randomUUID();
+        check(LinkBridgePlugin.PrivateRules.canAccess(owner, owner, List.of(member)), "Owner can access");
+        check(LinkBridgePlugin.PrivateRules.canAccess(member, owner, List.of(member)), "Member can access");
+        check(!LinkBridgePlugin.PrivateRules.canAccess(stranger, owner, List.of(member)), "Stranger cannot access");
+
+        // Fuel rules
+        check(LinkBridgePlugin.FuelRules.fuelDuration(1) == 7200L, "Tier 1 fuel gives 2 hours");
+        check(LinkBridgePlugin.FuelRules.fuelDuration(4) == 21600L, "Tier 4 fuel gives 6 hours");
+        check(LinkBridgePlugin.FuelRules.fuelRadius(1) == 1, "Tier 1 fuel gives radius 1 (3x3)");
+        check(LinkBridgePlugin.FuelRules.fuelRadius(4) == 7, "Tier 4 fuel gives radius 7 (15x15)");
+        check(LinkBridgePlugin.FuelRules.calculateNewTier(1, 4) == 4, "Higher crystal tier upgrades zone tier");
+        check(LinkBridgePlugin.FuelRules.calculateNewTier(4, 2) == 4, "Lower crystal tier retains existing higher tier");
+        check(LinkBridgePlugin.FuelRules.calculateNewFuel(1000L, 1) == 8200L, "Fuel addition accumulates duration");
+        check(LinkBridgePlugin.FuelRules.calculateNewFuel(LinkBridgePlugin.FuelRules.MAX_STORED_FUEL - 100L, 4) == LinkBridgePlugin.FuelRules.MAX_STORED_FUEL, "Fuel accumulation caps at 72 hours");
+        check(LinkBridgePlugin.FuelRules.oreTier("COPPER_ORE") == 1, "Copper is Tier 1");
+        check(LinkBridgePlugin.FuelRules.oreTier("DEEPSLATE_LAPIS_ORE") == 2, "Lapis is Tier 2");
+        check(LinkBridgePlugin.FuelRules.oreTier("REDSTONE_ORE") == 3, "Redstone is Tier 3");
+        check(LinkBridgePlugin.FuelRules.oreTier("DEEPSLATE_EMERALD_ORE") == 4, "Emerald is Tier 4");
+        check(LinkBridgePlugin.FuelRules.oreTier("STONE") == 0, "Stone is Tier 0");
+
+        // Prospector pickaxe rules
+        check(LinkBridgePlugin.PickaxeRules.pickaxePrice(1) == 150L, "Tier 1 pickaxe price is 150");
+        check(LinkBridgePlugin.PickaxeRules.pickaxePrice(2) == 1000L, "Tier 2 pickaxe price is 1000");
+        check(LinkBridgePlugin.PickaxeRules.pickaxePrice(3) == 5000L, "Tier 3 pickaxe price is 5000");
+        check(LinkBridgePlugin.PickaxeRules.pickaxePrice(4) == 20000L, "Tier 4 pickaxe price is 20000");
+        check(LinkBridgePlugin.PickaxeRules.canMineTier(1, 1), "Tier 1 pickaxe can mine Tier 1 ore");
+        check(!LinkBridgePlugin.PickaxeRules.canMineTier(1, 2), "Tier 1 pickaxe cannot mine Tier 2 ore");
+        check(LinkBridgePlugin.PickaxeRules.canMineTier(3, 2), "Tier 3 pickaxe can mine Tier 2 ore");
+        check(LinkBridgePlugin.PickaxeRules.canMineTier(4, 4), "Tier 4 pickaxe can mine Tier 4 ore");
+
+        // Expedition rules
+        long now = 1000000L;
+        check(LinkBridgePlugin.ExpeditionRules.canEnter(0L, now), "First entry is allowed");
+        check(LinkBridgePlugin.ExpeditionRules.canEnter(now - 14400L, now), "Entry allowed after 4 hours");
+        check(!LinkBridgePlugin.ExpeditionRules.canEnter(now - 3600L, now), "Entry rejected during 4-hour cooldown");
+        check(LinkBridgePlugin.ExpeditionRules.remainingCooldown(now - 3600L, now) == 10800L, "Remaining cooldown computes correctly");
+        check(LinkBridgePlugin.ExpeditionRules.formatDuration(300L).equals("05:00"), "5 minutes formats as 05:00");
+        check(LinkBridgePlugin.ExpeditionRules.formatDuration(45L).equals("00:45"), "45 seconds formats as 00:45");
+
         System.out.println("Inventory NBT regression checks passed");
     }
 }

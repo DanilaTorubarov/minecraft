@@ -32,7 +32,26 @@ commands:
         description: Link your Minecraft account or privately remind you of your website email.
         usage: /website link <code> or /website email
         permission: linkbridge.link
+    ps:
+        description: Purchase, place, manage and fuel your private protection cores.
+        usage: /ps [buy|list|add <player>|remove <player>|info]
+        aliases: [private, protection]
+        permission: linkbridge.ps
+    mine:
+        description: Enter the 5-minute mining expedition cave dimension or check cooldown.
+        usage: /mine [enter|time|leave|shop]
+        permission: linkbridge.mine
+    minershop:
+        description: Buy Prospector Pickaxes to mine tiered fuel crystals.
+        usage: /minershop [buy <tier 1-4>]
+        permission: linkbridge.mine
 permissions:
+    linkbridge.ps:
+        description: Use private block protection commands after authentication.
+        default: true
+    linkbridge.mine:
+        description: Enter the mining dimension and use the miners shop after authentication.
+        default: true
     linkbridge.market:
         description: Open the marketplace auction house and buy items after authentication.
         default: true
