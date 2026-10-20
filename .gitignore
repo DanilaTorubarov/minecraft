@@ -41,3 +41,8 @@ compose.override.yaml
 
 # Reproducible simulation output is uploaded by CI, not committed.
 /reports/economy/
+
+# Cloud sync cache and Python bytecache
+/.tmp.drive*/
+__pycache__/
+*.pyc

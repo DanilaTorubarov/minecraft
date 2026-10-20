@@ -201,6 +201,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             getCommand("balance").setExecutor(this);
             getCommand("balance").setTabCompleter((sender, command, alias, args) -> List.of());
         }
+        if (getCommand("sell") != null) {
+            getCommand("sell").setExecutor(this);
+            getCommand("sell").setTabCompleter((sender, command, alias, args) -> List.of());
+        }
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimerAsynchronously(this, this::syncSkins, 40L, 100L);
 
@@ -320,6 +324,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             showBalance(player);
             return true;
         }
+        if (command.getName().equalsIgnoreCase("sell")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Market] Wait a few seconds and try again.");
+                return true;
+            }
+            sellCommand(player, args);
+            return true;
+        }
 
         boolean emailRequest = args.length == 1 && args[0].equalsIgnoreCase("email");
         boolean linkRequest = args.length == 2 && args[0].equalsIgnoreCase("link");
@@ -407,6 +419,159 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 });
             } catch (Exception ignored) { }
         });
+    }
+
+    private void sellCommand(Player player, String[] args) {
+        if (serviceToken.isBlank() || serviceToken.contains("${")) {
+            player.sendMessage("[Market] Marketplace is not configured on this server.");
+            return;
+        }
+        if (args.length < 1 || args.length > 2) {
+            player.sendMessage("[Market] Usage: /sell <price> [price for stack]");
+            player.sendMessage("[Market] Lists the item or stack in your main hand on the marketplace.");
+            return;
+        }
+        long unitPrice;
+        try {
+            unitPrice = Long.parseLong(args[0]);
+            if (unitPrice < 1 || unitPrice > 1_000_000_000L) throw new NumberFormatException();
+        } catch (NumberFormatException e) {
+            player.sendMessage("[Market] Price must be a positive integer between 1 and 1,000,000,000.");
+            return;
+        }
+        ItemStack item = player.getInventory().getItemInMainHand();
+        if (item.isEmpty() || item.getType() == Material.AIR) {
+            player.sendMessage("[Market] Hold the item or stack you want to sell in your main hand.");
+            return;
+        }
+        int quantity = item.getAmount();
+        if (quantity < 1 || quantity > 230) {
+            player.sendMessage("[Market] Invalid item quantity.");
+            return;
+        }
+        long lotPrice;
+        if (args.length == 2) {
+            try {
+                lotPrice = Long.parseLong(args[1]);
+                if (lotPrice < 1 || lotPrice > 1_000_000_000L) throw new NumberFormatException();
+            } catch (NumberFormatException e) {
+                player.sendMessage("[Market] Price for stack must be a positive integer between 1 and 1,000,000,000.");
+                return;
+            }
+        } else {
+            try {
+                lotPrice = Math.multiplyExact(unitPrice, (long) quantity);
+                if (lotPrice < 1 || lotPrice > 1_000_000_000L) throw new ArithmeticException();
+            } catch (ArithmeticException e) {
+                player.sendMessage("[Market] Total lot price exceeds 1,000,000,000 coins. Specify a custom stack price.");
+                return;
+            }
+        }
+        int slot = player.getInventory().getHeldItemSlot();
+        String fingerprint;
+        try {
+            fingerprint = InventoryNbt.fingerprint(item.serializeAsBytes());
+        } catch (Exception error) {
+            player.sendMessage("[Market] Cannot read this item. No listing was created.");
+            return;
+        }
+        String itemJson = slotJson(item);
+        queueIconKey(item);
+        String displayName = formatItemName(item);
+        UUID uuid = player.getUniqueId();
+
+        var payload = new com.google.gson.JsonObject();
+        payload.addProperty("uuid", uuid.toString());
+        payload.addProperty("slot", slot);
+        payload.addProperty("fingerprint", fingerprint);
+        payload.addProperty("quantity", quantity);
+        payload.addProperty("unit_price", unitPrice);
+        payload.addProperty("lot_price", lotPrice);
+        payload.add("item", com.google.gson.JsonParser.parseString(itemJson));
+
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            HttpResponse<String> response = post(marketplaceUrl + "/sell", payload.toString(), requestTimeout);
+            if (response == null) {
+                marketMessage(uuid, "Could not reach the marketplace. Try again in a moment.");
+                return;
+            }
+            int code = response.statusCode();
+            if (code == 404) {
+                marketMessage(uuid, "You must link your account to the website first. Use /website link <code>.");
+                return;
+            }
+            if (code == 409) {
+                marketMessage(uuid, "Another inventory or marketplace transfer is pending. Try again in a moment.");
+                return;
+            }
+            if (code == 429) {
+                marketMessage(uuid, "You have reached the limit of 100 active listings.");
+                return;
+            }
+            if (code != 201 && code != 200 && code != 202) {
+                marketMessage(uuid, "The marketplace rejected that listing request (" + code + ").");
+                return;
+            }
+            String taskId = null;
+            try {
+                var bodyObj = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                if (bodyObj.has("task_id")) taskId = bodyObj.get("task_id").getAsString();
+            } catch (Exception ignored) {}
+
+            syncMarketplace();
+
+            final String expectedTaskId = taskId;
+            getServer().getScheduler().runTask(this, () -> {
+                Player p = getServer().getPlayer(uuid);
+                if (p == null || !p.isOnline() || !isAuthenticated(p)) return;
+                var key = new NamespacedKey(this, "marketplace");
+                String receipt = p.getPersistentDataContainer().getOrDefault(key, org.bukkit.persistence.PersistentDataType.STRING, "");
+                boolean conflict = false;
+                if (!receipt.isEmpty()) {
+                    try {
+                        var obj = com.google.gson.JsonParser.parseString(receipt).getAsJsonObject();
+                        if (expectedTaskId == null || expectedTaskId.equals(obj.get("id").getAsString())) {
+                            String status = obj.get("status").getAsString();
+                            conflict = "conflict".equals(status);
+                        }
+                    } catch (Exception ignored) {}
+                }
+                if (conflict) {
+                    p.sendMessage("[Market] Listing cancelled: item in slot changed.");
+                } else {
+                    String msg = quantity > 1
+                        ? String.format(Locale.ROOT, "Listed %s x%d for %,d coins each (lot: %,d coins).", displayName, quantity, unitPrice, lotPrice)
+                        : String.format(Locale.ROOT, "Listed %s for %,d coins.", displayName, unitPrice);
+                    p.sendMessage("[Market] " + msg);
+                }
+            });
+        });
+    }
+
+    private String formatItemName(ItemStack item) {
+        if (item.getItemMeta() != null && item.getItemMeta().hasDisplayName()) {
+            return item.getItemMeta().getDisplayName();
+        }
+        String[] words = item.getType().name().toLowerCase(Locale.ROOT).split("_");
+        StringBuilder sb = new StringBuilder();
+        for (String word : words) {
+            if (!word.isEmpty()) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(Character.toUpperCase(word.charAt(0))).append(word.substring(1));
+            }
+        }
+        return sb.toString();
+    }
+
+    private void marketMessage(UUID uuid, String text) {
+        try {
+            getServer().getScheduler().runTask(this, () -> {
+                Player p = getServer().getPlayer(uuid);
+                if (p != null && p.isOnline() && isAuthenticated(p)) {
+                    p.sendMessage("[Market] " + text);
+                }
+            });
+        } catch (Exception ignored) {}
     }
 
     // --- Telling unlinked players where to go ---------------------------------

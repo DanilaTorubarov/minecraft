@@ -1,6 +1,28 @@
 # Project checkpoint — 2026-10-20
 
 
+## In-game `/sell` marketplace command — 2026-10-20
+
+- Implemented `/sell <price> [price for stack]` command in Minecraft via LinkBridge plugin (`plugin.yml` and `LinkBridgePlugin.java`).
+- The command sells the item or block stack currently held in the player's primary hand.
+- Price parameters:
+  - `<price>`: unit price in coins (`1..=1_000_000_000`).
+  - `[price for stack]` (optional): whole-lot price in coins (`1..=1_000_000_000`). If omitted, defaults to `price * quantity`.
+- Added internal backend endpoint `POST /internal/marketplace/sell` in `src/main.rs`:
+  - Authenticated via `LINK_SERVICE_TOKEN`.
+  - Validates player UUID, held slot, item fingerprint, quantity, prices, and item structure via `valid_inventory_slot`.
+  - Ensures player account is linked to a website account, not busy with another pending task, and has not exceeded 100 active listings.
+  - Inserts `market_listings` (status `pending`) and creates a withdraw `market_tasks` row in a single transaction.
+  - Returns `201 Created` with listing ID, task ID, quantity, and pricing details.
+- Integrated with LinkBridge's transactional escrow mechanism:
+  - Upon receiving 201 response, LinkBridge immediately triggers `syncMarketplace()`.
+  - Bukkit main-thread task execution verifies slot and fingerprint, safely withdraws the item from hand, saves PDC receipt, and calls `/internal/marketplace/report`.
+  - Listing becomes active on the website marketplace under Marketplace and Player Controls -> Inventory.
+  - If a conflict occurs (e.g. item moved during async network hop), the listing is safely aborted without item loss or duplication.
+- Added integration test `in_game_marketplace_sell_creates_listing_and_withdraw_task` in `src/main.rs`.
+- Synchronized documentation in `PRODUCT.md`, `AGENTS.md`, and `STATE.md`.
+
+
 ## Git & feature branch workflow convention — 2026-10-20
 
 - Documented project rule in `AGENTS.md`: never commit or push directly to `main`. Always create a feature branch related to the function and commit changes locally. Never push to remote or merge into `main` automatically; only push or merge when the user explicitly instructs to push or to merge.

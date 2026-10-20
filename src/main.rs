@@ -98,6 +98,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/marketplace/{id}/cancel", post(cancel_market_listing))
         .route("/internal/marketplace/sync", post(sync_market_tasks))
         .route("/internal/marketplace/report", post(complete_market_task).layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024)))
+        .route("/internal/marketplace/sell", post(in_game_market_sell))
         .route("/internal/inventory/deletions", post(sync_inventory_deletions))
         .route("/internal/inventory/deletions/report", post(complete_inventory_deletion))
         .route("/internal/items/icons", post(report_item_icons)
@@ -1881,6 +1882,97 @@ async fn create_market_listing(
         .execute(&mut *tx).await.map_err(market_db)?;
     tx.commit().await.map_err(market_db)?;
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(serde::Deserialize)]
+struct InGameMarketSellInput {
+    uuid: String,
+    slot: usize,
+    fingerprint: String,
+    quantity: i32,
+    unit_price: i64,
+    lot_price: Option<i64>,
+    item: InventorySlotReport,
+}
+
+async fn in_game_market_sell(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<InGameMarketSellInput>,
+) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = body.uuid.to_lowercase();
+    if !is_uuid(&uuid)
+        || body.slot >= INVENTORY_SLOT_COUNT
+        || !valid_item_fingerprint(&body.fingerprint)
+        || !(1..=230).contains(&body.quantity)
+        || !(1..=1_000_000_000).contains(&body.unit_price)
+        || body.lot_price.is_some_and(|p| !(1..=1_000_000_000).contains(&p))
+        || !valid_inventory_slot(&body.item)
+        || body.item.fingerprint.as_deref() != Some(&body.fingerprint)
+        || body.item.amount != i64::from(body.quantity)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let lot_price = body
+        .lot_price
+        .unwrap_or_else(|| body.unit_price.saturating_mul(i64::from(body.quantity)));
+    if !(1..=1_000_000_000).contains(&lot_price) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    let fee = economy_policy(&mut *tx).await?.commission_bps;
+    let account = sqlx::query("SELECT user_id, username FROM minecraft_accounts WHERE uuid=$1 FOR UPDATE")
+        .bind(&uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(market_db)?;
+    let Some(row) = account else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let user_id: i64 = row.get("user_id");
+    let username: String = row.get("username");
+
+    let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM market_tasks WHERE uuid=$1 AND status='pending') OR EXISTS(SELECT 1 FROM inventory_deletions WHERE uuid=$1 AND status='pending')")
+        .bind(&uuid).fetch_one(&mut *tx).await.map_err(market_db)?;
+    if busy {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM market_listings WHERE uuid=$1 AND status IN ('pending','active')",
+    )
+    .bind(&uuid)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    if count >= 100 {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    let item_json = serde_json::to_value(&body.item).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let id = new_session_token()?;
+    let task_id = new_session_token()?;
+
+    sqlx::query("INSERT INTO market_listings(id,user_id,uuid,username,item,quantity,remaining,unit_price,lot_price,commission_bps,status) VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,'pending')")
+        .bind(&id).bind(user_id).bind(&uuid).bind(&username).bind(&item_json).bind(body.quantity)
+        .bind(body.unit_price).bind(lot_price).bind(fee).execute(&mut *tx).await.map_err(market_db)?;
+    sqlx::query("INSERT INTO market_tasks(id,listing_id,uuid,username,kind,quantity,slot,fingerprint) VALUES($1,$2,$3,$4,'withdraw',$5,$6,$7)")
+        .bind(&task_id).bind(&id).bind(&uuid).bind(&username).bind(body.quantity).bind(body.slot as i32).bind(&body.fingerprint)
+        .execute(&mut *tx).await.map_err(market_db)?;
+    tx.commit().await.map_err(market_db)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "listing_id": id,
+            "task_id": task_id,
+            "commission_bps": fee,
+            "unit_price": body.unit_price,
+            "lot_price": lot_price,
+            "quantity": body.quantity,
+        })),
+    ))
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -8065,6 +8157,97 @@ mod test {
         assert_eq!(found["slots"][0]["icon"], format!("data:image/png;base64,{INVENTORY_ICON_PNG}"));
         assert_eq!(found["slots"][36]["icon"], format!("data:image/png;base64,{INVENTORY_ICON_PNG}"));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_game_marketplace_sell_creates_listing_and_withdraw_task() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let seller = test_uuid(&random_ip());
+        let outcome = async {
+            claim(&pool, &start_code(&pool, &cookie).await?, &seller, "IngameSeller").await?;
+            let token = test_service_token();
+            let mut item = inventory_body(&seller, "IngameSeller")["slots"][0].clone();
+            item["fingerprint"] = serde_json::json!("f".repeat(64));
+            item["amount"] = serde_json::json!(16);
+            let payload = serde_json::json!({
+                "uuid": seller,
+                "slot": 0,
+                "fingerprint": "f".repeat(64),
+                "quantity": 16,
+                "unit_price": 10,
+                "lot_price": 150,
+                "item": item,
+            });
+
+            // 1. Without service token -> 401
+            let unauth = post_internal(&pool, "/internal/marketplace/sell", None, payload.clone(), &random_ip()).await?.status();
+            market_eq!(unauth, StatusCode::UNAUTHORIZED);
+
+            // 2. Unlinked UUID -> 404
+            let mut unlinked_payload = payload.clone();
+            unlinked_payload["uuid"] = serde_json::json!(test_uuid(&random_ip()));
+            let unlinked = post_internal(&pool, "/internal/marketplace/sell", Some(&token), unlinked_payload, &random_ip()).await?.status();
+            market_eq!(unlinked, StatusCode::NOT_FOUND);
+
+            // 3. Valid in-game sell request -> 201 Created
+            let resp = post_internal(&pool, "/internal/marketplace/sell", Some(&token), payload.clone(), &random_ip()).await?;
+            market_eq!(resp.status(), StatusCode::CREATED);
+            let resp_json = body_json(resp).await?;
+            let listing_id = resp_json["listing_id"].as_str().ok_or("missing listing_id")?;
+            let task_id = resp_json["task_id"].as_str().ok_or("missing task_id")?;
+            market_eq!(resp_json["unit_price"], 10);
+            market_eq!(resp_json["lot_price"], 150);
+            market_eq!(resp_json["quantity"], 16);
+
+            // 4. Listing in DB is pending
+            let status: String = sqlx::query_scalar("SELECT status FROM market_listings WHERE id=$1")
+                .bind(listing_id)
+                .fetch_one(&pool)
+                .await?;
+            market_eq!(status, "pending");
+
+            // 5. Task in DB is withdraw with correct params
+            let task_kind: String = sqlx::query_scalar("SELECT kind FROM market_tasks WHERE id=$1")
+                .bind(task_id)
+                .fetch_one(&pool)
+                .await?;
+            market_eq!(task_kind, "withdraw");
+
+            // 6. Complete the withdraw task via /internal/marketplace/report
+            let slots = inventory_body(&seller, "IngameSeller")["slots"].clone();
+            let ack = post_internal(&pool, "/internal/marketplace/report", Some(&token), serde_json::json!({
+                "uuid": seller,
+                "id": task_id,
+                "status": "done",
+                "item_bytes": "c2F2ZWQtaXRlbQ==",
+                "slots": slots
+            }), &random_ip()).await?.status();
+            market_eq!(ack, StatusCode::OK);
+
+            // 7. Listing is now active on the market
+            let active_status: String = sqlx::query_scalar("SELECT status FROM market_listings WHERE id=$1")
+                .bind(listing_id)
+                .fetch_one(&pool)
+                .await?;
+            market_eq!(active_status, "active");
+
+            // 8. Website marketplace returns the listing
+            let view = body_json(get_with_cookie(&pool, "/api/marketplace", Some(&cookie)).await?).await?;
+            let found = view["listings"].as_array().ok_or("listings missing")?.iter().find(|l| l["id"] == listing_id);
+            market_check!(found.is_some());
+            let l = found.unwrap();
+            market_eq!(l["seller"], "IngameSeller");
+            market_eq!(l["remaining"], 16);
+            market_eq!(l["unit_price"], 10);
+            market_eq!(l["lot_price"], 150);
+
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }.await;
+        clear_market(&pool, &[seller.clone()]).await?;
+        delete_user(&pool, &email).await?;
+        delete_player_inventory(&pool, &seller).await?;
+        outcome
     }
 
     // --- Minigames -------------------------------------------------------------

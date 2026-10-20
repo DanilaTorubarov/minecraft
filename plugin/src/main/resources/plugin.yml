@@ -19,11 +19,18 @@ commands:
         usage: /balance
         aliases: [bal]
         permission: linkbridge.balance
+    sell:
+        description: List the item or stack in your main hand on the marketplace.
+        usage: /sell <price> [price for stack]
+        permission: linkbridge.sell
     website:
         description: Link your Minecraft account or privately remind you of your website email.
         usage: /website link <code> or /website email
         permission: linkbridge.link
 permissions:
+    linkbridge.sell:
+        description: Use /sell to list items on the marketplace after authentication.
+        default: true
     linkbridge.services:
         description: Use personal economy services after authentication.
         default: true
