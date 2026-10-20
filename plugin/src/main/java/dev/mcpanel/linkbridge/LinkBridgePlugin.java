@@ -3810,8 +3810,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 regeneratingNodes.put(block.getLocation(), new RegeneratingOreNode(orig, System.currentTimeMillis() + cooldownMs));
                 return;
             }
-            event.setCancelled(true);
-            player.sendActionBar(Component.text("§c[Mine] Only fuel crystal ores can be harvested in this dimension!"));
+            if (block.getType() == Material.BEDROCK) {
+                event.setCancelled(true);
+                return;
+            }
+            // Allow breaking to navigate the cavern, but drop no items and give no exp!
+            event.setDropItems(false);
+            event.setExpToDrop(0);
             return;
         }
 
@@ -4106,6 +4111,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         Player player = event.getPlayer();
         if (activeMineExpeditions.containsKey(player.getUniqueId())) {
             endMineExpedition(player, null);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPlayerItemDamage(org.bukkit.event.player.PlayerItemDamageEvent event) {
+        if (event.getPlayer().getWorld().getName().equals("mine_world")) {
+            event.setCancelled(true);
         }
     }
 
