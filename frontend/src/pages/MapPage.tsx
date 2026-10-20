@@ -92,7 +92,7 @@ export default function MapPage({ visible }: Props) {
             onClick={handleCenter}
             title="Reset camera to world spawn (0, 0)"
           >
-            🎯 Center Spawn
+            Center Spawn
           </button>
           <button
             type="button"
@@ -100,7 +100,7 @@ export default function MapPage({ visible }: Props) {
             onClick={handleRefresh}
             title="Reload live map tiles and player markers"
           >
-            🔄 Refresh
+            Refresh
           </button>
           <button
             type="button"
@@ -108,7 +108,7 @@ export default function MapPage({ visible }: Props) {
             onClick={handlePopout}
             title="Open 3D map in full browser window"
           >
-            ↗ Full Window
+            Full Window
           </button>
         </div>
 

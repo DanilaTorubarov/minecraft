@@ -598,15 +598,26 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
 .player-account-content:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 
 /* Live 3D World Map Application */
+.map-window .window-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
 .map-page-shell {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 480px;
-  gap: 8px;
-  min-width: 0;
+  flex: 1 1 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 8px 12px 6px;
+  gap: 6px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .map-hud-bar {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -704,8 +715,9 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
   border-color: var(--line);
 }
 .map-frame-wrapper {
-  flex: 1;
-  min-height: 420px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
   position: relative;
   border-radius: 6px;
   overflow: hidden;
@@ -761,13 +773,15 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
   color: #94a3b8;
 }
 .map-hud-footer {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-size: 11px;
   color: var(--muted);
-  padding: 4px 6px;
+  padding: 3px 6px;
   border-top: 1px solid var(--line);
+  line-height: 1.3;
 }
 @container (max-width: 600px) {
   .map-hud-badges {
