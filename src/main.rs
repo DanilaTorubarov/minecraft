@@ -5092,9 +5092,9 @@ async fn buy_private_block(
     })))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct ListPrivateBlocksQuery {
-    uuid: String,
+    uuid: Option<String>,
 }
 
 async fn list_private_blocks(
@@ -5103,16 +5103,26 @@ async fn list_private_blocks(
     axum::extract::Query(query): axum::extract::Query<ListPrivateBlocksQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     require_service_token(&headers)?;
-    if !is_uuid(&query.uuid) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let rows = sqlx::query(
-        "SELECT id::text AS id, block_index, world, x, y, z, placed, radius, fuel_seconds, fuel_tier, members FROM private_blocks WHERE uuid=$1 ORDER BY block_index ASC",
-    )
-    .bind(&query.uuid)
-    .fetch_all(&pool)
-    .await
-    .map_err(market_db)?;
+
+    let rows = if let Some(target_uuid) = query.uuid.as_deref().filter(|s| !s.is_empty()) {
+        if !is_uuid(target_uuid) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        sqlx::query(
+            "SELECT p.id::text AS id, p.uuid, coalesce(s.username, p.uuid) AS username, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.members FROM private_blocks p LEFT JOIN player_stats s ON s.uuid = p.uuid WHERE p.uuid=$1 ORDER BY p.block_index ASC",
+        )
+        .bind(target_uuid)
+        .fetch_all(&pool)
+        .await
+        .map_err(market_db)?
+    } else {
+        sqlx::query(
+            "SELECT p.id::text AS id, p.uuid, coalesce(s.username, p.uuid) AS username, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.members FROM private_blocks p LEFT JOIN player_stats s ON s.uuid = p.uuid WHERE p.placed=true ORDER BY p.uuid, p.block_index ASC",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(market_db)?
+    };
 
     let mut blocks = Vec::new();
     for r in rows {
@@ -5120,6 +5130,8 @@ async fn list_private_blocks(
         let size = 2 * radius + 1;
         blocks.push(serde_json::json!({
             "id": r.get::<String, _>("id"),
+            "uuid": r.get::<String, _>("uuid"),
+            "username": r.get::<String, _>("username"),
             "block_index": r.get::<i32, _>("block_index"),
             "world": r.get::<String, _>("world"),
             "x": r.get::<i32, _>("x"),
@@ -11556,6 +11568,11 @@ mod test {
         assert_eq!(list2[0]["size"], 15);
         assert_eq!(list2[0]["fuel_tier"], 4);
         assert_eq!(list2[0]["fuel_seconds"], 21600);
+
+        let list_all_res = get_internal(&pool, "/internal/private/list", Some(&token), &ip).await?;
+        let list_all = body_json(list_all_res).await?;
+        assert_eq!(list_all.as_array().unwrap().len(), 1);
+        assert_eq!(list_all[0]["placed"], true);
 
         let pick1 = body_json(post_internal(&pool, "/internal/minershop/buy", Some(&token), serde_json::json!({
             "uuid": uuid, "username": "MinerPro", "tier": 1

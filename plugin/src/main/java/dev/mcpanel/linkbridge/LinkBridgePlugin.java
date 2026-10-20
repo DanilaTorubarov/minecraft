@@ -2952,12 +2952,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             getCommand("ps").setExecutor(this);
             getCommand("ps").setTabCompleter((sender, cmd, alias, args) -> {
                 if (args.length == 1) {
-                    return List.of("buy", "list", "add", "remove", "info").stream()
+                    return List.of("buy", "list", "claim", "add", "remove", "info").stream()
                         .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
                 }
                 return List.of();
             });
         }
+        loadAllPlacedPrivateBlocks();
         if (getCommand("mine") != null) {
             getCommand("mine").setExecutor(this);
             getCommand("mine").setTabCompleter((sender, cmd, alias, args) -> {
@@ -3106,48 +3107,224 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         });
     }
 
+    private PlacedPrivateBlock getPlacedBlockByUserAndIndex(UUID ownerUuid, int blockIndex) {
+        for (PlacedPrivateBlock pb : placedPrivateBlocks.values()) {
+            if (pb.ownerUuid.equals(ownerUuid) && pb.blockIndex == blockIndex && pb.placed) {
+                return pb;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasCoreItemInInventory(Player player, int blockIndex) {
+        var inv = player.getInventory();
+        var key = new NamespacedKey(this, "private_core");
+        for (ItemStack item : inv.getContents()) {
+            if (item != null && item.hasItemMeta()) {
+                var pdc = item.getItemMeta().getPersistentDataContainer();
+                if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
+                    Integer idx = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
+                    if (idx != null && idx == blockIndex) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private void loadAllPlacedPrivateBlocks() {
+        if (serviceToken.isBlank() || serviceToken.contains("${")) return;
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            var response = get(internalBase + "/private/list", requestTimeout);
+            if (response != null && response.statusCode() == 200) {
+                try {
+                    var array = com.google.gson.JsonParser.parseString(response.body()).getAsJsonArray();
+                    int loaded = 0;
+                    for (var elem : array) {
+                        var obj = elem.getAsJsonObject();
+                        boolean placed = obj.get("placed").getAsBoolean();
+                        if (!placed) continue;
+                        String id = obj.get("id").getAsString();
+                        UUID ownerUuid = UUID.fromString(obj.get("uuid").getAsString());
+                        String ownerName = obj.has("username") && !obj.get("username").isJsonNull() ? obj.get("username").getAsString() : ownerUuid.toString();
+                        int blockIndex = obj.get("block_index").getAsInt();
+                        String world = obj.get("world").getAsString();
+                        int x = obj.get("x").getAsInt();
+                        int y = obj.get("y").getAsInt();
+                        int z = obj.get("z").getAsInt();
+                        int radius = obj.get("radius").getAsInt();
+                        long fuelSeconds = obj.get("fuel_seconds").getAsLong();
+                        int fuelTier = obj.get("fuel_tier").getAsInt();
+                        List<UUID> members = new ArrayList<>();
+                        if (obj.has("members") && obj.get("members").isJsonArray()) {
+                            for (var m : obj.get("members").getAsJsonArray()) {
+                                try {
+                                    members.add(UUID.fromString(m.getAsString()));
+                                } catch (Exception ignored) {}
+                            }
+                        }
+                        PlacedPrivateBlock pb = new PlacedPrivateBlock(
+                            id, ownerUuid, ownerName, blockIndex, world, x, y, z, true, radius, fuelSeconds, fuelTier, members
+                        );
+                        placedPrivateBlocks.put(world + ":" + x + ":" + y + ":" + z, pb);
+                        loaded++;
+                    }
+                    getLogger().info("[Private] Loaded " + loaded + " active placed private block(s) from database.");
+                } catch (Exception e) {
+                    getLogger().warning("[Private] Could not parse placed private blocks: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    private void reclaimPrivateBlocks(Player player) {
+        UUID uuid = player.getUniqueId();
+        player.sendMessage("[Private] Checking your purchased private blocks...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            var response = get(internalBase + "/private/list?uuid=" + uuid, requestTimeout);
+            getServer().getScheduler().runTask(this, () -> {
+                if (response == null || response.statusCode() != 200) {
+                    player.sendMessage("[Private] Cannot contact server right now. Try again shortly.");
+                    return;
+                }
+                try {
+                    var array = com.google.gson.JsonParser.parseString(response.body()).getAsJsonArray();
+                    if (array.isEmpty()) {
+                        player.sendMessage("[Private] You have not purchased any private blocks yet! Use /ps buy.");
+                        return;
+                    }
+                    int reclaimed = 0;
+                    for (var elem : array) {
+                        var obj = elem.getAsJsonObject();
+                        int blockIndex = obj.get("block_index").getAsInt();
+                        boolean placed = obj.get("placed").getAsBoolean();
+                        String worldName = obj.get("world").getAsString();
+                        int x = obj.get("x").getAsInt();
+                        int y = obj.get("y").getAsInt();
+                        int z = obj.get("z").getAsInt();
+
+                        if (placed) {
+                            World w = getServer().getWorld(worldName);
+                            if (w == null || w.getBlockAt(x, y, z).getType() != Material.LODESTONE) {
+                                placed = false;
+                                placedPrivateBlocks.remove(worldName + ":" + x + ":" + y + ":" + z);
+                                PlacedPrivateBlock updated = new PlacedPrivateBlock(
+                                    obj.get("id").getAsString(), uuid, player.getName(), blockIndex,
+                                    worldName, x, y, z, false, obj.get("radius").getAsInt(),
+                                    obj.get("fuel_seconds").getAsLong(), obj.get("fuel_tier").getAsInt(),
+                                    new ArrayList<>()
+                                );
+                                syncPrivateBlockAsync(updated);
+                            }
+                        }
+
+                        if (!placed) {
+                            if (!hasCoreItemInInventory(player, blockIndex)) {
+                                var leftovers = player.getInventory().addItem(createProtectionCoreItem(blockIndex));
+                                if (!leftovers.isEmpty()) {
+                                    for (ItemStack leftover : leftovers.values()) {
+                                        player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+                                    }
+                                }
+                                reclaimed++;
+                                player.sendMessage(String.format(Locale.ROOT,
+                                    "§a[Private] Recovered your purchased Protection Core #%d for free!", blockIndex));
+                            } else {
+                                player.sendMessage(String.format(Locale.ROOT,
+                                    "§e[Private] Protection Core #%d is already in your inventory.", blockIndex));
+                            }
+                        } else {
+                            player.sendMessage(String.format(Locale.ROOT,
+                                "§7[Private] Protection Core #%d is currently active at %s (%d, %d, %d).",
+                                blockIndex, worldName, x, y, z));
+                        }
+                    }
+                    if (reclaimed > 0) {
+                        player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+                    }
+                } catch (Exception e) {
+                    player.sendMessage("[Private] Error reading your private block status.");
+                }
+            });
+        });
+    }
+
     private void psCommand(Player player, String[] args) {
         if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
             player.sendMessage("§6=== Private Block System ===");
             player.sendMessage("§e/ps buy §7— Buy next private block (1/3: 500c, 2/3: 20k, 3/3: 50k)");
-            player.sendMessage("§e/ps list §7— List your private blocks and remaining fuel");
+            player.sendMessage("§e/ps claim §7— Recover any destroyed or lost private blocks for free");
+            player.sendMessage("§e/ps list §7— List all your owned private blocks and status");
             player.sendMessage("§e/ps add <player> §7— Add a trusted friend to current private block");
             player.sendMessage("§e/ps remove <player> §7— Remove friend from current private block");
             player.sendMessage("§e/ps info §7— View details of the private block where you stand");
             return;
         }
+        if (args[0].equalsIgnoreCase("claim") || args[0].equalsIgnoreCase("get") || args[0].equalsIgnoreCase("reclaim")) {
+            reclaimPrivateBlocks(player);
+            return;
+        }
         if (args[0].equalsIgnoreCase("buy")) {
             UUID uuid = player.getUniqueId();
             String username = player.getName();
-            player.sendMessage("[Private] Contacting server to purchase private block...");
+            player.sendMessage("[Private] Checking private block availability...");
             getServer().getScheduler().runTaskAsynchronously(this, () -> {
-                var response = post(internalBase + "/private/buy",
-                    "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\"}", requestTimeout);
+                var listResp = get(internalBase + "/private/list?uuid=" + uuid, requestTimeout);
                 getServer().getScheduler().runTask(this, () -> {
-                    if (response == null) {
-                        player.sendMessage("[Private] Server did not respond. No coins charged.");
-                        return;
-                    }
-                    if (response.statusCode() == 200) {
+                    if (listResp != null && listResp.statusCode() == 200) {
                         try {
-                            var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
-                            int blockIndex = json.get("block_index").getAsInt();
-                            long price = json.get("price").getAsLong();
-                            ItemStack core = createProtectionCoreItem(blockIndex);
-                            player.getInventory().addItem(core);
-                            player.sendMessage(String.format(Locale.ROOT,
-                                "[Private] Purchased Private Block #%d for %,d coins! Place it to establish your zone.",
-                                blockIndex, price));
-                        } catch (Exception e) {
-                            player.sendMessage("[Private] Error reading purchase response.");
-                        }
-                    } else if (response.statusCode() == 409) {
-                        player.sendMessage("[Private] You already own the maximum of 3 private blocks!");
-                    } else if (response.statusCode() == 402) {
-                        player.sendMessage("[Private] Insufficient coins! Keep at least 1,000 coins in reserve.");
-                    } else {
-                        player.sendMessage("[Private] Cannot purchase private block at this time (" + response.statusCode() + ").");
+                            var array = com.google.gson.JsonParser.parseString(listResp.body()).getAsJsonArray();
+                            for (var elem : array) {
+                                var obj = elem.getAsJsonObject();
+                                int idx = obj.get("block_index").getAsInt();
+                                boolean placed = obj.get("placed").getAsBoolean();
+                                if (!placed && !hasCoreItemInInventory(player, idx)) {
+                                    player.getInventory().addItem(createProtectionCoreItem(idx));
+                                    player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+                                    player.sendMessage(String.format(Locale.ROOT,
+                                        "§a[Private] You already own Protection Core #%d! Recovered it for free into your inventory.", idx));
+                                    return;
+                                }
+                            }
+                            if (array.size() >= 3) {
+                                player.sendMessage("§e[Private] You already own the maximum of 3 private blocks! Use /ps list or /ps claim to manage them.");
+                                return;
+                            }
+                        } catch (Exception ignored) {}
                     }
+
+                    getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                        var response = post(internalBase + "/private/buy",
+                            "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\"}", requestTimeout);
+                        getServer().getScheduler().runTask(this, () -> {
+                            if (response == null) {
+                                player.sendMessage("[Private] Server did not respond. No coins charged.");
+                                return;
+                            }
+                            if (response.statusCode() == 200) {
+                                try {
+                                    var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                                    int blockIndex = json.get("block_index").getAsInt();
+                                    long price = json.get("price").getAsLong();
+                                    ItemStack core = createProtectionCoreItem(blockIndex);
+                                    player.getInventory().addItem(core);
+                                    player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+                                    player.sendMessage(String.format(Locale.ROOT,
+                                        "§a[Private] Purchased Private Block #%d for %,d coins! Place it to establish your zone.",
+                                        blockIndex, price));
+                                } catch (Exception e) {
+                                    player.sendMessage("[Private] Error reading purchase response.");
+                                }
+                            } else if (response.statusCode() == 409) {
+                                player.sendMessage("[Private] You already own the maximum of 3 private blocks!");
+                            } else if (response.statusCode() == 402) {
+                                player.sendMessage("[Private] Insufficient coins! Keep at least 1,000 coins in reserve.");
+                            } else {
+                                player.sendMessage("[Private] Cannot purchase private block at this time (" + response.statusCode() + ").");
+                            }
+                        });
+                    });
                 });
             });
             return;
@@ -3163,24 +3340,35 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     }
                     try {
                         var array = com.google.gson.JsonParser.parseString(response.body()).getAsJsonArray();
-                        if (array.isEmpty()) {
-                            player.sendMessage("[Private] You do not own any private blocks. Use /ps buy to purchase one!");
-                            return;
-                        }
-                        player.sendMessage("§6=== Your Private Blocks (" + array.size() + "/3) ===");
+                        player.sendMessage("§6=== Your Private Blocks (" + array.size() + "/3 Purchased) ===");
+                        Map<Integer, com.google.gson.JsonObject> owned = new HashMap<>();
                         for (var elem : array) {
                             var obj = elem.getAsJsonObject();
-                            int idx = obj.get("block_index").getAsInt();
-                            boolean placed = obj.get("placed").getAsBoolean();
-                            long fuel = obj.get("fuel_seconds").getAsLong();
-                            int size = obj.get("size").getAsInt();
-                            if (placed) {
-                                String loc = String.format(Locale.ROOT, "%s (%d, %d, %d)", obj.get("world").getAsString(), obj.get("x").getAsInt(), obj.get("y").getAsInt(), obj.get("z").getAsInt());
-                                player.sendMessage(String.format(Locale.ROOT,
-                                    "§e#%d: §aPlaced §7at %s | §bSize: %dx%d | §7Fuel: %s",
-                                    idx, loc, size, size, fuel > 0 ? "§a" + ExpeditionRules.formatDuration(fuel) : "§cDormant (No Fuel)"));
+                            owned.put(obj.get("block_index").getAsInt(), obj);
+                        }
+                        for (int i = 1; i <= 3; i++) {
+                            if (owned.containsKey(i)) {
+                                var obj = owned.get(i);
+                                boolean placed = obj.get("placed").getAsBoolean();
+                                long fuel = obj.get("fuel_seconds").getAsLong();
+                                int size = obj.get("size").getAsInt();
+                                if (placed) {
+                                    String loc = String.format(Locale.ROOT, "%s (%d, %d, %d)",
+                                        obj.get("world").getAsString(), obj.get("x").getAsInt(), obj.get("y").getAsInt(), obj.get("z").getAsInt());
+                                    player.sendMessage(String.format(Locale.ROOT,
+                                        "§e#%d: §aPlaced §7at %s | §bSize: %dx%d | §7Fuel: %s",
+                                        i, loc, size, size, fuel > 0 ? "§a" + ExpeditionRules.formatDuration(fuel) : "§cDormant (No Fuel)"));
+                                } else {
+                                    boolean inInv = hasCoreItemInInventory(player, i);
+                                    if (inInv) {
+                                        player.sendMessage(String.format(Locale.ROOT, "§e#%d: §7In your inventory (Ready to place)", i));
+                                    } else {
+                                        player.sendMessage(String.format(Locale.ROOT, "§e#%d: §cNot Placed / Missing §7(Type §a/ps claim §7to recover for free)", i));
+                                    }
+                                }
                             } else {
-                                player.sendMessage(String.format(Locale.ROOT, "§e#%d: §7In inventory / Not placed", idx));
+                                long price = PrivateRules.nextBlockPrice(i - 1);
+                                player.sendMessage(String.format(Locale.ROOT, "§8#%d: Not purchased (Buy for %,d coins with /ps buy)", i, price));
                             }
                         }
                     } catch (Exception e) {
@@ -3639,7 +3827,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             placedPrivateBlocks.remove(blockKey(block.getLocation()));
             core.placed = false;
             syncPrivateBlockAsync(core);
-            player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
+            var leftovers = player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
+            if (!leftovers.isEmpty()) {
+                for (ItemStack leftover : leftovers.values()) {
+                    block.getWorld().dropItemNaturally(block.getLocation().add(0.5, 0.5, 0.5), leftover);
+                }
+            }
             player.sendMessage("§a[Private] Protection core dismantled and returned to inventory.");
             return;
         }
@@ -3670,6 +3863,28 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             if (pdc.has(key, org.bukkit.persistence.PersistentDataType.INTEGER)) {
                 int blockIndex = pdc.get(key, org.bukkit.persistence.PersistentDataType.INTEGER);
                 Location loc = block.getLocation();
+
+                PlacedPrivateBlock overlapping = getProtectingBlock(loc);
+                if (overlapping != null && !overlapping.ownerUuid.equals(player.getUniqueId())) {
+                    event.setCancelled(true);
+                    player.sendMessage("§c[Private] You cannot place a private block inside " + overlapping.ownerName + "'s protected zone!");
+                    return;
+                }
+
+                PlacedPrivateBlock alreadyPlaced = getPlacedBlockByUserAndIndex(player.getUniqueId(), blockIndex);
+                if (alreadyPlaced != null && alreadyPlaced.placed) {
+                    World oldW = getServer().getWorld(alreadyPlaced.world);
+                    if (oldW != null && oldW.getBlockAt(alreadyPlaced.x, alreadyPlaced.y, alreadyPlaced.z).getType() == Material.LODESTONE) {
+                        event.setCancelled(true);
+                        player.sendMessage(String.format(Locale.ROOT,
+                            "§c[Private] Your Protection Core #%d is already placed at %s (%d, %d, %d)! Dismantle it first before placing another.",
+                            blockIndex, alreadyPlaced.world, alreadyPlaced.x, alreadyPlaced.y, alreadyPlaced.z));
+                        return;
+                    } else {
+                        placedPrivateBlocks.remove(alreadyPlaced.world + ":" + alreadyPlaced.x + ":" + alreadyPlaced.y + ":" + alreadyPlaced.z);
+                    }
+                }
+
                 PlacedPrivateBlock pb = new PlacedPrivateBlock(
                     UUID.randomUUID().toString(),
                     player.getUniqueId(),
@@ -3804,7 +4019,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 placedPrivateBlocks.remove(blockKey(loc));
                 core.placed = false;
                 syncPrivateBlockAsync(core);
-                player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
+                var leftovers = player.getInventory().addItem(createProtectionCoreItem(core.blockIndex));
+                if (!leftovers.isEmpty()) {
+                    for (ItemStack leftover : leftovers.values()) {
+                        player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+                    }
+                }
                 player.sendMessage("§a[Private] Protection core dismantled and returned to inventory.");
             }
         }
@@ -3842,13 +4062,37 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onMineEntityExplode(org.bukkit.event.entity.EntityExplodeEvent event) {
         if (event.getLocation().getWorld().getName().equals("mine_world")) {
             event.blockList().clear();
+            return;
         }
+        event.blockList().removeIf(b -> getPlacedCoreAt(b.getLocation()) != null);
     }
 
     @EventHandler(priority = EventPriority.NORMAL)
     public void onMineBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
         if (event.getBlock().getWorld().getName().equals("mine_world")) {
             event.blockList().clear();
+            return;
+        }
+        event.blockList().removeIf(b -> getPlacedCoreAt(b.getLocation()) != null);
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPrivatePistonExtend(org.bukkit.event.block.BlockPistonExtendEvent event) {
+        for (Block b : event.getBlocks()) {
+            if (getPlacedCoreAt(b.getLocation()) != null) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPrivatePistonRetract(org.bukkit.event.block.BlockPistonRetractEvent event) {
+        for (Block b : event.getBlocks()) {
+            if (getPlacedCoreAt(b.getLocation()) != null) {
+                event.setCancelled(true);
+                return;
+            }
         }
     }
 
