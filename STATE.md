@@ -1,6 +1,24 @@
 # Project checkpoint — 2026-10-20
 
 
+## In-game `/market` & `/ah` auction house GUI and purchasing — 2026-10-20
+
+- Implemented `/market` (alias `/ah`) command in Minecraft via LinkBridge plugin (`plugin.yml` and `LinkBridgePlugin.java`).
+  - Supports `/market` (opens page 1), `/market <page>`, `/market search <query>`, and `/market cancel <listing_id>`.
+  - Opens a 54-slot chest GUI displaying active marketplace listings using authentic `ItemStack` instances deserialized from base64 NBT.
+  - Lore shows seller name, available quantity, unit price, lot price, and purchase instructions (`Left-Click: Buy 1 · Right-Click: Buy All`).
+  - Sellers viewing their own listings see `[Your Listing]` and `Shift-Click to Cancel`.
+  - Navigation row includes previous/next page buttons, current page and search filter indicators, player's current coin balance, and selling instructions.
+- Added internal transactional backend endpoints in `src/main.rs`:
+  - `POST /internal/marketplace/listings`: paginated active listings with search filter, buyer balance lookup, and lossless serialized `item_bytes`.
+  - `POST /internal/marketplace/buy`: atomic in-game purchase with coin balance deduction, seller credit minus commission, order logging, and deliver task creation into `market_tasks`.
+  - `POST /internal/marketplace/cancel`: allows sellers to cancel active listings and returns unsold items back to inventory via escrow delivery.
+- Test coverage:
+  - Added Rust integration test `in_game_marketplace_listings_and_buy_workflow` in `src/main.rs` covering unauthenticated requests, unlinked accounts, self-purchase conflicts, quantity/total mismatch, unit and lot purchases, remaining balance updates, and listing cancellations.
+  - Added Java unit test cases in `InventoryNbtTest.java` verifying `MarketRules` pagination parsing, lot/unit purchase quantity and price math, and GUI title formatting.
+- Verified `cargo check --tests`, `npm test` (60/60 tests), `npm run lint`, and `npm run build`.
+
+
 ## Item durability serialization fix & marketplace durability visibility — 2026-10-20
 
 - Fixed weapon/tool durability serialization in `LinkBridgePlugin.java`:

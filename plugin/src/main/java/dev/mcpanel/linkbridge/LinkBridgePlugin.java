@@ -25,6 +25,7 @@ import java.nio.file.StandardOpenOption;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,6 +34,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import net.kyori.adventure.text.Component;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -55,6 +57,8 @@ import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerAdvancementDoneEvent;
 import org.bukkit.event.player.PlayerBedEnterEvent;
 import org.bukkit.event.player.PlayerBedLeaveEvent;
@@ -62,9 +66,12 @@ import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.event.player.PlayerItemBreakEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.Damageable;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
@@ -147,6 +154,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private String emailUrl = "";
     private String statsUrl = "";
     private String marketplaceUrl = "";
+    private String marketplaceListingsUrl = "";
+    private String marketplaceBuyUrl = "";
+    private String marketplaceCancelUrl = "";
     private String balanceUrl = "";
     private String skinsSyncUrl = "";
     private String skinsReportUrl = "";
@@ -272,6 +282,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         emailUrl = base + "/internal/link/email";
         statsUrl = base + "/internal/stats/report";
         marketplaceUrl = base + "/internal/marketplace";
+        marketplaceListingsUrl = base + "/internal/marketplace/listings";
+        marketplaceBuyUrl = base + "/internal/marketplace/buy";
+        marketplaceCancelUrl = base + "/internal/marketplace/cancel";
         balanceUrl = base + "/internal/balance";
         skinsSyncUrl = base + "/internal/skins/sync";
         skinsReportUrl = base + "/internal/skins/report";
@@ -330,6 +343,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return true;
             }
             sellCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("market") || command.getName().equalsIgnoreCase("ah")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Market] Wait a few seconds and try again.");
+                return true;
+            }
+            marketCommand(player, args);
             return true;
         }
 
@@ -582,6 +603,488 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 }
             });
         } catch (Exception ignored) {}
+    }
+
+    public static final class MarketRules {
+        public static int parsePage(String input) {
+            if (input == null || input.isBlank()) return 1;
+            try {
+                int page = Integer.parseInt(input.trim());
+                return Math.max(1, page);
+            } catch (NumberFormatException e) {
+                return 1;
+            }
+        }
+
+        public static long computePurchaseTotal(boolean buyLot, Long unitPrice, Long lotPrice, int quantity, int remaining) {
+            if (buyLot) {
+                if (lotPrice == null) throw new IllegalArgumentException("Lot purchase not available");
+                return lotPrice;
+            } else {
+                if (unitPrice == null) throw new IllegalArgumentException("Unit purchase not available");
+                return Math.multiplyExact(unitPrice, (long) quantity);
+            }
+        }
+
+        public static int computePurchaseQuantity(boolean buyLot, Long unitPrice, Long lotPrice, int remaining) {
+            if (buyLot || unitPrice == null) {
+                return remaining;
+            }
+            return 1;
+        }
+
+        public static String formatInventoryTitle(int page, int totalPages, String query) {
+            if (query != null && !query.isBlank()) {
+                String q = query.length() > 16 ? query.substring(0, 16) + "…" : query;
+                return "Market (" + q + ") P." + page + "/" + totalPages;
+            }
+            return "Marketplace (Page " + page + "/" + totalPages + ")";
+        }
+    }
+
+    public static final class MarketListingEntry {
+        private final String id;
+        private final String seller;
+        private final String sellerUuid;
+        private final boolean isMine;
+        private final int remaining;
+        private final Long unitPrice;
+        private final Long lotPrice;
+        private final String displayName;
+        private final ItemStack rawItem;
+
+        public MarketListingEntry(String id, String seller, String sellerUuid, boolean isMine, int remaining, Long unitPrice, Long lotPrice, String displayName, ItemStack rawItem) {
+            this.id = id;
+            this.seller = seller;
+            this.sellerUuid = sellerUuid;
+            this.isMine = isMine;
+            this.remaining = remaining;
+            this.unitPrice = unitPrice;
+            this.lotPrice = lotPrice;
+            this.displayName = displayName;
+            this.rawItem = rawItem;
+        }
+
+        public String id() { return id; }
+        public String seller() { return seller; }
+        public String sellerUuid() { return sellerUuid; }
+        public boolean isMine() { return isMine; }
+        public int remaining() { return remaining; }
+        public Long unitPrice() { return unitPrice; }
+        public Long lotPrice() { return lotPrice; }
+        public String displayName() { return displayName; }
+        public ItemStack rawItem() { return rawItem; }
+    }
+
+    public static final class MarketHolder implements InventoryHolder {
+        private final int page;
+        private final int totalPages;
+        private final String query;
+        private final long buyerCoins;
+        private final Map<Integer, MarketListingEntry> listings = new HashMap<>();
+        private Inventory inventory;
+
+        public MarketHolder(int page, int totalPages, String query, long buyerCoins) {
+            this.page = page;
+            this.totalPages = totalPages;
+            this.query = query;
+            this.buyerCoins = buyerCoins;
+        }
+
+        public int getPage() { return page; }
+        public int getTotalPages() { return totalPages; }
+        public String getQuery() { return query; }
+        public long getBuyerCoins() { return buyerCoins; }
+
+        public void putListing(int slot, MarketListingEntry entry) {
+            listings.put(slot, entry);
+        }
+
+        public MarketListingEntry getListing(int slot) {
+            return listings.get(slot);
+        }
+
+        public void setInventory(Inventory inventory) {
+            this.inventory = inventory;
+        }
+
+        @Override
+        public Inventory getInventory() {
+            return inventory;
+        }
+    }
+
+    private void marketCommand(Player player, String[] args) {
+        if (serviceToken.isBlank() || serviceToken.contains("${")) {
+            player.sendMessage("[Market] Marketplace is not configured on this server.");
+            return;
+        }
+        if (args.length == 0) {
+            openMarket(player, 1, "");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("search") || args[0].equalsIgnoreCase("find")) {
+            if (args.length < 2) {
+                player.sendMessage("[Market] Usage: /market search <item or player name>");
+                return;
+            }
+            String query = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length)).trim();
+            openMarket(player, 1, query);
+            return;
+        }
+        if (args[0].equalsIgnoreCase("page") || args[0].equalsIgnoreCase("p")) {
+            if (args.length < 2) {
+                player.sendMessage("[Market] Usage: /market page <number>");
+                return;
+            }
+            int page = MarketRules.parsePage(args[1]);
+            openMarket(player, page, "");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("cancel") && args.length >= 2) {
+            cancelCommand(player, args[1].trim());
+            return;
+        }
+        try {
+            int page = Integer.parseInt(args[0].trim());
+            openMarket(player, Math.max(1, page), "");
+            return;
+        } catch (NumberFormatException ignored) {}
+        String query = String.join(" ", args).trim();
+        openMarket(player, 1, query);
+    }
+
+    private void openMarket(Player player, int page, String query) {
+        UUID uuid = player.getUniqueId();
+        player.sendMessage("[Market] Loading marketplace...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            var body = new com.google.gson.JsonObject();
+            body.addProperty("buyer_uuid", uuid.toString());
+            body.addProperty("page", page);
+            body.addProperty("page_size", 45);
+            body.addProperty("query", query == null ? "" : query);
+
+            HttpResponse<String> response = post(marketplaceListingsUrl, body.toString(), requestTimeout);
+            if (response == null || response.statusCode() != 200) {
+                getServer().getScheduler().runTask(this, () -> {
+                    if (player.isOnline() && isAuthenticated(player)) {
+                        player.sendMessage("[Market] Could not load marketplace listings. Try again shortly.");
+                    }
+                });
+                return;
+            }
+
+            try {
+                var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                int curPage = json.has("page") ? json.get("page").getAsInt() : page;
+                int totalPages = json.has("total_pages") ? json.get("total_pages").getAsInt() : 1;
+                long buyerCoins = json.has("buyer_coins") ? json.get("buyer_coins").getAsLong() : 0L;
+                var listingsArr = json.has("listings") ? json.get("listings").getAsJsonArray() : new com.google.gson.JsonArray();
+
+                List<MarketListingEntry> entries = new ArrayList<>();
+                for (var elem : listingsArr) {
+                    var obj = elem.getAsJsonObject();
+                    String id = obj.get("id").getAsString();
+                    String seller = obj.get("seller").getAsString();
+                    String sellerUuid = obj.get("seller_uuid").getAsString();
+                    boolean isMine = obj.has("is_mine") && obj.get("is_mine").getAsBoolean();
+                    int remaining = obj.get("remaining").getAsInt();
+                    Long unitPrice = obj.has("unit_price") && !obj.get("unit_price").isJsonNull() ? obj.get("unit_price").getAsLong() : null;
+                    Long lotPrice = obj.has("lot_price") && !obj.get("lot_price").isJsonNull() ? obj.get("lot_price").getAsLong() : null;
+                    String itemBytes = obj.has("item_bytes") && !obj.get("item_bytes").isJsonNull() ? obj.get("item_bytes").getAsString() : null;
+
+                    var itemObj = obj.has("item") && obj.get("item").isJsonObject() ? obj.get("item").getAsJsonObject() : null;
+                    String itemKey = itemObj != null && itemObj.has("key") ? itemObj.get("key").getAsString() : "minecraft:chest";
+                    String displayName = itemObj != null && itemObj.has("display_name") && !itemObj.get("display_name").isJsonNull()
+                        ? itemObj.get("display_name").getAsString()
+                        : null;
+
+                    ItemStack raw = null;
+                    if (itemBytes != null && !itemBytes.isEmpty()) {
+                        try {
+                            raw = ItemStack.deserializeBytes(java.util.Base64.getDecoder().decode(itemBytes));
+                        } catch (Exception ignored) {}
+                    }
+                    if (raw == null || raw.isEmpty()) {
+                        String matName = itemKey.startsWith("minecraft:") ? itemKey.substring("minecraft:".length()).toUpperCase(Locale.ROOT) : itemKey.toUpperCase(Locale.ROOT);
+                        Material mat = Material.matchMaterial(matName);
+                        if (mat == null) mat = Material.CHEST;
+                        raw = new ItemStack(mat);
+                    }
+                    if (displayName == null) {
+                        displayName = SellRules.formatItemName(null, raw.getType().name());
+                    }
+
+                    entries.add(new MarketListingEntry(id, seller, sellerUuid, isMine, remaining, unitPrice, lotPrice, displayName, raw));
+                }
+
+                getServer().getScheduler().runTask(this, () -> {
+                    if (!player.isOnline() || !isAuthenticated(player)) return;
+
+                    MarketHolder holder = new MarketHolder(curPage, totalPages, query, buyerCoins);
+                    String title = MarketRules.formatInventoryTitle(curPage, totalPages, query);
+                    Inventory inv = org.bukkit.Bukkit.createInventory(holder, 54, net.kyori.adventure.text.Component.text(title));
+                    holder.setInventory(inv);
+
+                    // Slots 0..44: listings
+                    for (int i = 0; i < entries.size() && i < 45; i++) {
+                        MarketListingEntry entry = entries.get(i);
+                        ItemStack display = entry.rawItem().clone();
+                        display.setAmount(Math.min(entry.remaining(), display.getMaxStackSize()));
+
+                        ItemMeta meta = display.getItemMeta();
+                        if (meta != null) {
+                            List<net.kyori.adventure.text.Component> lore = new ArrayList<>();
+                            if (meta.hasLore() && meta.lore() != null) {
+                                lore.addAll(meta.lore());
+                            }
+                            lore.add(net.kyori.adventure.text.Component.text("§8----------------------------"));
+                            lore.add(net.kyori.adventure.text.Component.text("§7Seller: §f" + entry.seller()));
+                            lore.add(net.kyori.adventure.text.Component.text("§7Available: §e" + entry.remaining()));
+                            if (entry.unitPrice() != null) {
+                                lore.add(net.kyori.adventure.text.Component.text(String.format(Locale.ROOT, "§7Unit Price: §6%,d coins", entry.unitPrice())));
+                            }
+                            if (entry.lotPrice() != null) {
+                                lore.add(net.kyori.adventure.text.Component.text(String.format(Locale.ROOT, "§7Lot Price: §6%,d coins", entry.lotPrice())));
+                            }
+                            lore.add(net.kyori.adventure.text.Component.text(""));
+                            if (entry.isMine()) {
+                                lore.add(net.kyori.adventure.text.Component.text("§b[Your Listing]"));
+                                lore.add(net.kyori.adventure.text.Component.text("§cShift-Click to Cancel"));
+                            } else {
+                                lore.add(net.kyori.adventure.text.Component.text("§a§lClick to Purchase"));
+                                if (entry.unitPrice() != null && entry.lotPrice() != null && entry.remaining() > 1) {
+                                    lore.add(net.kyori.adventure.text.Component.text("§eLeft-Click: §fBuy 1 §7| §eRight-Click: §fBuy All"));
+                                } else if (entry.lotPrice() != null && entry.remaining() > 1) {
+                                    lore.add(net.kyori.adventure.text.Component.text("§eClick: §fBuy Whole Lot"));
+                                } else {
+                                    lore.add(net.kyori.adventure.text.Component.text("§eClick: §fBuy"));
+                                }
+                            }
+                            lore.add(net.kyori.adventure.text.Component.text("§8----------------------------"));
+                            meta.lore(lore);
+                            display.setItemMeta(meta);
+                        }
+
+                        inv.setItem(i, display);
+                        holder.putListing(i, entry);
+                    }
+
+                    // Bottom navigation row: slots 45..53
+                    ItemStack pane = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+                    ItemMeta paneMeta = pane.getItemMeta();
+                    if (paneMeta != null) {
+                        paneMeta.displayName(net.kyori.adventure.text.Component.text(" "));
+                        pane.setItemMeta(paneMeta);
+                    }
+                    for (int slot = 45; slot < 54; slot++) {
+                        inv.setItem(slot, pane);
+                    }
+
+                    // Slot 45: Previous page
+                    if (curPage > 1) {
+                        ItemStack prev = new ItemStack(Material.ARROW);
+                        ItemMeta prevMeta = prev.getItemMeta();
+                        if (prevMeta != null) {
+                            prevMeta.displayName(net.kyori.adventure.text.Component.text("§a◄ Previous Page"));
+                            prevMeta.lore(List.of(net.kyori.adventure.text.Component.text("§7Go to page " + (curPage - 1))));
+                            prev.setItemMeta(prevMeta);
+                        }
+                        inv.setItem(45, prev);
+                    }
+
+                    // Slot 48: Coins balance
+                    ItemStack bal = new ItemStack(Material.SUNFLOWER);
+                    ItemMeta balMeta = bal.getItemMeta();
+                    if (balMeta != null) {
+                        balMeta.displayName(net.kyori.adventure.text.Component.text("§6Your Balance"));
+                        balMeta.lore(List.of(net.kyori.adventure.text.Component.text(String.format(Locale.ROOT, "§e%,d coins", buyerCoins))));
+                        bal.setItemMeta(balMeta);
+                    }
+                    inv.setItem(48, bal);
+
+                    // Slot 49: Market info & refresh
+                    ItemStack info = new ItemStack(Material.COMPASS);
+                    ItemMeta infoMeta = info.getItemMeta();
+                    if (infoMeta != null) {
+                        infoMeta.displayName(net.kyori.adventure.text.Component.text("§eMarketplace Info"));
+                        List<net.kyori.adventure.text.Component> infoLore = new ArrayList<>();
+                        infoLore.add(net.kyori.adventure.text.Component.text("§7Page: §f" + curPage + "§7/§f" + totalPages));
+                        if (query != null && !query.isBlank()) {
+                            infoLore.add(net.kyori.adventure.text.Component.text("§7Filter: §e\"" + query + "\""));
+                            infoLore.add(net.kyori.adventure.text.Component.text("§cClick to clear search filter"));
+                        } else {
+                            infoLore.add(net.kyori.adventure.text.Component.text("§aClick to refresh listings"));
+                        }
+                        infoMeta.lore(infoLore);
+                        info.setItemMeta(infoMeta);
+                    }
+                    inv.setItem(49, info);
+
+                    // Slot 50: How to sell
+                    ItemStack sellInfo = new ItemStack(Material.CHEST);
+                    ItemMeta sellMeta = sellInfo.getItemMeta();
+                    if (sellMeta != null) {
+                        sellMeta.displayName(net.kyori.adventure.text.Component.text("§aHow to Sell Items"));
+                        sellMeta.lore(List.of(
+                            net.kyori.adventure.text.Component.text("§7Hold an item in hand and type:"),
+                            net.kyori.adventure.text.Component.text("§e/sell <price> [stack price]")
+                        ));
+                        sellInfo.setItemMeta(sellMeta);
+                    }
+                    inv.setItem(50, sellInfo);
+
+                    // Slot 53: Next page
+                    if (curPage < totalPages) {
+                        ItemStack next = new ItemStack(Material.ARROW);
+                        ItemMeta nextMeta = next.getItemMeta();
+                        if (nextMeta != null) {
+                            nextMeta.displayName(net.kyori.adventure.text.Component.text("§aNext Page ►"));
+                            nextMeta.lore(List.of(net.kyori.adventure.text.Component.text("§7Go to page " + (curPage + 1))));
+                            next.setItemMeta(nextMeta);
+                        }
+                        inv.setItem(53, next);
+                    }
+
+                    player.openInventory(inv);
+                });
+            } catch (Exception e) {
+                getLogger().warning("Error displaying marketplace inventory: " + e.getMessage());
+            }
+        });
+    }
+
+    private void cancelCommand(Player player, String listingId) {
+        player.sendMessage("[Market] Cancelling listing...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            var body = new com.google.gson.JsonObject();
+            body.addProperty("uuid", player.getUniqueId().toString());
+            body.addProperty("listing_id", listingId);
+
+            HttpResponse<String> response = post(marketplaceCancelUrl, body.toString(), requestTimeout);
+            int code = response == null ? 500 : response.statusCode();
+
+            getServer().getScheduler().runTask(this, () -> {
+                if (!player.isOnline() || !isAuthenticated(player)) return;
+                if (code == 200 || code == 202) {
+                    player.sendMessage("[Market] Listing cancelled! Your items will be returned to your inventory.");
+                    syncMarketplace();
+                } else if (code == 404) {
+                    player.sendMessage("[Market] Listing not found or not owned by you.");
+                } else if (code == 429) {
+                    player.sendMessage("[Market] You have reached the limit of 5 pending item deliveries. Please empty inventory space first.");
+                } else {
+                    player.sendMessage("[Market] Failed to cancel listing (" + code + ").");
+                }
+            });
+        });
+    }
+
+    private void buyListingInGame(Player player, MarketListingEntry entry, String pricing, int quantity, long total) {
+        UUID uuid = player.getUniqueId();
+        player.closeInventory();
+        player.sendMessage(String.format(Locale.ROOT, "[Market] Purchasing %dx %s for %,d coins...", quantity, entry.displayName(), total));
+
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            var body = new com.google.gson.JsonObject();
+            body.addProperty("buyer_uuid", uuid.toString());
+            body.addProperty("listing_id", entry.id());
+            body.addProperty("pricing", pricing);
+            body.addProperty("quantity", quantity);
+            body.addProperty("expected_total", total);
+            body.addProperty("expected_remaining", entry.remaining());
+
+            HttpResponse<String> response = post(marketplaceBuyUrl, body.toString(), requestTimeout);
+            int code = response == null ? 500 : response.statusCode();
+
+            getServer().getScheduler().runTask(this, () -> {
+                if (!player.isOnline() || !isAuthenticated(player)) return;
+                if (code == 200 || code == 202) {
+                    player.sendMessage(String.format(Locale.ROOT, "[Market] Successfully purchased %dx %s for %,d coins!", quantity, entry.displayName(), total));
+                    try {
+                        player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+                    } catch (Exception ignored) {}
+                    syncMarketplace();
+                } else if (code == 404) {
+                    player.sendMessage("[Market] That listing is no longer available.");
+                } else if (code == 422) {
+                    player.sendMessage("[Market] You do not have enough coins to purchase this item.");
+                } else if (code == 429) {
+                    player.sendMessage("[Market] You have 5 pending item deliveries. Please empty space in your inventory first.");
+                } else if (code == 409) {
+                    player.sendMessage("[Market] Marketplace conflict: the item was already sold or updated.");
+                } else {
+                    player.sendMessage("[Market] Purchase failed (" + code + ").");
+                }
+            });
+        });
+    }
+
+    @EventHandler
+    public void onMarketInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        if (!(event.getInventory().getHolder() instanceof MarketHolder holder)) return;
+
+        event.setCancelled(true);
+        if (event.getClickedInventory() != event.getInventory()) return;
+
+        int slot = event.getSlot();
+        if (slot < 0 || slot >= 54) return;
+
+        if (slot == 45 && holder.getPage() > 1) {
+            openMarket(player, holder.getPage() - 1, holder.getQuery());
+            return;
+        }
+        if (slot == 53 && holder.getPage() < holder.getTotalPages()) {
+            openMarket(player, holder.getPage() + 1, holder.getQuery());
+            return;
+        }
+        if (slot == 49) {
+            if (holder.getQuery() != null && !holder.getQuery().isBlank()) {
+                openMarket(player, 1, "");
+            } else {
+                openMarket(player, holder.getPage(), "");
+            }
+            return;
+        }
+
+        MarketListingEntry entry = holder.getListing(slot);
+        if (entry == null) return;
+
+        if (entry.isMine()) {
+            if (event.isShiftClick()) {
+                player.closeInventory();
+                cancelCommand(player, entry.id());
+            } else {
+                player.sendMessage("[Market] This is your listing. Shift-click to cancel it and retrieve the items.");
+            }
+            return;
+        }
+
+        boolean buyLot = event.isRightClick() && entry.lotPrice() != null;
+        int quantity = MarketRules.computePurchaseQuantity(buyLot, entry.unitPrice(), entry.lotPrice(), entry.remaining());
+        long total;
+        try {
+            total = MarketRules.computePurchaseTotal(buyLot, entry.unitPrice(), entry.lotPrice(), quantity, entry.remaining());
+        } catch (Exception e) {
+            player.sendMessage("[Market] Invalid purchase pricing.");
+            return;
+        }
+
+        String pricing = buyLot ? "lot" : (entry.unitPrice() != null ? "unit" : "lot");
+        if (holder.getBuyerCoins() < total) {
+            player.sendMessage(String.format(Locale.ROOT, "[Market] You need %,d coins but only have %,d.", total, holder.getBuyerCoins()));
+            return;
+        }
+
+        buyListingInGame(player, entry, pricing, quantity, total);
+    }
+
+    @EventHandler
+    public void onMarketInventoryDrag(InventoryDragEvent event) {
+        if (event.getInventory().getHolder() instanceof MarketHolder) {
+            event.setCancelled(true);
+        }
     }
 
     // --- Telling unlinked players where to go ---------------------------------

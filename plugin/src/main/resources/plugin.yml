@@ -23,11 +23,19 @@ commands:
         description: List the item or stack in your main hand on the marketplace.
         usage: /sell <price> [price for stack]
         permission: linkbridge.sell
+    market:
+        description: Open the marketplace auction house to browse and buy items.
+        usage: /market [page|search <query>]
+        aliases: [ah]
+        permission: linkbridge.market
     website:
         description: Link your Minecraft account or privately remind you of your website email.
         usage: /website link <code> or /website email
         permission: linkbridge.link
 permissions:
+    linkbridge.market:
+        description: Open the marketplace auction house and buy items after authentication.
+        default: true
     linkbridge.sell:
         description: Use /sell to list items on the marketplace after authentication.
         default: true

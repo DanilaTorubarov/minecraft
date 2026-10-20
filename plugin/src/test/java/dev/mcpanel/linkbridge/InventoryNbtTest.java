@@ -138,6 +138,27 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.SellRules.formatItemName(null, "DIAMOND_SWORD").equals("Diamond Sword"), "Material name formatted cleanly");
         check(LinkBridgePlugin.SellRules.formatItemName(null, "OAK_PLANKS").equals("Oak Planks"), "Multi-word material name formatted cleanly");
 
+        // In-game /market GUI and purchase rules
+        check(LinkBridgePlugin.MarketRules.parsePage(null) == 1, "Null page defaults to 1");
+        check(LinkBridgePlugin.MarketRules.parsePage("") == 1, "Blank page defaults to 1");
+        check(LinkBridgePlugin.MarketRules.parsePage("0") == 1, "Page 0 clamped to 1");
+        check(LinkBridgePlugin.MarketRules.parsePage("-5") == 1, "Negative page clamped to 1");
+        check(LinkBridgePlugin.MarketRules.parsePage("abc") == 1, "Malformed page defaults to 1");
+        check(LinkBridgePlugin.MarketRules.parsePage("4") == 4, "Valid page parses");
+
+        // Purchase quantity computation
+        check(LinkBridgePlugin.MarketRules.computePurchaseQuantity(false, 10L, 150L, 16) == 1, "Unit purchase buys 1");
+        check(LinkBridgePlugin.MarketRules.computePurchaseQuantity(true, 10L, 150L, 16) == 16, "Lot purchase buys all remaining");
+        check(LinkBridgePlugin.MarketRules.computePurchaseQuantity(false, null, 150L, 16) == 16, "Lot-only listing buys all remaining");
+
+        // Purchase total computation
+        check(LinkBridgePlugin.MarketRules.computePurchaseTotal(false, 10L, 150L, 2, 16) == 20L, "Unit total = unit_price * quantity");
+        check(LinkBridgePlugin.MarketRules.computePurchaseTotal(true, 10L, 150L, 16, 16) == 150L, "Lot total = lot_price");
+
+        // Title formatting
+        check(LinkBridgePlugin.MarketRules.formatInventoryTitle(1, 3, "").equals("Marketplace (Page 1/3)"), "Default title formatted cleanly");
+        check(LinkBridgePlugin.MarketRules.formatInventoryTitle(2, 5, "diamond").equals("Market (diamond) P.2/5"), "Filter title formatted cleanly");
+
         System.out.println("Inventory NBT regression checks passed");
     }
 }
