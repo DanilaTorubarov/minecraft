@@ -421,6 +421,37 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         });
     }
 
+    static final class SellRules {
+        static long parseUnitPrice(String arg) {
+            long p = Long.parseLong(arg);
+            if (p < 1 || p > 1_000_000_000L) throw new IllegalArgumentException("unit price out of range: " + p);
+            return p;
+        }
+        static long parseLotPrice(String arg, long unitPrice, int quantity) {
+            if (arg != null) {
+                long p = Long.parseLong(arg);
+                if (p < 1 || p > 1_000_000_000L) throw new IllegalArgumentException("lot price out of range: " + p);
+                return p;
+            }
+            long p = Math.multiplyExact(unitPrice, (long) quantity);
+            if (p < 1 || p > 1_000_000_000L) throw new ArithmeticException("lot price overflow: " + p);
+            return p;
+        }
+        static String formatItemName(String customName, String typeName) {
+            if (customName != null && !customName.trim().isEmpty()) return customName.trim();
+            if (typeName == null || typeName.isEmpty()) return "Unknown";
+            String[] words = typeName.toLowerCase(Locale.ROOT).split("_");
+            StringBuilder sb = new StringBuilder();
+            for (String word : words) {
+                if (!word.isEmpty()) {
+                    if (sb.length() > 0) sb.append(' ');
+                    sb.append(Character.toUpperCase(word.charAt(0))).append(word.substring(1));
+                }
+            }
+            return sb.toString();
+        }
+    }
+
     private void sellCommand(Player player, String[] args) {
         if (serviceToken.isBlank() || serviceToken.contains("${")) {
             player.sendMessage("[Market] Marketplace is not configured on this server.");
@@ -433,9 +464,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         long unitPrice;
         try {
-            unitPrice = Long.parseLong(args[0]);
-            if (unitPrice < 1 || unitPrice > 1_000_000_000L) throw new NumberFormatException();
-        } catch (NumberFormatException e) {
+            unitPrice = SellRules.parseUnitPrice(args[0]);
+        } catch (Exception e) {
             player.sendMessage("[Market] Price must be a positive integer between 1 and 1,000,000,000.");
             return;
         }
@@ -450,22 +480,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
         long lotPrice;
-        if (args.length == 2) {
-            try {
-                lotPrice = Long.parseLong(args[1]);
-                if (lotPrice < 1 || lotPrice > 1_000_000_000L) throw new NumberFormatException();
-            } catch (NumberFormatException e) {
-                player.sendMessage("[Market] Price for stack must be a positive integer between 1 and 1,000,000,000.");
-                return;
-            }
-        } else {
-            try {
-                lotPrice = Math.multiplyExact(unitPrice, (long) quantity);
-                if (lotPrice < 1 || lotPrice > 1_000_000_000L) throw new ArithmeticException();
-            } catch (ArithmeticException e) {
-                player.sendMessage("[Market] Total lot price exceeds 1,000,000,000 coins. Specify a custom stack price.");
-                return;
-            }
+        try {
+            lotPrice = SellRules.parseLotPrice(args.length == 2 ? args[1] : null, unitPrice, quantity);
+        } catch (ArithmeticException e) {
+            player.sendMessage("[Market] Total lot price exceeds 1,000,000,000 coins. Specify a custom stack price.");
+            return;
+        } catch (Exception e) {
+            player.sendMessage("[Market] Price for stack must be a positive integer between 1 and 1,000,000,000.");
+            return;
         }
         int slot = player.getInventory().getHeldItemSlot();
         String fingerprint;
@@ -477,7 +499,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         String itemJson = slotJson(item);
         queueIconKey(item);
-        String displayName = formatItemName(item);
+        String customDisplayName = (item.getItemMeta() != null && item.getItemMeta().hasDisplayName())
+            ? item.getItemMeta().getDisplayName()
+            : null;
+        String displayName = SellRules.formatItemName(customDisplayName, item.getType().name());
         UUID uuid = player.getUniqueId();
 
         var payload = new com.google.gson.JsonObject();
@@ -546,21 +571,6 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 }
             });
         });
-    }
-
-    private String formatItemName(ItemStack item) {
-        if (item.getItemMeta() != null && item.getItemMeta().hasDisplayName()) {
-            return item.getItemMeta().getDisplayName();
-        }
-        String[] words = item.getType().name().toLowerCase(Locale.ROOT).split("_");
-        StringBuilder sb = new StringBuilder();
-        for (String word : words) {
-            if (!word.isEmpty()) {
-                if (sb.length() > 0) sb.append(' ');
-                sb.append(Character.toUpperCase(word.charAt(0))).append(word.substring(1));
-            }
-        }
-        return sb.toString();
     }
 
     private void marketMessage(UUID uuid, String text) {

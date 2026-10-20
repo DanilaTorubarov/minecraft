@@ -8190,7 +8190,48 @@ mod test {
             let unlinked = post_internal(&pool, "/internal/marketplace/sell", Some(&token), unlinked_payload, &random_ip()).await?.status();
             market_eq!(unlinked, StatusCode::NOT_FOUND);
 
-            // 3. Valid in-game sell request -> 201 Created
+            // 3. Validation rejections (400)
+            for bad in [
+                serde_json::json!({"slot": 41}),
+                serde_json::json!({"quantity": 0}),
+                serde_json::json!({"quantity": 231}),
+                serde_json::json!({"unit_price": 0}),
+                serde_json::json!({"unit_price": 1_000_000_001i64}),
+                serde_json::json!({"lot_price": 0}),
+                serde_json::json!({"lot_price": 1_000_000_001i64}),
+                serde_json::json!({"fingerprint": "bad_fp"}),
+                serde_json::json!({"item": serde_json::json!({"key": "invalid_key", "amount": 16, "fingerprint": "f".repeat(64), "enchantments": {}})}),
+            ] {
+                let mut invalid = payload.clone();
+                for (k, v) in bad.as_object().unwrap() { invalid[k] = v.clone(); }
+                let status = post_internal(&pool, "/internal/marketplace/sell", Some(&token), invalid, &random_ip()).await?.status();
+                market_eq!(status, StatusCode::BAD_REQUEST);
+            }
+
+            // Fingerprint / amount mismatch between top-level and item -> 400
+            let mut fp_mismatch = payload.clone();
+            fp_mismatch["fingerprint"] = serde_json::json!("e".repeat(64));
+            market_eq!(post_internal(&pool, "/internal/marketplace/sell", Some(&token), fp_mismatch, &random_ip()).await?.status(), StatusCode::BAD_REQUEST);
+
+            let mut amt_mismatch = payload.clone();
+            amt_mismatch["quantity"] = serde_json::json!(15);
+            market_eq!(post_internal(&pool, "/internal/marketplace/sell", Some(&token), amt_mismatch, &random_ip()).await?.status(), StatusCode::BAD_REQUEST);
+
+            // Default lot price overflow (> 1B) -> 400
+            let mut overflow_item = item.clone();
+            overflow_item["amount"] = serde_json::json!(20);
+            let overflow_payload = serde_json::json!({
+                "uuid": seller,
+                "slot": 0,
+                "fingerprint": "f".repeat(64),
+                "quantity": 20,
+                "unit_price": 60_000_000i64,
+                "lot_price": null,
+                "item": overflow_item,
+            });
+            market_eq!(post_internal(&pool, "/internal/marketplace/sell", Some(&token), overflow_payload, &random_ip()).await?.status(), StatusCode::BAD_REQUEST);
+
+            // 4. Valid in-game sell request with explicit lot price -> 201 Created
             let resp = post_internal(&pool, "/internal/marketplace/sell", Some(&token), payload.clone(), &random_ip()).await?;
             market_eq!(resp.status(), StatusCode::CREATED);
             let resp_json = body_json(resp).await?;
@@ -8199,6 +8240,10 @@ mod test {
             market_eq!(resp_json["unit_price"], 10);
             market_eq!(resp_json["lot_price"], 150);
             market_eq!(resp_json["quantity"], 16);
+
+            // 5. While task is pending, second sell request conflicts -> 409 Conflict
+            let busy_conflict = post_internal(&pool, "/internal/marketplace/sell", Some(&token), payload.clone(), &random_ip()).await?.status();
+            market_eq!(busy_conflict, StatusCode::CONFLICT);
 
             // 4. Listing in DB is pending
             let status: String = sqlx::query_scalar("SELECT status FROM market_listings WHERE id=$1")
@@ -8241,6 +8286,16 @@ mod test {
             market_eq!(l["remaining"], 16);
             market_eq!(l["unit_price"], 10);
             market_eq!(l["lot_price"], 150);
+
+            // 9. Valid sell request with default lot_price (omitted) -> computes price * quantity
+            let mut default_payload = payload.clone();
+            default_payload["lot_price"] = serde_json::Value::Null;
+            let resp2 = post_internal(&pool, "/internal/marketplace/sell", Some(&token), default_payload, &random_ip()).await?;
+            market_eq!(resp2.status(), StatusCode::CREATED);
+            let resp2_json = body_json(resp2).await?;
+            market_eq!(resp2_json["unit_price"], 10);
+            market_eq!(resp2_json["lot_price"], 160); // 10 * 16 = 160
+            market_eq!(resp2_json["quantity"], 16);
 
             Ok::<_, Box<dyn std::error::Error>>(())
         }.await;

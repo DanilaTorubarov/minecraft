@@ -182,3 +182,27 @@ test('seller proceeds are returned by the server and a changed fee requires a ne
   globalThis.fetch = async () => new Response(null, { status: 412 })
   await assert.rejects(sendInventoryToMarket('player', { slot: 0, fingerprint: 'a'.repeat(64), quantity: 10, unit_price: 10, lot_price: null, expected_commission_bps: 200 }), (error) => error instanceof ApiError && error.status === 412)
 })
+
+test('marketplace listing with unit and lot pricing is loaded from api', async () => {
+  const { getMarketplace } = await import('../src/lib/api.ts')
+  const itemListing = {
+    id: 'listing-123',
+    seller: 'IngameSeller',
+    mine: true,
+    item: { key: 'minecraft:oak_planks', amount: 64, display_name: 'Oak Planks', enchantments: {}, damage: null, max_damage: null, icon: null },
+    quantity: 64,
+    remaining: 64,
+    unit_price: 10,
+    lot_price: 500,
+    commission_bps: 200,
+    gross_sold: 0,
+    fee_paid: 0,
+    status: 'active',
+  }
+  globalThis.fetch = async () => new Response(JSON.stringify({ listings: [itemListing], deliveries: [], next_cursor: null, commission_bps: 200 }), { status: 200 })
+  const result = await getMarketplace()
+  assert.equal(result.listings.length, 1)
+  assert.equal(result.listings[0].unit_price, 10)
+  assert.equal(result.listings[0].lot_price, 500)
+  assert.equal(result.listings[0].seller, 'IngameSeller')
+})

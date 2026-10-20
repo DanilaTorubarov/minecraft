@@ -107,6 +107,37 @@ public final class InventoryNbtTest {
         check(!LinkBridgePlugin.QuestRules.fish("BOW")&&!LinkBridgePlugin.QuestRules.fish("LILY_PAD"),"Treasure and junk are not fish");
         check(LinkBridgePlugin.QuestRules.harvest("WHEAT",7,7)&&LinkBridgePlugin.QuestRules.harvest("BEETROOTS",3,3),"Mature supported crops qualify");
         check(!LinkBridgePlugin.QuestRules.harvest("WHEAT",6,7)&&!LinkBridgePlugin.QuestRules.harvest("WHEAT",0,7)&&!LinkBridgePlugin.QuestRules.harvest("COCOA",2,2),"Young replanted and unsupported crops cannot farm progress");
+
+        // In-game /sell command price and lot calculations
+        check(LinkBridgePlugin.SellRules.parseUnitPrice("10") == 10L, "Valid unit price parses");
+        check(LinkBridgePlugin.SellRules.parseUnitPrice("1000000000") == 1000000000L, "Maximum 1B unit price parses");
+        boolean unitZeroFailed = false;
+        try { LinkBridgePlugin.SellRules.parseUnitPrice("0"); } catch (IllegalArgumentException e) { unitZeroFailed = true; }
+        check(unitZeroFailed, "Unit price of 0 is rejected");
+        boolean unitNegativeFailed = false;
+        try { LinkBridgePlugin.SellRules.parseUnitPrice("-5"); } catch (IllegalArgumentException e) { unitNegativeFailed = true; }
+        check(unitNegativeFailed, "Negative unit price is rejected");
+        boolean unitOverflowFailed = false;
+        try { LinkBridgePlugin.SellRules.parseUnitPrice("1000000001"); } catch (IllegalArgumentException e) { unitOverflowFailed = true; }
+        check(unitOverflowFailed, "Unit price over 1B is rejected");
+
+        // Lot price: default calculation (unit * quantity)
+        check(LinkBridgePlugin.SellRules.parseLotPrice(null, 10L, 64) == 640L, "Default lot price computes unit * quantity");
+        check(LinkBridgePlugin.SellRules.parseLotPrice(null, 500L, 1) == 500L, "Single-item default lot price equals unit price");
+        // Lot price: explicit override
+        check(LinkBridgePlugin.SellRules.parseLotPrice("500", 10L, 64) == 500L, "Explicit lot price override is preserved");
+        boolean lotOverLimitFailed = false;
+        try { LinkBridgePlugin.SellRules.parseLotPrice("1000000001", 10L, 64); } catch (IllegalArgumentException e) { lotOverLimitFailed = true; }
+        check(lotOverLimitFailed, "Explicit lot price over 1B is rejected");
+        boolean lotOverflowFailed = false;
+        try { LinkBridgePlugin.SellRules.parseLotPrice(null, 50000000L, 30); } catch (ArithmeticException e) { lotOverflowFailed = true; }
+        check(lotOverflowFailed, "Default lot price overflowing 1B is rejected");
+
+        // Item display name formatting
+        check(LinkBridgePlugin.SellRules.formatItemName("Custom Sword", "DIAMOND_SWORD").equals("Custom Sword"), "Custom display name preserved");
+        check(LinkBridgePlugin.SellRules.formatItemName(null, "DIAMOND_SWORD").equals("Diamond Sword"), "Material name formatted cleanly");
+        check(LinkBridgePlugin.SellRules.formatItemName(null, "OAK_PLANKS").equals("Oak Planks"), "Multi-word material name formatted cleanly");
+
         System.out.println("Inventory NBT regression checks passed");
     }
 }
