@@ -278,8 +278,7 @@ export default function MinefallGame({
     let cameraY = 0
 
     let currentEventIdx = 0
-    let timeSinceCollision = 0
-    const cooldownTicks = 8
+    let isRecoiling = false
 
     // Active stats
     let activeDur = PICKAXE_CONFIGS[playRound.pickaxe].durability
@@ -370,58 +369,58 @@ export default function MinefallGame({
 
       const speedFactor = speedRef.current === '2x' ? 1.6 : 1.0
 
-      // Physics integration (gravity + drag + rotational tumble)
-      const gravity = 0.42 * speedFactor
-      vy = Math.min(vy + gravity, 13.0 * speedFactor)
-      vx *= Math.pow(0.99, speedFactor)
+      // Physics integration (gravity + rotational tumble)
+      const gravity = 0.40 * speedFactor
+      vy = Math.min(vy + gravity, 11.0 * speedFactor)
       angle += angularVel * speedFactor
 
-      pickX += vx * speedFactor
-      pickY += vy * speedFactor
-
-      // Wall bounce physics (left & right mine shaft rock walls)
-      const wallMargin = 14
-      if (pickX < wallMargin) {
-        pickX = wallMargin
-        vx = Math.abs(vx) * 0.72 + 1.2
-        angularVel = (Math.random() - 0.5) * 0.35 + 0.2
-        cameraShake = Math.max(cameraShake, 1.8)
-        spawnBlockParticles(0, pickY, '#94a3b8', 6)
-        playSound('click')
-      } else if (pickX > totalW - wallMargin) {
-        pickX = totalW - wallMargin
-        vx = -Math.abs(vx) * 0.72 - 1.2
-        angularVel = (Math.random() - 0.5) * 0.35 - 0.2
-        cameraShake = Math.max(cameraShake, 1.8)
-        spawnBlockParticles(totalW - 16, pickY, '#94a3b8', 6)
-        playSound('click')
+      // When pickaxe passes the apex of an upward recoil arc, switch to falling
+      if (isRecoiling && vy >= 0) {
+        isRecoiling = false
       }
 
-      timeSinceCollision += 1
-
-      // Physical guidance toward current event block
       if (currentEventIdx < events.length) {
         const ev = events[currentEventIdx]
         const targetX = ev.col * cellW + cellW / 2
         const targetY = ev.row * cellH + 50 + cellH / 2
 
-        const dx = targetX - pickX
-        const dy = targetY - pickY
-        const dist = Math.hypot(dx, dy)
-
-        // Lateral and vertical momentum steering
-        vx += Math.sign(dx) * Math.min(Math.abs(dx) * 0.045, 0.45) * speedFactor
-        if (dy > 0 && pickY < targetY - 8) {
-          vy += 0.08 * speedFactor
+        if (!isRecoiling) {
+          // Guided horizontal flight towards target block column
+          const dx = targetX - pickX
+          vx += Math.sign(dx) * Math.min(Math.abs(dx) * 0.12, 0.8) * speedFactor
+          vx *= Math.pow(0.86, speedFactor)
+        } else {
+          vx *= Math.pow(0.97, speedFactor)
         }
 
-        // Collision detection with event block
-        const isImpact =
-          timeSinceCollision >= cooldownTicks &&
-          (dist < 22 || (Math.abs(dx) < 22 && pickY >= targetY - 12 && pickY <= targetY + 20))
+        pickX += vx * speedFactor
+        pickY += vy * speedFactor
 
-        if (isImpact) {
-          timeSinceCollision = 0
+        // Wall bounce physics (left & right mine shaft rock walls)
+        const wallMargin = 14
+        if (pickX < wallMargin) {
+          pickX = wallMargin
+          vx = Math.abs(vx) * 0.75 + 1.2
+          angularVel = Math.random() * 0.3 + 0.15
+          cameraShake = Math.max(cameraShake, 1.8)
+          spawnBlockParticles(0, pickY, '#94a3b8', 6)
+          playSound('click')
+        } else if (pickX > totalW - wallMargin) {
+          pickX = totalW - wallMargin
+          vx = -Math.abs(vx) * 0.75 - 1.2
+          angularVel = -Math.random() * 0.3 - 0.15
+          cameraShake = Math.max(cameraShake, 1.8)
+          spawnBlockParticles(totalW - 16, pickY, '#94a3b8', 6)
+          playSound('click')
+        }
+
+        // IMPACT TRIGGER:
+        // Guaranteed collision: when falling pickaxe reaches or crosses the target block
+        const hasReachedTarget = !isRecoiling && (pickY >= targetY - 4 || targetY <= pickY)
+
+        if (hasReachedTarget) {
+          pickX = targetX
+          pickY = targetY
           activeDur = ev.durabilityLeft
           setCurrentDurability(activeDur)
 
@@ -429,19 +428,21 @@ export default function MinefallGame({
             playSound('click')
             cameraShake = 3.0
             spawnBlockParticles(ev.col * cellW, ev.row * cellH + 50, '#78716c', 16)
-            // Hard rock rebound: bounces UPWARDS and deflecting sideways!
-            vy = -Math.abs(vy) * 0.75 - 4.0
-            vx = (Math.random() > 0.5 ? 1 : -1) * (Math.random() * 3.5 + 2.5)
-            angularVel = -angularVel * 1.4 + (Math.random() - 0.5) * 0.35
+            // Hard rock rebound: bounces upwards and kicks sideways!
+            vy = -4.8 * speedFactor
+            vx = (Math.random() > 0.5 ? 1 : -1) * (Math.random() * 2.5 + 1.5)
+            angularVel = (Math.random() > 0.5 ? 1 : -1) * (Math.random() * 0.3 + 0.2)
+            isRecoiling = true
           } else if (ev.type === 'break') {
             playSound('click')
             cameraShake = 2.4
             grid[ev.row][ev.col] = 'air'
             spawnBlockParticles(ev.col * cellW, ev.row * cellH + 50, '#57534e', 14)
-            // Stone smash bounce
-            vy = -Math.abs(vy) * 0.45 - 2.5
-            vx = (Math.random() - 0.5) * 5.0
-            angularVel = (Math.random() - 0.5) * 0.35
+            // Stone break: punchy bounce
+            vy = -2.6 * speedFactor
+            vx = (Math.random() - 0.5) * 3.0
+            angularVel = (Math.random() - 0.5) * 0.3
+            isRecoiling = true
           } else if (ev.type === 'collect_ore') {
             playSound('click')
             cameraShake = 3.2
@@ -461,9 +462,10 @@ export default function MinefallGame({
               maxLife: 50,
             })
             // Ore deflection bounce
-            vy = -Math.abs(vy) * 0.55 - 3.0
-            vx = (Math.random() - 0.5) * 6.0
-            angularVel = (Math.random() - 0.5) * 0.45
+            vy = -3.2 * speedFactor
+            vx = (Math.random() - 0.5) * 4.0
+            angularVel = (Math.random() - 0.5) * 0.35
+            isRecoiling = true
           } else if (ev.type === 'repair') {
             playSound('done')
             cameraShake = 1.8
@@ -477,9 +479,10 @@ export default function MinefallGame({
               life: 0,
               maxLife: 50,
             })
-            vy = -Math.abs(vy) * 0.5 - 2.5
-            vx = (Math.random() - 0.5) * 4.0
+            vy = -3.0 * speedFactor
+            vx = (Math.random() - 0.5) * 2.0
             angularVel = 0.25
+            isRecoiling = true
           } else if (ev.type === 'tnt_blast') {
             playSound('close')
             cameraShake = 8.0
@@ -505,10 +508,17 @@ export default function MinefallGame({
               }
               setLiveOres({ ...accumulatedOres })
             }
-            // Massive explosive upward launch!
-            vy = -10.5 - Math.random() * 3.5
-            vx = (Math.random() - 0.5) * 9.0
-            angularVel = (Math.random() - 0.5) * 0.75
+            // Massive explosive launch upwards!
+            vy = -8.5 * speedFactor
+            vx = (Math.random() - 0.5) * 7.0
+            angularVel = (Math.random() - 0.5) * 0.6
+            isRecoiling = true
+          } else if (ev.type === 'reach_bottom') {
+            playSound('click')
+            cameraShake = 4.0
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH + 50, '#e2e8f0', 16)
+            vy = -3.0 * speedFactor
+            isRecoiling = true
           } else if (ev.type === 'pickaxe_break') {
             playSound('close')
             cameraShake = 5.0
@@ -525,15 +535,23 @@ export default function MinefallGame({
             })
             vx = 0
             vy = 0
+            isRecoiling = false
           }
 
           currentEventIdx += 1
         }
+      } else {
+        // All events completed: settle tool motion
+        pickX += vx * speedFactor
+        pickY += vy * speedFactor
+        vx *= 0.88
+        vy = Math.min(vy + gravity, 4.0)
       }
 
       // Smooth camera follows pickaxe
-      const desiredCameraY = Math.max(0, pickY - 180)
-      cameraY += (desiredCameraY - cameraY) * 0.08
+      const maxCameraY = Math.max(0, MINEFALL_ROWS * cellH + 50 - totalH + 40)
+      const desiredCameraY = Math.min(Math.max(0, pickY - 180), maxCameraY)
+      cameraY += (desiredCameraY - cameraY) * 0.12 * speedFactor
 
       // Camera shake decay
       if (cameraShake > 0) {

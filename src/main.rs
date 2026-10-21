@@ -4425,10 +4425,9 @@ fn simulate_minefall(
                 boost_x100: None,
                 affected: Some(affected),
             });
-            let upward_blast = (random_below(2)? as usize) + 1;
-            current_row = current_row.saturating_sub(upward_blast);
-            let blast_lateral = (random_below(5)? as i64) - 2;
+            let blast_lateral = (random_below(3)? as i64) - 1;
             current_col = (current_col as i64 + blast_lateral).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
+            current_row = (current_row + 1).min(MINEFALL_ROWS - 1);
             continue;
         }
 
@@ -4510,14 +4509,10 @@ fn simulate_minefall(
                 boost_x100: None,
                 affected: None,
             });
-            if random_below(3)? == 0 && current_row > 0 {
-                current_row -= 1;
-            }
-            let lateral_dir = match random_below(4)? {
-                0 => -2,
-                1 => -1,
-                2 => 1,
-                _ => 2,
+            let lateral_dir = match random_below(3)? {
+                0 => -1,
+                1 => 0,
+                _ => 1,
             };
             current_col = (current_col as i64 + lateral_dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
         }
