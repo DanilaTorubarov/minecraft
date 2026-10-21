@@ -237,19 +237,12 @@ export default function MinefallGame({
         if (r === 3 && c === 2) texKey = 'crafting_table'
         if (r === 5 && c === 6) texKey = 'tnt'
 
-        if ((r + c * 3) % 11 === 0) texKey = 'slime'
         if (r < 3 && (r + c) % 2 === 0) texKey = 'dirt'
 
         const img = imagesRef.current.get(texKey)
         if (img) {
           ctx.drawImage(img, x, y, cellW, cellH)
-        } else if (texKey === 'slime') {
-          ctx.fillStyle = '#70c042'
-          ctx.fillRect(x, y, cellW, cellH)
-          ctx.fillStyle = '#4e9828'
-          ctx.fillRect(x + 6, y + 6, cellW - 12, cellH - 12)
-          ctx.fillStyle = '#9cf562'
-          ctx.fillRect(x + 2, y + 2, 4, 4)
+
         } else if (texKey === 'dirt') {
           ctx.fillStyle = '#866043'
           ctx.fillRect(x, y, cellW, cellH)
@@ -309,15 +302,12 @@ export default function MinefallGame({
     // 2D Physics Body for Pickaxe (framed inside bedrock boundaries)
     let pickX = wallW + playRound.column * cellW + cellW / 2
     let pickY = 15
-    let vx = (Math.random() - 0.5) * 0.8
-    let vy = 1.2
     let angle = 0
     let angularVel = 0.035
     let cameraShake = 0
     let cameraY = 0
 
     let currentEventIdx = 0
-    let isRecoiling = false
 
     // Active stats
     let activeDur = PICKAXE_CONFIGS[playRound.pickaxe].durability
@@ -408,109 +398,69 @@ export default function MinefallGame({
 
       const speedFactor = speedRef.current === '2x' ? 1.4 : 1.0
 
-      // Weighted, deliberate fall physics with high elastic hang-time
-      const gravity = 0.11 * speedFactor
-      vy = Math.min(vy + gravity, 2.1 * speedFactor)
       angle += angularVel * speedFactor
-
-      // When pickaxe passes the apex of an upward recoil arc, switch to falling
-      if (isRecoiling && vy >= 0) {
-        isRecoiling = false
-      }
 
       if (currentEventIdx < events.length) {
         const ev = events[currentEventIdx]
         const targetX = wallW + ev.col * cellW + cellW / 2
         const targetY = ev.row * cellH + 50 + cellH / 2
+
         const dx = targetX - pickX
-        const distToX = Math.abs(dx)
+        const dy = targetY - pickY
+        const dist = Math.hypot(dx, dy)
 
-        if (!isRecoiling) {
-          // Smooth horizontal glide towards target column
-          if (distToX > 1.5) {
-            vx += Math.sign(dx) * Math.min(distToX * 0.10, 0.9) * speedFactor
-            vx *= Math.pow(0.85, speedFactor)
-          } else {
-            vx *= 0.5
-          }
+        // Smooth physical travel towards the adjacent block
+        const stepSpeed = Math.max(3.2, dist * 0.28) * speedFactor
+        if (dist > 4) {
+          pickX += (dx / dist) * Math.min(dist, stepSpeed)
+          pickY += (dy / dist) * Math.min(dist, stepSpeed)
+          angle += 0.12 * speedFactor
         } else {
-          vx *= Math.pow(0.96, speedFactor)
-        }
-
-        pickX += vx * speedFactor
-        pickY += vy * speedFactor
-
-        // Solid Bedrock Wall boundaries enclosing the shaft
-        const leftWallBound = wallW + 10
-        const rightWallBound = totalW - wallW - 10
-
-        if (pickX < leftWallBound) {
-          pickX = leftWallBound
-          vx = Math.abs(vx) * 0.75 + 0.3 * speedFactor
-          angularVel = Math.random() * 0.12 + 0.06
-          cameraShake = Math.max(cameraShake, 1.2)
-          playSound('click')
-        } else if (pickX > rightWallBound) {
-          pickX = rightWallBound
-          vx = -Math.abs(vx) * 0.75 - 0.3 * speedFactor
-          angularVel = -Math.random() * 0.12 - 0.06
-          cameraShake = Math.max(cameraShake, 1.2)
-          playSound('click')
-        }
-
-        // If descending on top of a solid surface before aligning horizontally, slide across surface (NO TELEPORT)
-        if (pickY >= targetY - 4 && distToX > 8) {
-          pickY = targetY - 4
-          vy = 0
-        }
-
-        // IMPACT TRIGGER:
-        // Must be in the target column (within 8px) and at or below target surface
-        const hasReachedTarget = !isRecoiling && distToX <= 8 && pickY >= targetY - 4
-
-        if (hasReachedTarget) {
+          // Impact adjacent block!
           pickX = targetX
           pickY = targetY
           activeDur = ev.durabilityLeft
           setCurrentDurability(activeDur)
 
-
-          if (ev.type === 'hit') {
-            playSound('click')
-            cameraShake = 3.0
-            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#78716c', 16)
-            // Elastic rock recoil: bounces UP and rebounds to adjacent column
-            vy = -3.8 * speedFactor
-            vx = (Math.random() - 0.5) * 1.6 * speedFactor
-            angularVel = (Math.random() - 0.5) * 0.18
-            isRecoiling = true
-          } else if (ev.type === 'slime_bounce') {
+          if (ev.type === 'tnt_blast') {
+            playSound('close')
+            cameraShake = 6.0
+            grid[ev.row][ev.col] = 'air'
+            spawnExplosion(wallW + ev.col * cellW, ev.row * cellH + 50)
+            if (ev.affected) {
+              for (const aff of ev.affected) {
+                grid[aff.row][aff.col] = 'air'
+                spawnBlockParticles(wallW + aff.col * cellW, aff.row * cellH + 50, '#78716c', 6)
+                if (aff.isOre) {
+                  accumulatedOres[aff.block] = (accumulatedOres[aff.block] ?? 0) + 1
+                  const boost = aff.boostX100 ?? 0
+                  activeMult += boost
+                  setLiveMultiplier(activeMult)
+                  floatingTexts.push({
+                    x: wallW + aff.col * cellW + cellW / 2,
+                    y: aff.row * cellH + 50,
+                    text: `+${(boost / 100).toFixed(2)}x`,
+                    color: '#fbbf24',
+                    life: 0,
+                    maxLife: 40,
+                  })
+                }
+              }
+              setLiveOres({ ...accumulatedOres })
+            }
+          } else if (ev.type === 'repair') {
             playSound('done')
-            cameraShake = 4.2
-            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#8eed58', 22)
+            cameraShake = 2.0
+            grid[ev.row][ev.col] = 'air'
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#4ade80', 16)
             floatingTexts.push({
               x: targetX,
-              y: targetY - 12,
-              text: 'BOING!',
-              color: '#8eed58',
+              y: targetY - 10,
+              text: '+4 Durability!',
+              color: '#4ade80',
               life: 0,
               maxLife: 45,
             })
-            // Huge elastic bounce upwards and across the shaft
-            vy = -5.0 * speedFactor
-            vx = (Math.random() - 0.5) * 3.4 * speedFactor
-            angularVel = (Math.random() - 0.5) * 0.24
-            isRecoiling = true
-          } else if (ev.type === 'break') {
-            playSound('click')
-            cameraShake = 2.0
-            grid[ev.row][ev.col] = 'air'
-            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#57534e', 14)
-            // Elastic pop upwards
-            vy = -2.2 * speedFactor
-            vx = (Math.random() - 0.5) * 0.6 * speedFactor
-            angularVel = (Math.random() - 0.5) * 0.12
-            isRecoiling = true
           } else if (ev.type === 'collect_ore') {
             playSound('click')
             cameraShake = 2.5
@@ -520,56 +470,27 @@ export default function MinefallGame({
             const boost = ev.boostX100 ?? 0
             activeMult += boost
             setLiveMultiplier(activeMult)
-            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#38bdf8', 18)
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#38bdf8', 16)
             floatingTexts.push({
               x: targetX,
               y: targetY - 10,
               text: `+${(boost / 100).toFixed(2)}x`,
               color: '#38bdf8',
               life: 0,
-              maxLife: 50,
+              maxLife: 45,
             })
-            // High elastic reward bounce
-            vy = -2.6 * speedFactor
-            vx = (Math.random() - 0.5) * 0.7 * speedFactor
-            angularVel = (Math.random() - 0.5) * 0.12
-            isRecoiling = true
-          } else if (ev.type === 'repair') {
-            playSound('done')
+          } else if (ev.type === 'break') {
+            playSound('click')
             cameraShake = 1.8
             grid[ev.row][ev.col] = 'air'
-            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#4ade80', 16)
-            floatingTexts.push({
-              x: targetX,
-              y: targetY - 10,
-              text: '+25 Durability!',
-              color: '#4ade80',
-              life: 0,
-              maxLife: 50,
-            })
-            vy = -2.2 * speedFactor
-            vx = (Math.random() - 0.5) * 0.6 * speedFactor
-            angularVel = 0.06
-            isRecoiling = true
-          } else if (ev.type === 'tnt_blast') {
-            playSound('close')
-            cameraShake = 7.0
-            grid[ev.row][ev.col] = 'air'
-            spawnExplosion(wallW + ev.col * cellW, ev.row * cellH + 50)
-            // High explosive launch upwards and across the blasted cavern
-            vy = -5.2 * speedFactor
-            vx = (Math.random() - 0.5) * 3.2 * speedFactor
-            angularVel = (Math.random() - 0.5) * 0.22
-            isRecoiling = true
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#57534e', 12)
           } else if (ev.type === 'reach_bottom') {
             playSound('click')
-            cameraShake = 3.5
-            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#e2e8f0', 16)
-            vy = -2.0 * speedFactor
-            isRecoiling = true
+            cameraShake = 3.0
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#e2e8f0', 14)
           } else if (ev.type === 'pickaxe_break') {
             playSound('close')
-            cameraShake = 4.5
+            cameraShake = 4.0
             activeDur = 0
             setCurrentDurability(0)
             spawnToolFragments(pickX, pickY)
@@ -579,44 +500,15 @@ export default function MinefallGame({
               text: 'Tool Broken!',
               color: '#ef4444',
               life: 0,
-              maxLife: 65,
+              maxLife: 60,
             })
-            vx = 0
-            vy = 0
-            isRecoiling = false
-          }
-
-          // Process affected/chipped surrounding blocks for ANY event (corners and TNT blasts)
-          if (ev.affected) {
-            for (const aff of ev.affected) {
-              grid[aff.row][aff.col] = 'air'
-              spawnBlockParticles(wallW + aff.col * cellW, aff.row * cellH + 50, '#78716c', 8)
-              if (aff.isOre) {
-                accumulatedOres[aff.block] = (accumulatedOres[aff.block] ?? 0) + 1
-                const boost = aff.boostX100 ?? 0
-                activeMult += boost
-                setLiveMultiplier(activeMult)
-                floatingTexts.push({
-                  x: wallW + aff.col * cellW + cellW / 2,
-                  y: aff.row * cellH + 50,
-                  text: `+${(boost / 100).toFixed(2)}x`,
-                  color: '#fbbf24',
-                  life: 0,
-                  maxLife: 50,
-                })
-              }
-            }
-            setLiveOres({ ...accumulatedOres })
           }
 
           currentEventIdx += 1
         }
       } else {
-        // All events completed: settle tool motion
-        pickX += vx * speedFactor
-        pickY += vy * speedFactor
-        vx *= 0.88
-        vy = Math.min(vy + gravity, 2.5)
+        // All events completed: finish tool motion
+        pickY += 0.8 * speedFactor
       }
 
       // Smooth camera follows pickaxe
@@ -674,13 +566,7 @@ export default function MinefallGame({
           const img = imagesRef.current.get(blockType)
           if (img) {
             ctx.drawImage(img, bx, by, cellW, cellH)
-          } else if (blockType === 'slime') {
-            ctx.fillStyle = '#70c042'
-            ctx.fillRect(bx, by, cellW, cellH)
-            ctx.fillStyle = '#4e9828'
-            ctx.fillRect(bx + 6, by + 6, cellW - 12, cellH - 12)
-            ctx.fillStyle = '#9cf562'
-            ctx.fillRect(bx + 2, by + 2, 4, 4)
+
           } else if (blockType === 'dirt') {
             ctx.fillStyle = '#866043'
             ctx.fillRect(bx, by, cellW, cellH)
