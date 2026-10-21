@@ -1394,7 +1394,11 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
 .minefall-column-selector {
   display: grid;
   grid-template-columns: repeat(9, 1fr);
-  gap: 4px;
+  gap: 2px;
+  padding: 0 34px;
+  max-width: 374px;
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 
 .minefall-col-btn {
@@ -1430,13 +1434,15 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
   overflow: hidden;
   border: 2px solid var(--line, rgba(255, 255, 255, 0.25));
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  max-width: 374px;
+  margin: 0 auto;
 }
 
 .minefall-canvas {
   width: 100%;
-  max-width: 342px;
+  max-width: 374px;
   height: auto;
-  aspect-ratio: 9 / 12;
+  aspect-ratio: 374 / 460;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   display: block;
