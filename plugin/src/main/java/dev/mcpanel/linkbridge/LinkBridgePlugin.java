@@ -2689,8 +2689,17 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     }
 
     /** Escrow and delivery use a saved receipt containing the withdrawn item.
-     * A lost HTTP acknowledgement therefore cannot remove or deliver it twice. */
+     * A lost HTTP acknowledgement therefore cannot remove or deliver it twice.
+     *
+     * Never run this on the server thread: it waits for `callSyncMethod` below,
+     * and only the server thread can execute that task. A caller on the server
+     * thread (for example a purchase callback) would deadlock the tick loop until
+     * the watchdog kills the server, so such a call just hands the work over. */
     private void syncMarketplace() {
+        if (getServer().isPrimaryThread()) {
+            getServer().getScheduler().runTaskAsynchronously(this, this::syncMarketplace);
+            return;
+        }
         try {
             var response = post(marketplaceUrl + "/sync", "{}", requestTimeout);
             if(response == null || response.statusCode()!=200 || response.body().length()>40_000_000) return;
