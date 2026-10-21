@@ -252,3 +252,92 @@ test('getLeaderboards fetches category rankings and parses entries', async () =>
   assert.equal(result.entries[0].rank, 1)
 })
 
+test('admin metrics endpoint returns live server telemetry', async () => {
+  const { getAdminMetrics } = await import('../src/lib/api.ts')
+  const mockMetrics = {
+    tps: [20.0, 19.98, 19.95],
+    ram_used_mb: 1024,
+    ram_total_mb: 2048,
+    ram_max_mb: 4096,
+    server_version: 'Purpur 1.21.4',
+    online_count: 1,
+    online_players: [
+      {
+        uuid: '00000000-0000-0000-0000-000000000001',
+        username: 'Steve',
+        ping: 35,
+        world: 'world',
+        x: 100,
+        y: 64,
+        z: -200,
+        health: 20,
+        is_muted: false,
+      },
+    ],
+    is_live: true,
+  }
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    assert.equal(String(input), '/api/admin/metrics')
+    return new Response(JSON.stringify(mockMetrics), { status: 200 })
+  }
+  const res = await getAdminMetrics()
+  assert.equal(res.is_live, true)
+  assert.equal(res.online_count, 1)
+  assert.equal(res.online_players[0].username, 'Steve')
+  assert.equal(res.ram_used_mb, 1024)
+})
+
+test('admin console command execution sends post and returns output', async () => {
+  const { executeAdminConsoleCommand } = await import('../src/lib/api.ts')
+  let postedBody = ''
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), '/api/admin/console/execute')
+    assert.equal(init?.method, 'POST')
+    postedBody = String(init?.body)
+    return new Response(
+      JSON.stringify({ request_id: 'req-1', output: ['Made Steve a server operator'], success: true }),
+      { status: 200 }
+    )
+  }
+  const res = await executeAdminConsoleCommand('op Steve')
+  assert.equal(JSON.parse(postedBody).command, 'op Steve')
+  assert.equal(res.success, true)
+  assert.equal(res.output[0], 'Made Steve a server operator')
+})
+
+test('admin moderation kick and ban send appropriate requests', async () => {
+  const { adminKickPlayer, adminBanPlayer, adminUnbanPlayer, adminMutePlayer, adminUnmutePlayer } = await import(
+    '../src/lib/api.ts'
+  )
+  const calls: { url: string; method: string; body: string }[] = []
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      method: init?.method ?? 'GET',
+      body: String(init?.body ?? ''),
+    })
+    return new Response(null, { status: 200 })
+  }
+
+  await adminKickPlayer({ username: 'Griefer1', reason: 'Trolling' })
+  assert.equal(calls[0].url, '/api/admin/moderation/kick')
+  assert.equal(JSON.parse(calls[0].body).username, 'Griefer1')
+
+  await adminBanPlayer({ username: 'Griefer2', reason: 'Cheating', duration_seconds: 3600 })
+  assert.equal(calls[1].url, '/api/admin/moderation/ban')
+  assert.equal(JSON.parse(calls[1].body).duration_seconds, 3600)
+
+  await adminUnbanPlayer('Griefer2')
+  assert.equal(calls[2].url, '/api/admin/moderation/unban')
+  assert.equal(JSON.parse(calls[2].body).username, 'Griefer2')
+
+  await adminMutePlayer({ username: 'Spammer1', reason: 'Spam', duration_seconds: 900 })
+  assert.equal(calls[3].url, '/api/admin/moderation/mute')
+  assert.equal(JSON.parse(calls[3].body).username, 'Spammer1')
+
+  await adminUnmutePlayer('Spammer1')
+  assert.equal(calls[4].url, '/api/admin/moderation/unmute')
+  assert.equal(JSON.parse(calls[4].body).username, 'Spammer1')
+})
+
+

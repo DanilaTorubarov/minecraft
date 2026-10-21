@@ -28,14 +28,18 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Color;
 import org.bukkit.Sound;
@@ -265,12 +269,20 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             .runTaskTimerAsynchronously(this, this::flushInventories, 200L, 200L);
         getServer().getScheduler()
             .runTaskTimerAsynchronously(this, this::syncChat, 20L, 20L);
+        setupAdminLogCapture();
+        getServer().getScheduler()
+            .runTaskTimerAsynchronously(this, this::syncAdmin, 25L, 25L);
         getServer().getScheduler()
             .runTaskTimer(this, this::updateTabList, 10L, 3L);
     }
 
     @Override
     public void onDisable() {
+        if (adminLogHandler != null) {
+            try {
+                java.util.logging.Logger.getLogger("").removeHandler(adminLogHandler);
+            } catch (Exception ignored) {}
+        }
         for (ActiveBreach breach : activeBreaches.values()) {
             for (BreachedBlock bb : breach.restoredBlocks) {
                 if (bb.location.getWorld() != null) {
@@ -5487,6 +5499,299 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         } catch (Exception e) {
             if (outgoingChatQueue.size() < 100) {
                 outgoingChatQueue.addAll(batch);
+            }
+        }
+    }
+
+    // --- Extended Web Admin Panel: Metrics, Console, Moderation ----------------
+
+    record AdminOnlinePlayerDto(
+        String uuid,
+        String username,
+        int ping,
+        String world,
+        int x,
+        int y,
+        int z,
+        double health,
+        boolean is_muted
+    ) {}
+
+    record CommandResult(String requestId, List<String> output, boolean success) {}
+    record MuteInfo(String username, String reason, long expiresAt) {}
+
+    private final ConcurrentLinkedQueue<String> adminConsoleLogQueue = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<CommandResult> completedCommandsQueue = new ConcurrentLinkedQueue<>();
+    private final Map<String, MuteInfo> activeMutes = new ConcurrentHashMap<>();
+    private Handler adminLogHandler;
+
+    private void setupAdminLogCapture() {
+        try {
+            adminLogHandler = new Handler() {
+                @Override
+                public void publish(LogRecord record) {
+                    if (record == null || record.getMessage() == null) return;
+                    String msg = record.getMessage();
+                    if (record.getParameters() != null && record.getParameters().length > 0 && msg.contains("{0}")) {
+                        try {
+                            msg = java.text.MessageFormat.format(msg, record.getParameters());
+                        } catch (Exception ignored) {}
+                    }
+                    String level = record.getLevel() != null ? record.getLevel().getName() : "INFO";
+                    String line = "[" + level + "] " + msg;
+                    while (adminConsoleLogQueue.size() >= 500) {
+                        adminConsoleLogQueue.poll();
+                    }
+                    adminConsoleLogQueue.offer(line);
+                }
+
+                @Override
+                public void flush() {}
+
+                @Override
+                public void close() throws SecurityException {}
+            };
+            java.util.logging.Logger.getLogger("").addHandler(adminLogHandler);
+        } catch (Exception e) {
+            getLogger().warning("Could not attach admin console log handler: " + e.getMessage());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onPlayerChatModeration(io.papermc.paper.event.player.AsyncChatEvent event) {
+        if (event.getPlayer() == null) return;
+        Player player = event.getPlayer();
+        String nameKey = player.getName().toLowerCase(Locale.ROOT);
+        MuteInfo mute = activeMutes.get(nameKey);
+        if (mute != null) {
+            if (mute.expiresAt() > 0 && System.currentTimeMillis() > mute.expiresAt()) {
+                activeMutes.remove(nameKey);
+            } else {
+                event.setCancelled(true);
+                String timeLeft = mute.expiresAt() > 0 ? formatMuteDuration(mute.expiresAt() - System.currentTimeMillis()) : "Permanent";
+                player.sendMessage(Component.text("§c[Moderation] You are muted (" + timeLeft + "). Reason: §f" + mute.reason()));
+            }
+        }
+    }
+
+    private static String formatMuteDuration(long millis) {
+        if (millis <= 0) return "0s";
+        long seconds = millis / 1000;
+        long h = seconds / 3600;
+        long m = (seconds % 3600) / 60;
+        long s = seconds % 60;
+        if (h > 0) return String.format(Locale.ROOT, "%dh %dm %ds", h, m, s);
+        if (m > 0) return String.format(Locale.ROOT, "%dm %ds", m, s);
+        return String.format(Locale.ROOT, "%ds", s);
+    }
+
+    private void syncAdmin() {
+        if (internalBase == null || internalBase.isBlank() || serviceToken == null || serviceToken.isBlank()) return;
+
+        // Collect TPS
+        double[] tpsArr = org.bukkit.Bukkit.getTPS();
+        com.google.gson.JsonArray tpsJson = new com.google.gson.JsonArray();
+        for (double t : tpsArr) {
+            tpsJson.add(Math.round(t * 100.0) / 100.0);
+        }
+
+        // Collect RAM
+        Runtime rt = Runtime.getRuntime();
+        long totalMb = rt.totalMemory() / (1024 * 1024);
+        long freeMb = rt.freeMemory() / (1024 * 1024);
+        long maxMb = rt.maxMemory() / (1024 * 1024);
+        long usedMb = Math.max(0, totalMb - freeMb);
+
+        // Collect online players
+        com.google.gson.JsonArray playersJson = new com.google.gson.JsonArray();
+        for (Player p : getServer().getOnlinePlayers()) {
+            Location loc = p.getLocation();
+            com.google.gson.JsonObject pObj = new com.google.gson.JsonObject();
+            pObj.addProperty("uuid", p.getUniqueId().toString());
+            pObj.addProperty("username", p.getName());
+            pObj.addProperty("ping", p.getPing());
+            pObj.addProperty("world", loc.getWorld() != null ? loc.getWorld().getName() : "world");
+            pObj.addProperty("x", loc.getBlockX());
+            pObj.addProperty("y", loc.getBlockY());
+            pObj.addProperty("z", loc.getBlockZ());
+            pObj.addProperty("health", Math.round(p.getHealth() * 10.0) / 10.0);
+            pObj.addProperty("is_muted", activeMutes.containsKey(p.getName().toLowerCase(Locale.ROOT)));
+            playersJson.add(pObj);
+        }
+
+        // Drain console logs
+        List<String> logBatch = new ArrayList<>();
+        String logLine;
+        while ((logLine = adminConsoleLogQueue.poll()) != null && logBatch.size() < 100) {
+            logBatch.add(logLine);
+        }
+        com.google.gson.JsonArray logsJson = new com.google.gson.JsonArray();
+        for (String l : logBatch) {
+            logsJson.add(l);
+        }
+
+        // Drain command results
+        List<CommandResult> resultBatch = new ArrayList<>();
+        CommandResult cr;
+        while ((cr = completedCommandsQueue.poll()) != null && resultBatch.size() < 25) {
+            resultBatch.add(cr);
+        }
+        com.google.gson.JsonArray resultsJson = new com.google.gson.JsonArray();
+        for (CommandResult r : resultBatch) {
+            com.google.gson.JsonObject rObj = new com.google.gson.JsonObject();
+            rObj.addProperty("request_id", r.requestId());
+            rObj.addProperty("success", r.success());
+            com.google.gson.JsonArray outArr = new com.google.gson.JsonArray();
+            for (String out : r.output()) {
+                outArr.add(out);
+            }
+            rObj.add("output", outArr);
+            resultsJson.add(rObj);
+        }
+
+        com.google.gson.JsonObject root = new com.google.gson.JsonObject();
+        root.add("tps", tpsJson);
+        root.addProperty("ram_used_mb", usedMb);
+        root.addProperty("ram_total_mb", totalMb);
+        root.addProperty("ram_max_mb", maxMb);
+        root.addProperty("server_version", getServer().getName() + " " + getServer().getMinecraftVersion());
+        root.add("online_players", playersJson);
+        root.add("console_logs", logsJson);
+        root.add("command_results", resultsJson);
+
+        try {
+            HttpResponse<String> response = post(internalBase + "/admin/sync", root.toString(), requestTimeout);
+            if (response != null && response.statusCode() == 200) {
+                com.google.gson.JsonObject resObj = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                if (resObj.has("pending_commands") || resObj.has("pending_moderations")) {
+                    com.google.gson.JsonArray commandsArr = resObj.has("pending_commands") ? resObj.getAsJsonArray("pending_commands") : new com.google.gson.JsonArray();
+                    com.google.gson.JsonArray moderationsArr = resObj.has("pending_moderations") ? resObj.getAsJsonArray("pending_moderations") : new com.google.gson.JsonArray();
+
+                    if (commandsArr.size() > 0 || moderationsArr.size() > 0) {
+                        getServer().getScheduler().runTask(this, () -> {
+                            for (com.google.gson.JsonElement el : commandsArr) {
+                                com.google.gson.JsonObject cmdObj = el.getAsJsonObject();
+                                String reqId = cmdObj.get("request_id").getAsString();
+                                String cmd = cmdObj.get("command").getAsString();
+                                executeConsoleCommand(reqId, cmd);
+                            }
+                            for (com.google.gson.JsonElement el : moderationsArr) {
+                                com.google.gson.JsonObject modObj = el.getAsJsonObject();
+                                String modId = modObj.get("id").getAsString();
+                                String action = modObj.get("action").getAsString();
+                                String targetUser = modObj.get("target_username").getAsString();
+                                String targetUuid = modObj.has("target_uuid") && !modObj.get("target_uuid").isJsonNull() ? modObj.get("target_uuid").getAsString() : null;
+                                String reason = modObj.has("reason") ? modObj.get("reason").getAsString() : "";
+                                Long durSec = modObj.has("duration_seconds") && !modObj.get("duration_seconds").isJsonNull() ? modObj.get("duration_seconds").getAsLong() : null;
+                                executeModerationAction(modId, action, targetUuid, targetUser, reason, durSec);
+                            }
+                        });
+                    }
+                }
+            } else {
+                for (CommandResult r : resultBatch) {
+                    completedCommandsQueue.offer(r);
+                }
+            }
+        } catch (Exception e) {
+            for (CommandResult r : resultBatch) {
+                completedCommandsQueue.offer(r);
+            }
+        }
+    }
+
+    private void executeConsoleCommand(String requestId, String commandLine) {
+        List<String> output = new ArrayList<>();
+        org.bukkit.command.ConsoleCommandSender consoleSender = getServer().getConsoleSender();
+        try {
+            CommandSender proxySender = (CommandSender) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(),
+                new Class<?>[]{ org.bukkit.command.ConsoleCommandSender.class },
+                (proxy, method, args) -> {
+                    String methodName = method.getName();
+                    if (methodName.equals("sendMessage")) {
+                        if (args != null && args.length > 0) {
+                            for (Object arg : args) {
+                                if (arg instanceof String s) {
+                                    output.add(s);
+                                } else if (arg instanceof Component comp) {
+                                    output.add(net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(comp));
+                                } else if (arg instanceof Component[] comps) {
+                                    for (Component c : comps) {
+                                        output.add(net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(c));
+                                    }
+                                } else if (arg != null) {
+                                    output.add(arg.toString());
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                    return method.invoke(consoleSender, args);
+                }
+            );
+            boolean success = getServer().dispatchCommand(proxySender, commandLine);
+            if (output.isEmpty()) {
+                output.add(success ? "Command executed." : "Command unknown or failed.");
+            }
+            completedCommandsQueue.offer(new CommandResult(requestId, output, success));
+        } catch (Exception e) {
+            output.add("Error executing command: " + e.getMessage());
+            completedCommandsQueue.offer(new CommandResult(requestId, output, false));
+        }
+    }
+
+    private void executeModerationAction(String id, String action, String targetUuid, String targetUsername, String reason, Long durationSeconds) {
+        if (action == null || targetUsername == null) return;
+        String cleanName = targetUsername.trim();
+        String lowerName = cleanName.toLowerCase(Locale.ROOT);
+
+        switch (action.toLowerCase(Locale.ROOT)) {
+            case "kick" -> {
+                Player p = getServer().getPlayerExact(cleanName);
+                if (p != null && p.isOnline()) {
+                    p.kick(Component.text("§cKicked by Administrator:\n§f" + (reason.isBlank() ? "Kicked by administrator" : reason)));
+                }
+            }
+            case "ban" -> {
+                Date expires = (durationSeconds != null && durationSeconds > 0)
+                    ? new Date(System.currentTimeMillis() + durationSeconds * 1000L)
+                    : null;
+                try {
+                    getServer().getBanList(org.bukkit.BanList.Type.NAME).addBan(cleanName, reason, expires, "WebAdmin");
+                } catch (Throwable t) {
+                    getServer().dispatchCommand(getServer().getConsoleSender(), "ban " + cleanName + " " + reason);
+                }
+                Player p = getServer().getPlayerExact(cleanName);
+                if (p != null && p.isOnline()) {
+                    String expStr = expires != null ? " until " + expires : " permanently";
+                    p.kick(Component.text("§cYou are banned" + expStr + "!\n§fReason: " + (reason.isBlank() ? "Banned by administrator" : reason)));
+                }
+            }
+            case "unban" -> {
+                try {
+                    getServer().getBanList(org.bukkit.BanList.Type.NAME).pardon(cleanName);
+                } catch (Throwable t) {
+                    getServer().dispatchCommand(getServer().getConsoleSender(), "pardon " + cleanName);
+                }
+            }
+            case "mute" -> {
+                long expiresAt = (durationSeconds != null && durationSeconds > 0)
+                    ? System.currentTimeMillis() + durationSeconds * 1000L
+                    : 0L;
+                activeMutes.put(lowerName, new MuteInfo(cleanName, reason, expiresAt));
+                Player p = getServer().getPlayerExact(cleanName);
+                if (p != null && p.isOnline()) {
+                    String durStr = expiresAt > 0 ? (" for " + durationSeconds + "s") : " permanently";
+                    p.sendMessage(Component.text("§c[Muted] You have been muted" + durStr + ". Reason: §f" + reason));
+                }
+            }
+            case "unmute" -> {
+                activeMutes.remove(lowerName);
+                Player p = getServer().getPlayerExact(cleanName);
+                if (p != null && p.isOnline()) {
+                    p.sendMessage(Component.text("§a[Unmuted] You have been unmuted."));
+                }
             }
         }
     }

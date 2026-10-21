@@ -102,6 +102,17 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/players/{uuid}/privates/{block_index}/withdraw", post(withdraw_player_private_fuel))
         .route("/api/admin/accounts", get(admin_get_accounts))
         .route("/api/admin/balance", post(admin_adjust_balance))
+        .route("/api/admin/metrics", get(admin_get_metrics))
+        .route("/api/admin/console/logs", get(admin_get_console_logs))
+        .route("/api/admin/console/execute", post(admin_execute_console_command))
+        .route("/api/admin/moderation/kick", post(admin_moderation_kick))
+        .route("/api/admin/moderation/ban", post(admin_moderation_ban))
+        .route("/api/admin/moderation/unban", post(admin_moderation_unban))
+        .route("/api/admin/moderation/mute", post(admin_moderation_mute))
+        .route("/api/admin/moderation/unmute", post(admin_moderation_unmute))
+        .route("/api/admin/moderation/list", get(admin_get_moderation_list))
+        .route("/api/admin/chat/logs", get(admin_get_chat_logs))
+        .route("/internal/admin/sync", post(internal_admin_sync))
         .route("/api/chat/messages", get(get_chat_messages).post(send_chat_message))
         .route("/internal/chat/sync", post(sync_chat_messages))
         .route("/internal/skins/sync", post(sync_player_skins))
@@ -6325,6 +6336,779 @@ async fn admin_adjust_balance(
         previous_coins: prev_coins,
         new_coins,
     }))
+}
+
+// --- Extended Admin Panel: Live Metrics, Console Terminal & In-Game Moderation ---
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct AdminOnlinePlayerDto {
+    uuid: String,
+    username: String,
+    ping: Option<i32>,
+    world: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    z: Option<i32>,
+    #[serde(default)]
+    is_muted: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ConsoleLogEntry {
+    id: u64,
+    text: String,
+    timestamp: i64,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PendingConsoleCommand {
+    request_id: String,
+    command: String,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct InternalCommandResultDto {
+    request_id: String,
+    output: Vec<String>,
+    #[allow(dead_code)]
+    success: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PendingModerationAction {
+    id: String,
+    action: String, // "kick", "ban", "unban", "mute", "unmute"
+    target_uuid: Option<String>,
+    target_username: String,
+    reason: String,
+    duration_seconds: Option<i64>,
+}
+
+struct AdminState {
+    tps: [f64; 3],
+    ram_used_mb: i64,
+    ram_total_mb: i64,
+    ram_max_mb: i64,
+    server_version: String,
+    online_players: Vec<AdminOnlinePlayerDto>,
+    last_metrics_at: Option<std::time::Instant>,
+    next_log_id: u64,
+    console_logs: std::collections::VecDeque<ConsoleLogEntry>,
+    pending_console_commands: Vec<PendingConsoleCommand>,
+    completed_commands: std::collections::HashMap<String, (Vec<String>, bool)>,
+    pending_moderation_actions: Vec<PendingModerationAction>,
+}
+
+impl Default for AdminState {
+    fn default() -> Self {
+        Self {
+            tps: [20.0, 20.0, 20.0],
+            ram_used_mb: 0,
+            ram_total_mb: 0,
+            ram_max_mb: 0,
+            server_version: "Minecraft Server".to_string(),
+            online_players: Vec::new(),
+            last_metrics_at: None,
+            next_log_id: 1,
+            console_logs: std::collections::VecDeque::with_capacity(500),
+            pending_console_commands: Vec::new(),
+            completed_commands: std::collections::HashMap::new(),
+            pending_moderation_actions: Vec::new(),
+        }
+    }
+}
+
+impl AdminState {
+    fn is_live(&self) -> bool {
+        if let Some(last) = self.last_metrics_at {
+            last.elapsed() < std::time::Duration::from_secs(10)
+        } else {
+            false
+        }
+    }
+}
+
+static GLOBAL_ADMIN_STATE: std::sync::LazyLock<tokio::sync::RwLock<AdminState>> =
+    std::sync::LazyLock::new(|| tokio::sync::RwLock::new(AdminState::default()));
+
+#[derive(serde::Deserialize)]
+struct InternalAdminSyncRequest {
+    tps: Option<[f64; 3]>,
+    ram_used_mb: Option<i64>,
+    ram_total_mb: Option<i64>,
+    ram_max_mb: Option<i64>,
+    server_version: Option<String>,
+    #[serde(default)]
+    online_players: Vec<AdminOnlinePlayerDto>,
+    #[serde(default)]
+    console_logs: Vec<String>,
+    #[serde(default)]
+    command_results: Vec<InternalCommandResultDto>,
+}
+
+#[derive(serde::Serialize)]
+struct InternalAdminSyncResponse {
+    pending_commands: Vec<PendingConsoleCommand>,
+    pending_moderations: Vec<PendingModerationAction>,
+}
+
+async fn internal_admin_sync(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(input): Json<InternalAdminSyncRequest>,
+) -> Result<Json<InternalAdminSyncResponse>, StatusCode> {
+    require_service_token(&headers)?;
+
+    let active_mute_names: std::collections::HashSet<String> = sqlx::query_scalar(
+        "SELECT lower(username) FROM player_mutes WHERE active = true AND (expires_at IS NULL OR expires_at > now())"
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect();
+
+    let mut state = GLOBAL_ADMIN_STATE.write().await;
+
+    if let Some(tps) = input.tps {
+        state.tps = tps;
+    }
+    if let Some(used) = input.ram_used_mb {
+        state.ram_used_mb = used;
+    }
+    if let Some(total) = input.ram_total_mb {
+        state.ram_total_mb = total;
+    }
+    if let Some(max) = input.ram_max_mb {
+        state.ram_max_mb = max;
+    }
+    if let Some(v) = input.server_version {
+        state.server_version = v;
+    }
+    state.last_metrics_at = Some(std::time::Instant::now());
+
+    let mut players = input.online_players;
+    for p in &mut players {
+        p.is_muted = active_mute_names.contains(&p.username.to_lowercase());
+    }
+    state.online_players = players;
+
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    for log_line in input.console_logs {
+        let id = state.next_log_id;
+        state.next_log_id += 1;
+        if state.console_logs.len() >= 500 {
+            state.console_logs.pop_front();
+        }
+        state.console_logs.push_back(ConsoleLogEntry {
+            id,
+            text: log_line,
+            timestamp: now_ts,
+        });
+    }
+
+    for res in input.command_results {
+        state.completed_commands.insert(res.request_id, (res.output, res.success));
+    }
+
+    let pending_commands = std::mem::take(&mut state.pending_console_commands);
+    let pending_moderations = std::mem::take(&mut state.pending_moderation_actions);
+
+    Ok(Json(InternalAdminSyncResponse {
+        pending_commands,
+        pending_moderations,
+    }))
+}
+
+#[derive(serde::Serialize)]
+struct AdminMetricsView {
+    tps: [f64; 3],
+    ram_used_mb: i64,
+    ram_total_mb: i64,
+    ram_max_mb: i64,
+    server_version: String,
+    online_count: usize,
+    online_players: Vec<AdminOnlinePlayerDto>,
+    is_live: bool,
+}
+
+async fn admin_get_metrics(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<AdminMetricsView>, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let state = GLOBAL_ADMIN_STATE.read().await;
+    Ok(Json(AdminMetricsView {
+        tps: state.tps,
+        ram_used_mb: state.ram_used_mb,
+        ram_total_mb: state.ram_total_mb,
+        ram_max_mb: state.ram_max_mb,
+        server_version: state.server_version.clone(),
+        online_count: state.online_players.len(),
+        online_players: state.online_players.clone(),
+        is_live: state.is_live(),
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct ConsoleLogsQuery {
+    since_id: Option<u64>,
+}
+
+async fn admin_get_console_logs(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Query(query): Query<ConsoleLogsQuery>,
+) -> Result<Json<Vec<ConsoleLogEntry>>, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let state = GLOBAL_ADMIN_STATE.read().await;
+    let logs: Vec<ConsoleLogEntry> = if let Some(since) = query.since_id {
+        state.console_logs.iter().filter(|l| l.id > since).cloned().collect()
+    } else {
+        state.console_logs.iter().cloned().collect()
+    };
+    Ok(Json(logs))
+}
+
+#[derive(serde::Deserialize)]
+struct AdminConsoleExecuteRequest {
+    command: String,
+}
+
+#[derive(serde::Serialize)]
+struct AdminConsoleExecuteResponse {
+    request_id: String,
+    output: Vec<String>,
+    success: bool,
+}
+
+async fn admin_execute_console_command(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AdminConsoleExecuteRequest>,
+) -> Result<Json<AdminConsoleExecuteResponse>, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let cmd = input.command.trim().trim_start_matches('/').to_string();
+    if cmd.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let request_id = new_session_token()?;
+    let ip = client_ip(&headers);
+
+    let _ = sqlx::query(
+        "INSERT INTO moderation_audit_log (admin_user_id, action, reason, detail)
+         VALUES ($1, 'command', $2, $3)"
+    )
+    .bind(user_id)
+    .bind(&cmd)
+    .bind(serde_json::json!({ "command": cmd, "ip": ip }))
+    .execute(&pool)
+    .await;
+
+    {
+        let mut state = GLOBAL_ADMIN_STATE.write().await;
+        let id = state.next_log_id;
+        state.next_log_id += 1;
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+        state.console_logs.push_back(ConsoleLogEntry {
+            id,
+            text: format!("> /{}", cmd),
+            timestamp: ts,
+        });
+        state.pending_console_commands.push(PendingConsoleCommand {
+            request_id: request_id.clone(),
+            command: cmd.clone(),
+        });
+    }
+
+    // Wait up to 2.5s for command output from Minecraft server
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_millis(2500) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut state = GLOBAL_ADMIN_STATE.write().await;
+        if let Some((output, success)) = state.completed_commands.remove(&request_id) {
+            return Ok(Json(AdminConsoleExecuteResponse {
+                request_id,
+                output,
+                success,
+            }));
+        }
+    }
+
+    Ok(Json(AdminConsoleExecuteResponse {
+        request_id,
+        output: vec!["Command queued for execution.".to_string()],
+        success: true,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct AdminKickRequest {
+    username: String,
+    uuid: Option<String>,
+    reason: Option<String>,
+}
+
+async fn admin_moderation_kick(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AdminKickRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let username = input.username.trim();
+    if username.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let reason = input.reason.unwrap_or_else(|| "Kicked by administrator".to_string());
+    let action_id = new_session_token()?;
+    let ip = client_ip(&headers);
+
+    let _ = sqlx::query(
+        "INSERT INTO moderation_audit_log (admin_user_id, action, target_uuid, target_username, reason, detail)
+         VALUES ($1, 'kick', $2, $3, $4, $5)"
+    )
+    .bind(user_id)
+    .bind(&input.uuid)
+    .bind(username)
+    .bind(&reason)
+    .bind(serde_json::json!({ "ip": ip }))
+    .execute(&pool)
+    .await;
+
+    let mut state = GLOBAL_ADMIN_STATE.write().await;
+    state.pending_moderation_actions.push(PendingModerationAction {
+        id: action_id,
+        action: "kick".to_string(),
+        target_uuid: input.uuid,
+        target_username: username.to_string(),
+        reason,
+        duration_seconds: None,
+    });
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct AdminBanRequest {
+    username: String,
+    uuid: Option<String>,
+    reason: Option<String>,
+    duration_seconds: Option<i64>,
+}
+
+async fn admin_moderation_ban(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AdminBanRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let username = input.username.trim();
+    if username.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let reason = input.reason.unwrap_or_else(|| "Banned by administrator".to_string());
+    let action_id = new_session_token()?;
+    let ip = client_ip(&headers);
+
+    if let Some(dur) = input.duration_seconds {
+        sqlx::query(
+            "INSERT INTO player_bans (uuid, username, reason, banned_by, expires_at, active)
+             VALUES ($1, $2, $3, 'WebAdmin', now() + make_interval(secs => $4), true)"
+        )
+        .bind(&input.uuid)
+        .bind(username)
+        .bind(&reason)
+        .bind(dur as f64)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        sqlx::query(
+            "INSERT INTO player_bans (uuid, username, reason, banned_by, expires_at, active)
+             VALUES ($1, $2, $3, 'WebAdmin', NULL, true)"
+        )
+        .bind(&input.uuid)
+        .bind(username)
+        .bind(&reason)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    let _ = sqlx::query(
+        "INSERT INTO moderation_audit_log (admin_user_id, action, target_uuid, target_username, reason, detail)
+         VALUES ($1, 'ban', $2, $3, $4, $5)"
+    )
+    .bind(user_id)
+    .bind(&input.uuid)
+    .bind(username)
+    .bind(&reason)
+    .bind(serde_json::json!({ "duration_seconds": input.duration_seconds, "ip": ip }))
+    .execute(&pool)
+    .await;
+
+    let mut state = GLOBAL_ADMIN_STATE.write().await;
+    state.pending_moderation_actions.push(PendingModerationAction {
+        id: action_id,
+        action: "ban".to_string(),
+        target_uuid: input.uuid,
+        target_username: username.to_string(),
+        reason,
+        duration_seconds: input.duration_seconds,
+    });
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct AdminUnbanRequest {
+    username: String,
+}
+
+async fn admin_moderation_unban(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AdminUnbanRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let username = input.username.trim();
+    if username.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let action_id = new_session_token()?;
+
+    sqlx::query("UPDATE player_bans SET active = false WHERE lower(username) = lower($1)")
+        .bind(username)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let _ = sqlx::query(
+        "INSERT INTO moderation_audit_log (admin_user_id, action, target_username, reason)
+         VALUES ($1, 'unban', $2, 'Unbanned by admin')"
+    )
+    .bind(user_id)
+    .bind(username)
+    .execute(&pool)
+    .await;
+
+    let mut state = GLOBAL_ADMIN_STATE.write().await;
+    state.pending_moderation_actions.push(PendingModerationAction {
+        id: action_id,
+        action: "unban".to_string(),
+        target_uuid: None,
+        target_username: username.to_string(),
+        reason: "Unbanned by admin".to_string(),
+        duration_seconds: None,
+    });
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct AdminMuteRequest {
+    username: String,
+    uuid: Option<String>,
+    reason: Option<String>,
+    duration_seconds: Option<i64>,
+}
+
+async fn admin_moderation_mute(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AdminMuteRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let username = input.username.trim();
+    if username.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let reason = input.reason.unwrap_or_else(|| "Muted by administrator".to_string());
+    let action_id = new_session_token()?;
+    let ip = client_ip(&headers);
+
+    if let Some(dur) = input.duration_seconds {
+        sqlx::query(
+            "INSERT INTO player_mutes (uuid, username, reason, muted_by, expires_at, active)
+             VALUES ($1, $2, $3, 'WebAdmin', now() + make_interval(secs => $4), true)"
+        )
+        .bind(&input.uuid)
+        .bind(username)
+        .bind(&reason)
+        .bind(dur as f64)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        sqlx::query(
+            "INSERT INTO player_mutes (uuid, username, reason, muted_by, expires_at, active)
+             VALUES ($1, $2, $3, 'WebAdmin', NULL, true)"
+        )
+        .bind(&input.uuid)
+        .bind(username)
+        .bind(&reason)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    let _ = sqlx::query(
+        "INSERT INTO moderation_audit_log (admin_user_id, action, target_uuid, target_username, reason, detail)
+         VALUES ($1, 'mute', $2, $3, $4, $5)"
+    )
+    .bind(user_id)
+    .bind(&input.uuid)
+    .bind(username)
+    .bind(&reason)
+    .bind(serde_json::json!({ "duration_seconds": input.duration_seconds, "ip": ip }))
+    .execute(&pool)
+    .await;
+
+    let mut state = GLOBAL_ADMIN_STATE.write().await;
+    state.pending_moderation_actions.push(PendingModerationAction {
+        id: action_id,
+        action: "mute".to_string(),
+        target_uuid: input.uuid,
+        target_username: username.to_string(),
+        reason,
+        duration_seconds: input.duration_seconds,
+    });
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct AdminUnmuteRequest {
+    username: String,
+}
+
+async fn admin_moderation_unmute(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AdminUnmuteRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let username = input.username.trim();
+    if username.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let action_id = new_session_token()?;
+
+    sqlx::query("UPDATE player_mutes SET active = false WHERE lower(username) = lower($1)")
+        .bind(username)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let _ = sqlx::query(
+        "INSERT INTO moderation_audit_log (admin_user_id, action, target_username, reason)
+         VALUES ($1, 'unmute', $2, 'Unmuted by admin')"
+    )
+    .bind(user_id)
+    .bind(username)
+    .execute(&pool)
+    .await;
+
+    let mut state = GLOBAL_ADMIN_STATE.write().await;
+    state.pending_moderation_actions.push(PendingModerationAction {
+        id: action_id,
+        action: "unmute".to_string(),
+        target_uuid: None,
+        target_username: username.to_string(),
+        reason: "Unmuted by admin".to_string(),
+        duration_seconds: None,
+    });
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Serialize)]
+struct AdminModerationItemView {
+    id: String,
+    uuid: Option<String>,
+    username: String,
+    reason: String,
+    banned_by_or_muted_by: String,
+    expires_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(serde::Serialize)]
+struct AdminModerationListView {
+    bans: Vec<AdminModerationItemView>,
+    mutes: Vec<AdminModerationItemView>,
+}
+
+async fn admin_get_moderation_list(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<AdminModerationListView>, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let ban_rows = sqlx::query(
+        "SELECT id::text AS id, uuid, username, reason, banned_by, expires_at::text AS expires_at, created_at::text AS created_at
+         FROM player_bans
+         WHERE active = true AND (expires_at IS NULL OR expires_at > now())
+         ORDER BY created_at DESC"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut bans = Vec::new();
+    for r in ban_rows {
+        bans.push(AdminModerationItemView {
+            id: r.get("id"),
+            uuid: r.get("uuid"),
+            username: r.get("username"),
+            reason: r.get("reason"),
+            banned_by_or_muted_by: r.get("banned_by"),
+            expires_at: r.get("expires_at"),
+            created_at: r.get("created_at"),
+        });
+    }
+
+    let mute_rows = sqlx::query(
+        "SELECT id::text AS id, uuid, username, reason, muted_by, expires_at::text AS expires_at, created_at::text AS created_at
+         FROM player_mutes
+         WHERE active = true AND (expires_at IS NULL OR expires_at > now())
+         ORDER BY created_at DESC"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut mutes = Vec::new();
+    for r in mute_rows {
+        mutes.push(AdminModerationItemView {
+            id: r.get("id"),
+            uuid: r.get("uuid"),
+            username: r.get("username"),
+            reason: r.get("reason"),
+            banned_by_or_muted_by: r.get("muted_by"),
+            expires_at: r.get("expires_at"),
+            created_at: r.get("created_at"),
+        });
+    }
+
+    Ok(Json(AdminModerationListView { bans, mutes }))
+}
+
+#[derive(serde::Deserialize)]
+struct AdminChatLogsQuery {
+    search: Option<String>,
+    username: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn admin_get_chat_logs(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Query(query): Query<AdminChatLogsQuery>,
+) -> Result<Json<Vec<ChatMessageView>>, StatusCode> {
+    if !is_user_admin(&pool, user_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let limit = query.limit.unwrap_or(100).clamp(1, 200);
+
+    let search_term = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let username_filter = query.username.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    let rows = match (search_term, username_filter) {
+        (Some(s), Some(u)) => {
+            sqlx::query(
+                "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+                 FROM chat_messages
+                 WHERE lower(sender_name) = lower($1) AND text ILIKE '%' || $2 || '%'
+                 ORDER BY id DESC
+                 LIMIT $3"
+            )
+            .bind(u)
+            .bind(s)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+        }
+        (Some(s), None) => {
+            sqlx::query(
+                "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+                 FROM chat_messages
+                 WHERE text ILIKE '%' || $1 || '%'
+                 ORDER BY id DESC
+                 LIMIT $2"
+            )
+            .bind(s)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+        }
+        (None, Some(u)) => {
+            sqlx::query(
+                "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+                 FROM chat_messages
+                 WHERE lower(sender_name) = lower($1)
+                 ORDER BY id DESC
+                 LIMIT $2"
+            )
+            .bind(u)
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+        }
+        (None, None) => {
+            sqlx::query(
+                "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+                 FROM chat_messages
+                 ORDER BY id DESC
+                 LIMIT $1"
+            )
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+        }
+    }
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut list = Vec::with_capacity(rows.len());
+    for r in rows {
+        list.push(ChatMessageView {
+            id: r.get("id"),
+            sender_name: r.get("sender_name"),
+            sender_uuid: r.get("sender_uuid"),
+            text: r.get("text"),
+            source: r.get("source"),
+            created_at: r.get("created_at"),
+        });
+    }
+
+    Ok(Json(list))
 }
 
 // --- Live Chat Integration --------------------------------------------------
@@ -14183,6 +14967,107 @@ mod test {
         // 5. Mark alerts read
         let read_res = send(&pool, "POST", "/api/territory/alerts/read", Some(&cookie), Some(serde_json::json!({}))).await?;
         assert_eq!(read_res.status(), StatusCode::OK);
+
+        delete_user(&pool, &email).await?;
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+    #[tokio::test]
+    async fn admin_panel_telemetry_console_and_moderation() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let token = test_service_token();
+        let random = random_id();
+
+        let email = format!("admin_{random}@example.com").to_lowercase();
+        let login = format!("admin_{random}").to_lowercase();
+        register_request(&pool, "AdminUser", &login, &email, "password12345").await?;
+        let cookie = login_cookie(&pool, &email, "password12345").await?;
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email).fetch_one(&pool).await?;
+
+        // 1. Initially non-admin receives 403 on admin endpoints
+        let metrics_forbidden = send(&pool, "GET", "/api/admin/metrics", Some(&cookie), None).await?;
+        assert_eq!(metrics_forbidden.status(), StatusCode::FORBIDDEN);
+
+        let kick_forbidden = send(&pool, "POST", "/api/admin/moderation/kick", Some(&cookie), Some(serde_json::json!({
+            "username": "Player1"
+        }))).await?;
+        assert_eq!(kick_forbidden.status(), StatusCode::FORBIDDEN);
+
+        // 2. Grant admin rights
+        sqlx::query("UPDATE users SET is_admin = true WHERE id = $1").bind(user_id).execute(&pool).await?;
+
+        // 3. Minecraft server reports metrics, console logs, and online players via internal sync
+        let sync_req = serde_json::json!({
+            "tps": [19.95, 20.0, 20.0],
+            "ram_used_mb": 1500,
+            "ram_total_mb": 2048,
+            "ram_max_mb": 4096,
+            "server_version": "Purpur 1.21.4",
+            "online_players": [
+                {
+                    "uuid": "00000000-0000-0000-0000-000000000001",
+                    "username": "OnlineSteve",
+                    "ping": 42,
+                    "world": "world",
+                    "x": 120,
+                    "y": 64,
+                    "z": -350,
+                    "health": 20.0,
+                    "is_muted": false
+                }
+            ],
+            "console_logs": [
+                "[INFO] OnlineSteve logged in with entity id 42",
+                "[INFO] Server loaded 100 chunks"
+            ],
+            "command_results": []
+        });
+
+        let sync_res = post_internal(&pool, "/internal/admin/sync", Some(&token), sync_req, &random_ip()).await?;
+        assert_eq!(sync_res.status(), StatusCode::OK);
+
+        // 4. Admin reads metrics via web endpoint
+        let metrics_ok = send(&pool, "GET", "/api/admin/metrics", Some(&cookie), None).await?;
+        assert_eq!(metrics_ok.status(), StatusCode::OK);
+        let m_json = body_json(metrics_ok).await?;
+        assert_eq!(m_json["is_live"], true);
+        assert_eq!(m_json["online_count"], 1);
+        assert_eq!(m_json["online_players"][0]["username"], "OnlineSteve");
+        assert_eq!(m_json["ram_used_mb"], 1500);
+
+        // 5. Admin reads console logs
+        let logs_res = send(&pool, "GET", "/api/admin/console/logs", Some(&cookie), None).await?;
+        assert_eq!(logs_res.status(), StatusCode::OK);
+        let logs_arr = body_json(logs_res).await?;
+        assert!(logs_arr.as_array().unwrap().len() >= 2);
+
+        // 6. Admin executes moderation ban
+        let ban_res = send(&pool, "POST", "/api/admin/moderation/ban", Some(&cookie), Some(serde_json::json!({
+            "username": "GrieferSteve",
+            "reason": "Griefing bases",
+            "duration_seconds": 3600
+        }))).await?;
+        assert_eq!(ban_res.status(), StatusCode::OK);
+
+        // 7. Check moderation list
+        let mod_list_res = send(&pool, "GET", "/api/admin/moderation/list", Some(&cookie), None).await?;
+        assert_eq!(mod_list_res.status(), StatusCode::OK);
+        let mod_json = body_json(mod_list_res).await?;
+        let bans_arr = mod_json["bans"].as_array().unwrap();
+        assert_eq!(bans_arr.len(), 1);
+        assert_eq!(bans_arr[0]["username"], "GrieferSteve");
+
+        // 8. Next internal sync should return the pending moderation action to the plugin
+        let sync_req2 = serde_json::json!({
+            "command_results": []
+        });
+        let sync_res2 = post_internal(&pool, "/internal/admin/sync", Some(&token), sync_req2, &random_ip()).await?;
+        assert_eq!(sync_res2.status(), StatusCode::OK);
+        let sync2_body = body_json(sync_res2).await?;
+        let pending_mods = sync2_body["pending_moderations"].as_array().unwrap();
+        assert_eq!(pending_mods.len(), 1);
+        assert_eq!(pending_mods[0]["action"], "ban");
+        assert_eq!(pending_mods[0]["target_username"], "GrieferSteve");
 
         delete_user(&pool, &email).await?;
         drop_budget_pool(admin, pool, schema).await

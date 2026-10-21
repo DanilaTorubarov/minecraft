@@ -507,6 +507,56 @@ export type AdminBalanceResult = {
   new_coins: number
 }
 
+export type AdminOnlinePlayer = {
+  uuid: string
+  username: string
+  ping: number
+  world: string
+  x: number
+  y: number
+  z: number
+  health: number
+  is_muted: boolean
+}
+
+export type AdminMetrics = {
+  tps: [number, number, number]
+  ram_used_mb: number
+  ram_total_mb: number
+  ram_max_mb: number
+  server_version: string
+  online_count: number
+  online_players: AdminOnlinePlayer[]
+  is_live: boolean
+}
+
+export type ConsoleLogEntry = {
+  id: number
+  text: string
+  timestamp: number
+}
+
+export type AdminConsoleExecuteResult = {
+  request_id: string
+  output: string[]
+  success: boolean
+}
+
+export type AdminModerationItem = {
+  id: string
+  uuid: string | null
+  username: string
+  reason: string
+  banned_by_or_muted_by: string
+  expires_at: string | null
+  created_at: string
+}
+
+export type AdminModerationList = {
+  bans: AdminModerationItem[]
+  mutes: AdminModerationItem[]
+}
+
 export async function getAdminAccounts(): Promise<AdminAccount[]> {
   const response = await fetch('/api/admin/accounts')
   if (!response.ok) throw new ApiError(response.status)
@@ -521,6 +571,81 @@ export async function adjustAdminBalance(input: {
   const response = await send('POST', '/api/admin/balance', input)
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as AdminBalanceResult
+}
+
+export async function getAdminMetrics(): Promise<AdminMetrics> {
+  const response = await fetch('/api/admin/metrics')
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as AdminMetrics
+}
+
+export async function getAdminConsoleLogs(sinceId?: number): Promise<ConsoleLogEntry[]> {
+  const url = sinceId !== undefined ? `/api/admin/console/logs?since_id=${sinceId}` : '/api/admin/console/logs'
+  const response = await fetch(url)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as ConsoleLogEntry[]
+}
+
+export async function executeAdminConsoleCommand(command: string): Promise<AdminConsoleExecuteResult> {
+  const response = await send('POST', '/api/admin/console/execute', { command })
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as AdminConsoleExecuteResult
+}
+
+export async function adminKickPlayer(input: { username: string; uuid?: string; reason?: string }): Promise<void> {
+  const response = await send('POST', '/api/admin/moderation/kick', input)
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function adminBanPlayer(input: {
+  username: string
+  uuid?: string
+  reason?: string
+  duration_seconds?: number
+}): Promise<void> {
+  const response = await send('POST', '/api/admin/moderation/ban', input)
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function adminUnbanPlayer(username: string): Promise<void> {
+  const response = await send('POST', '/api/admin/moderation/unban', { username })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function adminMutePlayer(input: {
+  username: string
+  uuid?: string
+  reason?: string
+  duration_seconds?: number
+}): Promise<void> {
+  const response = await send('POST', '/api/admin/moderation/mute', input)
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function adminUnmutePlayer(username: string): Promise<void> {
+  const response = await send('POST', '/api/admin/moderation/unmute', { username })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function getAdminModerationList(): Promise<AdminModerationList> {
+  const response = await fetch('/api/admin/moderation/list')
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as AdminModerationList
+}
+
+export async function getAdminChatLogs(query?: {
+  search?: string
+  username?: string
+  limit?: number
+}): Promise<ChatMessage[]> {
+  const params = new URLSearchParams()
+  if (query?.search) params.set('search', query.search)
+  if (query?.username) params.set('username', query.username)
+  if (query?.limit) params.set('limit', String(query.limit))
+  const qs = params.toString()
+  const response = await fetch(`/api/admin/chat/logs${qs ? `?${qs}` : ''}`)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as ChatMessage[]
 }
 
 // --- Live Chat Integration --------------------------------------------------
