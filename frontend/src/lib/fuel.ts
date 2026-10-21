@@ -9,10 +9,10 @@ export interface FuelCrystalInfo {
 }
 
 export const FUEL_CRYSTAL_TYPES: Record<number, FuelCrystalInfo> = {
-  1: { tier: 1, name: 'Ember Shard', hours: 2, addedSeconds: 7200, footprint: '3×3' },
-  2: { tier: 2, name: 'Cobalt Crystal', hours: 3, addedSeconds: 10800, footprint: '7×7' },
-  3: { tier: 3, name: 'Crimson Core', hours: 4, addedSeconds: 14400, footprint: '11×11' },
-  4: { tier: 4, name: 'Astral Void Crystal', hours: 6, addedSeconds: 21600, footprint: '15×15' },
+  1: { tier: 1, name: 'Ember Shard', hours: 2, addedSeconds: 7200, footprint: '2×2 chunks (32×32)' },
+  2: { tier: 2, name: 'Cobalt Crystal', hours: 3, addedSeconds: 10800, footprint: '5×5 chunks (80×80)' },
+  3: { tier: 3, name: 'Crimson Core', hours: 4, addedSeconds: 14400, footprint: '10×10 chunks (160×160)' },
+  4: { tier: 4, name: 'Astral Void Crystal', hours: 6, addedSeconds: 21600, footprint: '16×16 chunks (256×256)' },
 }
 
 export function detectFuelCrystal(slot: InventorySlot | null | undefined): FuelCrystalInfo | null {
@@ -43,7 +43,23 @@ export function formatFuelTime(seconds: number): string {
 }
 
 export function radiusToSize(radius: number): number {
-  return 2 * radius + 1
+  switch (radius) {
+    case 16: return 32
+    case 40: return 80
+    case 80: return 160
+    case 128: return 256
+    default: return radius * 2
+  }
+}
+
+export function radiusToChunks(radius: number): number {
+  switch (radius) {
+    case 16: return 2
+    case 40: return 5
+    case 80: return 10
+    case 128: return 16
+    default: return Math.max(1, Math.floor((radius * 2) / 16))
+  }
 }
 
 export const PRIVATE_BLOCK_PRICES: Record<number, number> = {

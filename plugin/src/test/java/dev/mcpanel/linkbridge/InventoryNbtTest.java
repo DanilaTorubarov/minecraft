@@ -212,13 +212,17 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.PrivateRules.nextBlockPrice(1) == 20000L, "2nd private block price is 20000");
         check(LinkBridgePlugin.PrivateRules.nextBlockPrice(2) == 50000L, "3rd private block price is 50000");
         check(LinkBridgePlugin.PrivateRules.nextBlockPrice(3) == -1L, "4th private block is rejected");
-        check(LinkBridgePlugin.PrivateRules.radiusToSize(1) == 3, "Radius 1 is size 3x3");
-        check(LinkBridgePlugin.PrivateRules.radiusToSize(3) == 7, "Radius 3 is size 7x7");
-        check(LinkBridgePlugin.PrivateRules.radiusToSize(5) == 11, "Radius 5 is size 11x11");
-        check(LinkBridgePlugin.PrivateRules.radiusToSize(7) == 15, "Radius 7 is size 15x15");
-        check(LinkBridgePlugin.PrivateRules.sizeToRadius(15) == 7, "Size 15 has radius 7");
-        check(LinkBridgePlugin.PrivateRules.isInside(107, 207, 100, 200, 7), "Coordinate inside 15x15 boundary");
-        check(!LinkBridgePlugin.PrivateRules.isInside(108, 200, 100, 200, 7), "Coordinate outside 15x15 boundary");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(16) == 32, "Radius 16 is size 32x32 (2x2 chunks)");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(40) == 80, "Radius 40 is size 80x80 (5x5 chunks)");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(80) == 160, "Radius 80 is size 160x160 (10x10 chunks)");
+        check(LinkBridgePlugin.PrivateRules.radiusToSize(128) == 256, "Radius 128 is size 256x256 (16x16 chunks)");
+        check(LinkBridgePlugin.PrivateRules.radiusToChunks(16) == 2, "Radius 16 is 2x2 chunks");
+        check(LinkBridgePlugin.PrivateRules.radiusToChunks(40) == 5, "Radius 40 is 5x5 chunks");
+        check(LinkBridgePlugin.PrivateRules.radiusToChunks(80) == 10, "Radius 80 is 10x10 chunks");
+        check(LinkBridgePlugin.PrivateRules.radiusToChunks(128) == 16, "Radius 128 is 16x16 chunks");
+        check(LinkBridgePlugin.PrivateRules.sizeToRadius(256) == 128, "Size 256 has radius 128");
+        check(LinkBridgePlugin.PrivateRules.isInside(228, 328, 100, 200, 128), "Coordinate inside 256x256 boundary");
+        check(!LinkBridgePlugin.PrivateRules.isInside(229, 200, 100, 200, 128), "Coordinate outside 256x256 boundary");
         var owner = UUID.randomUUID();
         var member = UUID.randomUUID();
         var stranger = UUID.randomUUID();
@@ -229,8 +233,8 @@ public final class InventoryNbtTest {
         // Fuel rules
         check(LinkBridgePlugin.FuelRules.fuelDuration(1) == 7200L, "Tier 1 fuel gives 2 hours");
         check(LinkBridgePlugin.FuelRules.fuelDuration(4) == 21600L, "Tier 4 fuel gives 6 hours");
-        check(LinkBridgePlugin.FuelRules.fuelRadius(1) == 1, "Tier 1 fuel gives radius 1 (3x3)");
-        check(LinkBridgePlugin.FuelRules.fuelRadius(4) == 7, "Tier 4 fuel gives radius 7 (15x15)");
+        check(LinkBridgePlugin.FuelRules.fuelRadius(1) == 16, "Tier 1 fuel gives radius 16 (2x2 chunks / 32x32)");
+        check(LinkBridgePlugin.FuelRules.fuelRadius(4) == 128, "Tier 4 fuel gives radius 128 (16x16 chunks / 256x256)");
         check(LinkBridgePlugin.FuelRules.calculateNewTier(1, 4) == 4, "Higher crystal tier upgrades zone tier");
         check(LinkBridgePlugin.FuelRules.calculateNewTier(4, 2) == 4, "Lower crystal tier retains existing higher tier");
         check(LinkBridgePlugin.FuelRules.calculateNewFuel(1000L, 1) == 8200L, "Fuel addition accumulates duration");

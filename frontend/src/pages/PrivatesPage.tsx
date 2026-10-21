@@ -13,6 +13,7 @@ import {
 import {
   detectFuelCrystal,
   formatFuelTime,
+  radiusToChunks,
   PRIVATE_BLOCK_PRICES,
   type FuelCrystalInfo,
 } from '../lib/fuel'
@@ -302,7 +303,8 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                 <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', fontSize: '13px' }}>
                   <dt style={{ color: 'var(--muted)' }}>Footprint:</dt>
                   <dd style={{ margin: 0, fontWeight: 600 }}>
-                    {block.size}×{block.size} blocks <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(Radius: {block.radius})</span>
+                    {radiusToChunks(block.radius)}×{radiusToChunks(block.radius)} chunks ({block.size}×{block.size} blocks){' '}
+                    <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(Full World Height)</span>
                   </dd>
 
                   <dt style={{ color: 'var(--muted)' }}>Fuel Level:</dt>

@@ -4,6 +4,7 @@ import {
   detectFuelCrystal,
   formatFuelTime,
   radiusToSize,
+  radiusToChunks,
   PRIVATE_BLOCK_PRICES,
   FUEL_CRYSTAL_TYPES,
 } from '../src/lib/fuel.ts'
@@ -54,10 +55,17 @@ test('formatFuelTime renders depleted state and formatted hours, minutes, second
 })
 
 test('radiusToSize accurately maps protection radius to square block diameter', () => {
-  assert.equal(radiusToSize(1), 3) // Tier 1: 3x3
-  assert.equal(radiusToSize(3), 7) // Tier 2: 7x7
-  assert.equal(radiusToSize(5), 11) // Tier 3: 11x11
-  assert.equal(radiusToSize(7), 15) // Tier 4: 15x15
+  assert.equal(radiusToSize(16), 32) // Tier 1: 32x32
+  assert.equal(radiusToSize(40), 80) // Tier 2: 80x80
+  assert.equal(radiusToSize(80), 160) // Tier 3: 160x160
+  assert.equal(radiusToSize(128), 256) // Tier 4: 256x256
+})
+
+test('radiusToChunks accurately maps protection radius to chunk dimensions', () => {
+  assert.equal(radiusToChunks(16), 2) // Tier 1: 2x2 chunks
+  assert.equal(radiusToChunks(40), 5) // Tier 2: 5x5 chunks
+  assert.equal(radiusToChunks(80), 10) // Tier 3: 10x10 chunks
+  assert.equal(radiusToChunks(128), 16) // Tier 4: 16x16 chunks
 })
 
 test('PRIVATE_BLOCK_PRICES matches the server prices for cores 1, 2, and 3', () => {

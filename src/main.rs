@@ -5354,7 +5354,7 @@ async fn list_private_blocks(
     let mut blocks = Vec::new();
     for r in rows {
         let radius: i32 = r.get("radius");
-        let size = 2 * radius + 1;
+        let size = radius_to_size(radius);
         blocks.push(serde_json::json!({
             "id": r.get::<String, _>("id"),
             "uuid": r.get::<String, _>("uuid"),
@@ -5398,7 +5398,7 @@ async fn sync_private_block(
     require_service_token(&headers)?;
     if !is_uuid(&body.uuid)
         || !(1..=3).contains(&body.block_index)
-        || !matches!(body.radius, 1 | 3 | 5 | 7)
+        || !matches!(body.radius, 16 | 40 | 80 | 128)
         || !(1..=4).contains(&body.fuel_tier)
         || body.fuel_seconds < 0
     {
@@ -5460,7 +5460,7 @@ async fn get_player_privates(
     let mut blocks = Vec::new();
     for r in rows {
         let radius: i32 = r.get("radius");
-        let size = 2 * radius + 1;
+        let size = radius_to_size(radius);
         blocks.push(serde_json::json!({
             "id": r.get::<String, _>("id"),
             "block_index": r.get::<i32, _>("block_index"),
@@ -5514,11 +5514,21 @@ fn fuel_duration(tier: i32) -> i64 {
 
 fn fuel_radius(tier: i32) -> i32 {
     match tier {
-        1 => 1,
-        2 => 3,
-        3 => 5,
-        4 => 7,
-        _ => 1,
+        1 => 16,
+        2 => 40,
+        3 => 80,
+        4 => 128,
+        _ => 16,
+    }
+}
+
+fn radius_to_size(radius: i32) -> i32 {
+    match radius {
+        16 => 32,
+        40 => 80,
+        80 => 160,
+        128 => 256,
+        r => 2 * r,
     }
 }
 
@@ -5639,7 +5649,7 @@ async fn deposit_player_private_fuel(
         "fuel_seconds": new_fuel_seconds,
         "fuel_tier": new_fuel_tier,
         "radius": new_radius,
-        "size": 2 * new_radius + 1,
+        "size": radius_to_size(new_radius),
         "added_seconds": added_seconds
     })))
 }
@@ -13363,7 +13373,7 @@ mod test {
             "y": 64,
             "z": 200,
             "placed": true,
-            "radius": 7,
+            "radius": 128,
             "fuel_seconds": 21600,
             "fuel_tier": 4,
             "members": [test_uuid(&random_ip())]
@@ -13373,7 +13383,7 @@ mod test {
 
         let list_res2 = get_internal(&pool, &format!("/internal/private/list?uuid={uuid}"), Some(&token), &ip).await?;
         let list2 = body_json(list_res2).await?;
-        assert_eq!(list2[0]["size"], 15);
+        assert_eq!(list2[0]["size"], 256);
         assert_eq!(list2[0]["fuel_tier"], 4);
         assert_eq!(list2[0]["fuel_seconds"], 21600);
 
@@ -13444,7 +13454,8 @@ mod test {
         assert_eq!(priv_arr.as_array().unwrap().len(), 3);
         assert_eq!(priv_arr[0]["block_index"], 1);
         assert_eq!(priv_arr[0]["placed"], true);
-        assert_eq!(priv_arr[0]["radius"], 7);
+        assert_eq!(priv_arr[0]["radius"], 128);
+        assert_eq!(priv_arr[0]["size"], 256);
 
         let mut test_slots = vec![serde_json::Value::Null; 41];
         test_slots[0] = serde_json::json!({
@@ -13825,7 +13836,7 @@ mod test {
         // 2. Add private block with 1 hour of fuel (3600 seconds <= 7200 -> LOW FUEL ALERT)
         sqlx::query(
             "INSERT INTO private_blocks (uuid, block_index, world, x, y, z, placed, radius, fuel_seconds, fuel_tier)
-             VALUES ($1, 1, 'world', 100, 64, -200, true, 1, 3600, 1)"
+             VALUES ($1, 1, 'world', 100, 64, -200, true, 16, 3600, 1)"
         )
         .bind(&player_uuid)
         .execute(&pool)

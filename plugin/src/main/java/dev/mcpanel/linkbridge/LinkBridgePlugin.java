@@ -737,11 +737,33 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
 
         public static int radiusToSize(int radius) {
-            return 2 * radius + 1;
+            return switch (radius) {
+                case 16 -> 32;
+                case 40 -> 80;
+                case 80 -> 160;
+                case 128 -> 256;
+                default -> radius * 2;
+            };
+        }
+
+        public static int radiusToChunks(int radius) {
+            return switch (radius) {
+                case 16 -> 2;
+                case 40 -> 5;
+                case 80 -> 10;
+                case 128 -> 16;
+                default -> Math.max(1, (radius * 2) / 16);
+            };
         }
 
         public static int sizeToRadius(int size) {
-            return (size - 1) / 2;
+            return switch (size) {
+                case 32 -> 16;
+                case 80 -> 40;
+                case 160 -> 80;
+                case 256 -> 128;
+                default -> size / 2;
+            };
         }
 
         public static boolean isInside(int x, int z, int coreX, int coreZ, int radius) {
@@ -807,11 +829,11 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         public static int fuelRadius(int tier) {
             return switch (tier) {
-                case 1 -> 1;
-                case 2 -> 3;
-                case 3 -> 5;
-                case 4 -> 7;
-                default -> 1;
+                case 1 -> 16;
+                case 2 -> 40;
+                case 3 -> 80;
+                case 4 -> 128;
+                default -> 16;
             };
         }
 
@@ -3476,7 +3498,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     String markerId = "core_" + pb.id;
                     String shapeId = "zone_" + pb.id;
 
-                    int size = pb.radius * 2 + 1;
+                    int size = PrivateRules.radiusToSize(pb.radius);
+                    int chunks = PrivateRules.radiusToChunks(pb.radius);
                     long hours = pb.fuelSeconds / 3600;
                     long mins = (pb.fuelSeconds % 3600) / 60;
                     String fuelText = pb.fuelSeconds > 0 ? (hours + "h " + mins + "m") : "<span style='color:#ef4444'>DEPLETED</span>";
@@ -3484,7 +3507,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     String detail = "<div style='font-family:sans-serif;padding:6px;min-width:180px;'>"
                             + "<b style='color:#0284c7;font-size:1.1em;'>Protection Core #" + pb.blockIndex + "</b><br>"
                             + "<b>Owner:</b> " + pb.ownerName + "<br>"
-                            + "<b>Shield Area:</b> " + size + "×" + size + " (Tier " + pb.fuelTier + ")<br>"
+                            + "<b>Shield Area:</b> " + size + "×" + size + " (" + chunks + "×" + chunks + " chunks, Full Height)<br>"
                             + "<b>Fuel Remaining:</b> " + fuelText + "<br>"
                             + "<b>Coordinates:</b> " + pb.x + ", " + pb.y + ", " + pb.z
                             + "</div>";
@@ -3509,7 +3532,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                                 : new de.bluecolored.bluemap.api.math.Color(239, 68, 68, 0.2f);
 
                         de.bluecolored.bluemap.api.markers.ShapeMarker zone = de.bluecolored.bluemap.api.markers.ShapeMarker.builder()
-                                .label("Territory: " + pb.ownerName + " (" + size + "×" + size + ")")
+                                .label("Territory: " + pb.ownerName + " (" + chunks + "×" + chunks + " chunks)")
                                 .shape(shape, pb.y)
                                 .lineColor(lineColor)
                                 .fillColor(fillColor)
@@ -3859,9 +3882,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return;
             }
             int size = PrivateRules.radiusToSize(pb.radius);
+            int chunks = PrivateRules.radiusToChunks(pb.radius);
             player.sendMessage("§6=== Protection Zone Info ===");
             player.sendMessage("§7Owner: §f" + pb.ownerName);
-            player.sendMessage(String.format(Locale.ROOT, "§7Size: §e%dx%d §7(Radius: %d)", size, size, pb.radius));
+            player.sendMessage(String.format(Locale.ROOT, "§7Size: §e%dx%d blocks §7(%dx%d chunks, Full World Height)", size, size, chunks, chunks));
             player.sendMessage("§7Fuel Time: " + (pb.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(pb.fuelSeconds) : "§c00:00 (Inactive)"));
             player.sendMessage("§7Members: §f" + (pb.members.isEmpty() ? "None" : pb.members.size() + " players"));
             return;
@@ -4349,8 +4373,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     }
 
     private void openCoreGui(Player player, PlacedPrivateBlock core) {
-        int size = PrivateRules.radiusToSize(core.radius);
-        String title = "Core #" + core.blockIndex + " (" + size + "x" + size + ")";
+        int chunks = PrivateRules.radiusToChunks(core.radius);
+        String title = "Core #" + core.blockIndex + " (" + chunks + "x" + chunks + " chunks)";
         org.bukkit.inventory.Inventory inv = org.bukkit.Bukkit.createInventory(null, 27, Component.text(title));
         updateCoreGuiItems(inv, core);
         player.openInventory(inv);
@@ -4359,12 +4383,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     private void updateCoreGuiItems(org.bukkit.inventory.Inventory inv, PlacedPrivateBlock core) {
         int size = PrivateRules.radiusToSize(core.radius);
+        int chunks = PrivateRules.radiusToChunks(core.radius);
         ItemStack info = new ItemStack(Material.LODESTONE);
         ItemMeta im = info.getItemMeta();
         im.displayName(Component.text("§6§lProtection Core Info"));
         im.lore(List.of(
             Component.text("§7Owner: §f" + core.ownerName),
-            Component.text(String.format(Locale.ROOT, "§7Active Size: §e%dx%d §7(Radius %d)", size, size, core.radius)),
+            Component.text(String.format(Locale.ROOT, "§7Active Size: §e%dx%d blocks §7(%dx%d chunks, Full Height)", size, size, chunks, chunks)),
             Component.text("§7Fuel Tier: §bTier " + core.fuelTier),
             Component.text("§7Remaining Fuel: " + (core.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(core.fuelSeconds) : "§c00:00 (Inactive)")),
             Component.text("§7Trusted Members: §f" + (core.members.isEmpty() ? "None" : core.members.size() + " players"))
@@ -4379,10 +4404,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             Component.text("§7• Click with a fuel crystal on your cursor"),
             Component.text("§7• Or click this hopper to use one from inventory"),
             Component.text("§7• Or shift-click any fuel crystal below:"),
-            Component.text("§6  - Ember Shard (T1): §7+2h (3x3)"),
-            Component.text("§b  - Cobalt Crystal (T2): §7+3h (7x7)"),
-            Component.text("§c  - Crimson Core (T3): §7+4h (11x11)"),
-            Component.text("§d  - Astral Void Crystal (T4): §7+6h (15x15)")
+            Component.text("§6  - Ember Shard (T1): §7+2h (2x2 chunks / 32x32)"),
+            Component.text("§b  - Cobalt Crystal (T2): §7+3h (5x5 chunks / 80x80)"),
+            Component.text("§c  - Crimson Core (T3): §7+4h (10x10 chunks / 160x160)"),
+            Component.text("§d  - Astral Void Crystal (T4): §7+6h (16x16 chunks / 256x256)")
         ));
         fuelSlot.setItemMeta(fm);
         inv.setItem(13, fuelSlot);
@@ -4416,9 +4441,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         syncPrivateBlockAsync(core);
         player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_BEACON_POWER_SELECT, 1.0f, 1.0f);
         int size = PrivateRules.radiusToSize(core.radius);
+        int chunks = PrivateRules.radiusToChunks(core.radius);
         player.sendMessage(String.format(Locale.ROOT,
-            "§a[Private] Deposited fuel! New size: %dx%d | Fuel remaining: %s",
-            size, size, ExpeditionRules.formatDuration(core.fuelSeconds)));
+            "§a[Private] Deposited fuel! New size: %dx%d blocks (%dx%d chunks, Full Height) | Fuel remaining: %s",
+            size, size, chunks, chunks, ExpeditionRules.formatDuration(core.fuelSeconds)));
         if (topInv != null) {
             updateCoreGuiItems(topInv, core);
         }
@@ -4683,7 +4709,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     loc.getBlockY(),
                     loc.getBlockZ(),
                     true,
-                    1,
+                    16,
                     0L,
                     1,
                     new ArrayList<>()
@@ -4805,9 +4831,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 openCoreGui(player, core);
             } else {
                 int size = PrivateRules.radiusToSize(core.radius);
+                int chunks = PrivateRules.radiusToChunks(core.radius);
                 player.sendMessage(String.format(Locale.ROOT,
-                    "§6[Protected] §7Owner: §f%s §7| Size: §e%dx%d §7| Protection: %s",
-                    core.ownerName, size, size, core.fuelSeconds > 0 ? "§aActive" : "§cDormant (No Fuel)"));
+                    "§6[Protected] §7Owner: §f%s §7| Size: §e%dx%d blocks (%dx%d chunks, Full Height) §7| Protection: %s",
+                    core.ownerName, size, size, chunks, chunks, core.fuelSeconds > 0 ? "§aActive" : "§cDormant (No Fuel)"));
             }
             return;
         }
