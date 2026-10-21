@@ -1,5 +1,15 @@
 # Project checkpoint — 2026-10-21
 
+## Minefall: Falling Pickaxe minigame — 2026-10-21
+
+- Developed the new minigame "Minefall" ("Falling Pickaxe") in branch `minefall`:
+  - Player selects from all 6 Minecraft pickaxes (Wooden, Stone, Iron, Golden, Diamond, Netherite) with tiered durabilities and Golden Pickaxe 2x Midas ore multiplier.
+  - Automatic mine generation across 9 columns and 22 rows with rock progression (Stone, Deepslate, Obsidian, Bedrock), TNT blocks (3×3 area detonation), Crafting Tables (+3 durability repair), and multi-tier mineral ores (Coal, Copper, Iron, Gold, Redstone, Lapis, Diamond, Emerald, Ancient Debris).
+  - Authoritative transactional server outcome (`POST /api/minigames/minefall/play`), debiting bet and crediting payout from shared player coin balance (`/bal`), with idempotent retry by `client_id` and economic policy scaling (~92.0% baseline RTP).
+  - Migration `0023_minefall_minigame.sql` adds `'minefall'` to `minigame_rounds` check constraint.
+  - 2D Canvas physics animation engine with authentic pixel textures from Mojang assets, smooth camera panning down the mine shaft, particles, TNT shockwaves, repair sparkle effects, and real-time durability bar.
+  - Test-driven development (TDD): comprehensive test suites in `frontend/tests/minefall.test.ts`, `frontend/tests/api.test.ts`, and `src/main.rs`.
+
 
 ## Live 3D map restored (Caddy `map` route) — 2026-10-21
 

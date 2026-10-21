@@ -1,4 +1,4 @@
-import type { ChestSpin, MinesRound, MinigameRules } from './minigames'
+import type { ChestSpin, MinesRound, MinigameRules, MinefallRound, PickaxeTier } from './minigames'
 
 export type Me = {
   id: number
@@ -457,6 +457,20 @@ export async function cashOutMines(roundId: string): Promise<MinesRound> {
   const response = await send('POST', '/api/minigames/mines/cashout', { round_id: roundId })
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as MinesRound
+}
+
+
+export async function playMinefall(input: {
+  uuid: string
+  bet: number
+  pickaxe: PickaxeTier
+  column: number
+  client_id: string
+  economy_level?: number
+}): Promise<MinefallRound> {
+  const response = await send('POST', '/api/minigames/minefall/play', input)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as MinefallRound
 }
 
 // --- Admin Endpoints --------------------------------------------------------

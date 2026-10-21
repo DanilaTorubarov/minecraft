@@ -1,10 +1,13 @@
 // Minigame rules, wire types and the small decisions the window has to make.
 //
-// Deliberately imports nothing: `node --test` loads this file directly, and the
-// project's tests may only touch asset-free modules. Icons and React live in the
+// Deliberately imports nothing asset-heavy: `node --test` loads this file directly,
+// and the project's tests may only touch asset-free modules. Icons and React live in the
 // components; the numbers and the messages live here.
 //
 // Balances and stakes are whole coins; multipliers are integer hundredths.
+
+import type { MinefallRules } from './minefall.ts'
+export type { PickaxeTier, BlockType, MinefallEvent, MinefallRound, MinefallRules } from './minefall.ts'
 
 export type ChestSymbolRules = {
   id: string
@@ -46,6 +49,7 @@ export type MinigameRules = {
   max_bet: number
   chest: ChestRules
   mines: MinesRules
+  minefall: MinefallRules
 }
 
 /** One paid-for chest spin. The reels are the server's roll, not the browser's. */

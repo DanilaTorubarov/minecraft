@@ -93,6 +93,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/minigames/mines/start", post(start_mines))
         .route("/api/minigames/mines/reveal", post(reveal_mines))
         .route("/api/minigames/mines/cashout", post(cash_out_mines))
+        .route("/api/minigames/minefall/play", post(play_minefall))
         .route("/api/players/{uuid}/skin", get(player_skin).post(upload_player_skin)
             .layer(axum::extract::DefaultBodyLimit::max(300 * 1024)))
         .route("/api/players/{uuid}/inventory", get(player_inventory))
@@ -3544,12 +3545,30 @@ fn new_mines_state_using(
 }
 
 #[derive(serde::Serialize)]
+struct MinefallPickaxeRulesView {
+    id: &'static str,
+    name: &'static str,
+    durability: i64,
+    ore_bonus_x100: i64,
+    description: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct MinefallRulesView {
+    grid_cols: usize,
+    grid_rows: usize,
+    pickaxes: Vec<MinefallPickaxeRulesView>,
+    rtp_x10000: i64,
+}
+
+#[derive(serde::Serialize)]
 struct MinigameConfigView {
     min_bet: i64,
     max_bet: i64,
     economy: EconomyPolicy,
     chest: ChestRulesView,
     mines: MinesRulesView,
+    minefall: MinefallRulesView,
 }
 
 #[derive(serde::Serialize)]
@@ -3641,6 +3660,55 @@ async fn minigame_config(
                         },
                     })
                     .collect(),
+            },
+            minefall: MinefallRulesView {
+                grid_cols: MINEFALL_COLS,
+                grid_rows: MINEFALL_ROWS,
+                pickaxes: vec![
+                    MinefallPickaxeRulesView {
+                        id: "wooden",
+                        name: "Wooden Pickaxe",
+                        durability: 6,
+                        ore_bonus_x100: 100,
+                        description: "Fragile tool with 6 durability. High volatility.",
+                    },
+                    MinefallPickaxeRulesView {
+                        id: "stone",
+                        name: "Stone Pickaxe",
+                        durability: 10,
+                        ore_bonus_x100: 100,
+                        description: "Dependable stone head with 10 durability.",
+                    },
+                    MinefallPickaxeRulesView {
+                        id: "iron",
+                        name: "Iron Pickaxe",
+                        durability: 16,
+                        ore_bonus_x100: 100,
+                        description: "Balanced standard tool with 16 durability.",
+                    },
+                    MinefallPickaxeRulesView {
+                        id: "golden",
+                        name: "Golden Pickaxe",
+                        durability: 5,
+                        ore_bonus_x100: 200,
+                        description: "Midas touch: extremely brittle (5 durability), but 2x ore value!",
+                    },
+                    MinefallPickaxeRulesView {
+                        id: "diamond",
+                        name: "Diamond Pickaxe",
+                        durability: 24,
+                        ore_bonus_x100: 100,
+                        description: "High endurance tool with 24 durability for deep veins.",
+                    },
+                    MinefallPickaxeRulesView {
+                        id: "netherite",
+                        name: "Netherite Pickaxe",
+                        durability: 32,
+                        ore_bonus_x100: 100,
+                        description: "Ultimate resilience: 32 durability to conquer the deep abyss.",
+                    },
+                ],
+                rtp_x10000: minefall_rtp_at(level),
             },
         }),
     ))
@@ -3962,6 +4030,622 @@ where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
         balance: row.try_get("balance").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     }))
 }
+
+const MINEFALL_COLS: usize = 9;
+const MINEFALL_ROWS: usize = 22;
+const MINEFALL_CRAFTING_TABLE_REPAIR: i64 = 3;
+
+fn minefall_rtp_at(level: i32) -> i64 {
+    9200 + i64::from(level) * 150
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MinefallPickaxe {
+    Wooden,
+    Stone,
+    Iron,
+    Golden,
+    Diamond,
+    Netherite,
+}
+
+impl MinefallPickaxe {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "wooden" => Some(Self::Wooden),
+            "stone" => Some(Self::Stone),
+            "iron" => Some(Self::Iron),
+            "golden" => Some(Self::Golden),
+            "diamond" => Some(Self::Diamond),
+            "netherite" => Some(Self::Netherite),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wooden => "wooden",
+            Self::Stone => "stone",
+            Self::Iron => "iron",
+            Self::Golden => "golden",
+            Self::Diamond => "diamond",
+            Self::Netherite => "netherite",
+        }
+    }
+
+    fn base_durability(&self) -> i64 {
+        match self {
+            Self::Wooden => 6,
+            Self::Stone => 10,
+            Self::Iron => 16,
+            Self::Golden => 5,
+            Self::Diamond => 24,
+            Self::Netherite => 32,
+        }
+    }
+
+    fn ore_bonus_multiplier(&self) -> i64 {
+        match self {
+            Self::Golden => 2,
+            _ => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MinefallBlock {
+    Air,
+    Stone,
+    Deepslate,
+    Obsidian,
+    Bedrock,
+    Tnt,
+    CraftingTable,
+    CoalOre,
+    CopperOre,
+    IronOre,
+    GoldOre,
+    RedstoneOre,
+    LapisOre,
+    DiamondOre,
+    EmeraldOre,
+    AncientDebris,
+}
+
+impl MinefallBlock {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Air => "air",
+            Self::Stone => "stone",
+            Self::Deepslate => "deepslate",
+            Self::Obsidian => "obsidian",
+            Self::Bedrock => "bedrock",
+            Self::Tnt => "tnt",
+            Self::CraftingTable => "crafting_table",
+            Self::CoalOre => "coal_ore",
+            Self::CopperOre => "copper_ore",
+            Self::IronOre => "iron_ore",
+            Self::GoldOre => "gold_ore",
+            Self::RedstoneOre => "redstone_ore",
+            Self::LapisOre => "lapis_ore",
+            Self::DiamondOre => "diamond_ore",
+            Self::EmeraldOre => "emerald_ore",
+            Self::AncientDebris => "ancient_debris",
+        }
+    }
+
+    fn hits_needed(&self) -> i64 {
+        match self {
+            Self::Air => 0,
+            Self::Stone => 1,
+            Self::Deepslate => 2,
+            Self::Obsidian => 3,
+            Self::AncientDebris => 2,
+            Self::Bedrock => 9999,
+            _ => 1,
+        }
+    }
+
+    fn is_ore(&self) -> bool {
+        matches!(
+            self,
+            Self::CoalOre
+                | Self::CopperOre
+                | Self::IronOre
+                | Self::GoldOre
+                | Self::RedstoneOre
+                | Self::LapisOre
+                | Self::DiamondOre
+                | Self::EmeraldOre
+                | Self::AncientDebris
+        )
+    }
+
+    fn ore_boost_x100(&self) -> i64 {
+        match self {
+            Self::CoalOre => 5,
+            Self::CopperOre => 8,
+            Self::IronOre => 15,
+            Self::GoldOre => 30,
+            Self::RedstoneOre => 20,
+            Self::LapisOre => 25,
+            Self::DiamondOre => 60,
+            Self::EmeraldOre => 100,
+            Self::AncientDebris => 200,
+            _ => 0,
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct MinefallAffectedView {
+    row: usize,
+    col: usize,
+    block: String,
+    #[serde(rename = "isOre")]
+    is_ore: bool,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "boostX100")]
+    boost_x100: Option<i64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct MinefallEventView {
+    #[serde(rename = "type")]
+    event_type: String,
+    row: usize,
+    col: usize,
+    block: String,
+    #[serde(rename = "durabilityLeft")]
+    durability_left: i64,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "boostX100")]
+    boost_x100: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    affected: Option<Vec<MinefallAffectedView>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MinefallStoredState {
+    economy_level: i32,
+    pickaxe: String,
+    column: i64,
+    grid: Vec<Vec<String>>,
+    events: Vec<MinefallEventView>,
+    ores_collected: std::collections::BTreeMap<String, i64>,
+    multiplier_x100: i64,
+}
+
+#[derive(serde::Serialize)]
+struct MinefallPlayView {
+    economy_level: i32,
+    rtp_x10000: i64,
+    round_id: String,
+    bet: i64,
+    pickaxe: String,
+    column: i64,
+    grid: Vec<Vec<String>>,
+    events: Vec<MinefallEventView>,
+    ores_collected: std::collections::BTreeMap<String, i64>,
+    multiplier_x100: i64,
+    payout: i64,
+    balance: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct MinefallPlayRequest {
+    uuid: String,
+    bet: i64,
+    pickaxe: String,
+    column: i64,
+    client_id: String,
+    #[serde(default)]
+    economy_level: i32,
+}
+
+fn simulate_minefall(
+    pickaxe_str: &str,
+    column: usize,
+    _level: i32,
+) -> Result<(Vec<Vec<String>>, Vec<MinefallEventView>, std::collections::BTreeMap<String, i64>, i64), StatusCode> {
+    let pickaxe = MinefallPickaxe::from_str(pickaxe_str).ok_or(StatusCode::BAD_REQUEST)?;
+    if column >= MINEFALL_COLS {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut grid_blocks = vec![vec![MinefallBlock::Stone; MINEFALL_COLS]; MINEFALL_ROWS];
+    for r in 0..MINEFALL_ROWS {
+        for c in 0..MINEFALL_COLS {
+            if r == MINEFALL_ROWS - 1 {
+                grid_blocks[r][c] = MinefallBlock::Bedrock;
+            } else if r < 7 {
+                let roll = random_below(100)? as i64;
+                grid_blocks[r][c] = if roll < 4 {
+                    MinefallBlock::CraftingTable
+                } else if roll < 9 {
+                    MinefallBlock::Tnt
+                } else if roll < 21 {
+                    MinefallBlock::CoalOre
+                } else if roll < 31 {
+                    MinefallBlock::CopperOre
+                } else if roll < 39 {
+                    MinefallBlock::IronOre
+                } else {
+                    MinefallBlock::Stone
+                };
+            } else if r < 15 {
+                let roll = random_below(100)? as i64;
+                grid_blocks[r][c] = if roll < 4 {
+                    MinefallBlock::CraftingTable
+                } else if roll < 10 {
+                    MinefallBlock::Tnt
+                } else if roll < 18 {
+                    MinefallBlock::IronOre
+                } else if roll < 26 {
+                    MinefallBlock::GoldOre
+                } else if roll < 34 {
+                    MinefallBlock::RedstoneOre
+                } else if roll < 40 {
+                    MinefallBlock::LapisOre
+                } else if roll < 70 {
+                    MinefallBlock::Deepslate
+                } else {
+                    MinefallBlock::Stone
+                };
+            } else {
+                let roll = random_below(100)? as i64;
+                grid_blocks[r][c] = if roll < 3 {
+                    MinefallBlock::CraftingTable
+                } else if roll < 10 {
+                    MinefallBlock::Tnt
+                } else if roll < 18 {
+                    MinefallBlock::DiamondOre
+                } else if roll < 23 {
+                    MinefallBlock::EmeraldOre
+                } else if roll < 27 {
+                    MinefallBlock::AncientDebris
+                } else if roll < 60 {
+                    MinefallBlock::Deepslate
+                } else {
+                    MinefallBlock::Obsidian
+                };
+            }
+        }
+    }
+
+    let initial_grid_strings: Vec<Vec<String>> = grid_blocks
+        .iter()
+        .map(|row| row.iter().map(|b| b.as_str().to_string()).collect())
+        .collect();
+
+    let mut durability = pickaxe.base_durability();
+    let max_durability = durability;
+    let bonus_mult = pickaxe.ore_bonus_multiplier();
+    let mut current_row = 0;
+    let mut current_col = column;
+    let mut mult_x100 = 0i64;
+    let mut ores_collected = std::collections::BTreeMap::new();
+    let mut events = Vec::new();
+    let mut block_hits = vec![vec![0i64; MINEFALL_COLS]; MINEFALL_ROWS];
+
+    let mut iterations = 0;
+    while iterations < 300 && durability > 0 && current_row < MINEFALL_ROWS - 1 {
+        iterations += 1;
+        let block = grid_blocks[current_row][current_col];
+
+        if block == MinefallBlock::Air {
+            current_row += 1;
+            let drift = (random_below(3)? as i64) - 1;
+            let next_col = (current_col as i64 + drift).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
+            current_col = next_col;
+            continue;
+        }
+
+        if block == MinefallBlock::Bedrock {
+            events.push(MinefallEventView {
+                event_type: "reach_bottom".to_string(),
+                row: current_row,
+                col: current_col,
+                block: "bedrock".to_string(),
+                durability_left: durability,
+                boost_x100: None,
+                affected: None,
+            });
+            break;
+        }
+
+        if block == MinefallBlock::Tnt {
+            grid_blocks[current_row][current_col] = MinefallBlock::Air;
+            let mut affected = Vec::new();
+            for dr in -1i64..=1 {
+                for dc in -1i64..=1 {
+                    let nr = current_row as i64 + dr;
+                    let nc = current_col as i64 + dc;
+                    if nr >= 0 && nr < (MINEFALL_ROWS - 1) as i64 && nc >= 0 && nc < MINEFALL_COLS as i64 {
+                        let r_idx = nr as usize;
+                        let c_idx = nc as usize;
+                        let b = grid_blocks[r_idx][c_idx];
+                        if b != MinefallBlock::Air && b != MinefallBlock::Bedrock {
+                            grid_blocks[r_idx][c_idx] = MinefallBlock::Air;
+                            let is_ore = b.is_ore();
+                            let boost = if is_ore {
+                                let b_val = b.ore_boost_x100() * bonus_mult;
+                                mult_x100 += b_val;
+                                *ores_collected.entry(b.as_str().to_string()).or_insert(0) += 1;
+                                Some(b_val)
+                            } else {
+                                None
+                            };
+                            affected.push(MinefallAffectedView {
+                                row: r_idx,
+                                col: c_idx,
+                                block: b.as_str().to_string(),
+                                is_ore,
+                                boost_x100: boost,
+                            });
+                        }
+                    }
+                }
+            }
+            events.push(MinefallEventView {
+                event_type: "tnt_blast".to_string(),
+                row: current_row,
+                col: current_col,
+                block: "tnt".to_string(),
+                durability_left: durability,
+                boost_x100: None,
+                affected: Some(affected),
+            });
+            current_row += 1;
+            continue;
+        }
+
+        if block == MinefallBlock::CraftingTable {
+            grid_blocks[current_row][current_col] = MinefallBlock::Air;
+            durability = (durability + MINEFALL_CRAFTING_TABLE_REPAIR).min(max_durability);
+            events.push(MinefallEventView {
+                event_type: "repair".to_string(),
+                row: current_row,
+                col: current_col,
+                block: "crafting_table".to_string(),
+                durability_left: durability,
+                boost_x100: None,
+                affected: None,
+            });
+            current_row += 1;
+            continue;
+        }
+
+        if block.is_ore() {
+            durability -= 1;
+            grid_blocks[current_row][current_col] = MinefallBlock::Air;
+            let boost = block.ore_boost_x100() * bonus_mult;
+            mult_x100 += boost;
+            *ores_collected.entry(block.as_str().to_string()).or_insert(0) += 1;
+            events.push(MinefallEventView {
+                event_type: "collect_ore".to_string(),
+                row: current_row,
+                col: current_col,
+                block: block.as_str().to_string(),
+                durability_left: durability,
+                boost_x100: Some(boost),
+                affected: None,
+            });
+            if durability <= 0 {
+                events.push(MinefallEventView {
+                    event_type: "pickaxe_break".to_string(),
+                    row: current_row,
+                    col: current_col,
+                    block: block.as_str().to_string(),
+                    durability_left: 0,
+                    boost_x100: None,
+                    affected: None,
+                });
+                break;
+            }
+            current_row += 1;
+            continue;
+        }
+
+        durability -= 1;
+        block_hits[current_row][current_col] += 1;
+        let hits = block_hits[current_row][current_col];
+        if hits >= block.hits_needed() {
+            grid_blocks[current_row][current_col] = MinefallBlock::Air;
+            events.push(MinefallEventView {
+                event_type: "break".to_string(),
+                row: current_row,
+                col: current_col,
+                block: block.as_str().to_string(),
+                durability_left: durability,
+                boost_x100: None,
+                affected: None,
+            });
+            current_row += 1;
+        } else {
+            events.push(MinefallEventView {
+                event_type: "hit".to_string(),
+                row: current_row,
+                col: current_col,
+                block: block.as_str().to_string(),
+                durability_left: durability,
+                boost_x100: None,
+                affected: None,
+            });
+            let dir = if random_below(2)? == 0 { -1i64 } else { 1i64 };
+            current_col = (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
+        }
+
+        if durability <= 0 {
+            events.push(MinefallEventView {
+                event_type: "pickaxe_break".to_string(),
+                row: current_row,
+                col: current_col,
+                block: block.as_str().to_string(),
+                durability_left: 0,
+                boost_x100: None,
+                affected: None,
+            });
+            break;
+        }
+    }
+
+    if current_row >= MINEFALL_ROWS - 1 && durability > 0 {
+        events.push(MinefallEventView {
+            event_type: "reach_bottom".to_string(),
+            row: MINEFALL_ROWS - 1,
+            col: current_col,
+            block: "bedrock".to_string(),
+            durability_left: durability,
+            boost_x100: None,
+            affected: None,
+        });
+    }
+
+    Ok((initial_grid_strings, events, ores_collected, mult_x100))
+}
+
+async fn return_minefall_round<'e, E>(
+    executor: E,
+    user_id: i64,
+    client_id: &str,
+) -> Result<Option<MinefallPlayView>, StatusCode>
+where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
+    let row = sqlx::query(
+        "SELECT r.id::text AS id, r.bet, r.payout, r.state::text AS state,
+                COALESCE(ps.coins, 0) AS balance
+           FROM minigame_rounds r
+           LEFT JOIN player_stats ps ON ps.uuid = r.uuid
+          WHERE r.user_id = $1 AND r.client_id = $2::uuid AND r.game = 'minefall'",
+    )
+    .bind(user_id)
+    .bind(client_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else { return Ok(None) };
+    let state_raw: String = row.try_get("state").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let state: MinefallStoredState = serde_json::from_str(&state_raw)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Some(MinefallPlayView {
+        economy_level: state.economy_level,
+        rtp_x10000: minefall_rtp_at(state.economy_level),
+        round_id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        bet: row.try_get("bet").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        pickaxe: state.pickaxe,
+        column: state.column,
+        grid: state.grid,
+        events: state.events,
+        ores_collected: state.ores_collected,
+        multiplier_x100: state.multiplier_x100,
+        payout: row.try_get("payout").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        balance: row.try_get("balance").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    }))
+}
+
+async fn play_minefall(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<MinefallPlayRequest>,
+) -> Result<Json<MinefallPlayView>, StatusCode> {
+    let uuid = input.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) { return Err(StatusCode::BAD_REQUEST); }
+    let bet = validate_bet(input.bet)?;
+    let client_id = input.client_id.trim().to_lowercase();
+    if !is_uuid(&client_id) { return Err(StatusCode::BAD_REQUEST); }
+    if input.column < 0 || input.column >= MINEFALL_COLS as i64 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if MinefallPickaxe::from_str(&input.pickaxe).is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if let Some(view) = return_minefall_round(&pool, user_id, &client_id).await? {
+        return Ok(Json(view));
+    }
+
+    owns_player(&pool, user_id, &uuid).await?;
+    let policy = economy_policy(&pool).await?;
+    if input.economy_level != policy.level {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
+
+    let (grid, events, ores_collected, mult_x100) =
+        simulate_minefall(&input.pickaxe, input.column as usize, policy.level)?;
+    let payout = if mult_x100 > 0 { bet * mult_x100 / 100 } else { 0 };
+    let round_id = new_round_id()?;
+    let stored_state = MinefallStoredState {
+        economy_level: policy.level,
+        pickaxe: input.pickaxe.clone(),
+        column: input.column,
+        grid: grid.clone(),
+        events: events.clone(),
+        ores_collected: ores_collected.clone(),
+        multiplier_x100: mult_x100,
+    };
+    let state_json = serde_json::to_string(&stored_state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(view) = return_minefall_round(&mut *tx, user_id, &client_id).await? {
+        return Ok(Json(view));
+    }
+
+    coin_reason(&mut tx, "minigame_stake", &round_id).await?;
+    let mut balance = debit_coins(&mut tx, &uuid, bet).await?;
+    if payout > 0 {
+        coin_reason(&mut tx, "minigame_payout", &round_id).await?;
+        balance = credit_coins(&mut tx, &uuid, payout).await?;
+    }
+    let outcome = if payout > 0 { "paid" } else { "lost" };
+
+    let inserted = sqlx::query(
+        "INSERT INTO minigame_rounds
+            (id, client_id, user_id, uuid, game, bet, status, payout, outcome, state, settled_at)
+         VALUES ($1::uuid, $2::uuid, $3, $4, 'minefall', $5, 'settled', $6, $7, $8::jsonb, now())
+         ON CONFLICT (user_id, client_id) DO NOTHING
+         RETURNING id",
+    )
+    .bind(&round_id)
+    .bind(&client_id)
+    .bind(user_id)
+    .bind(&uuid)
+    .bind(bet)
+    .bind(payout)
+    .bind(outcome)
+    .bind(&state_json)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if inserted.is_none() {
+        tx.rollback().await.ok();
+        return return_minefall_round(&pool, user_id, &client_id)
+            .await?
+            .map(Json)
+            .ok_or(StatusCode::CONFLICT);
+    }
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(MinefallPlayView {
+        economy_level: policy.level,
+        rtp_x10000: minefall_rtp_at(policy.level),
+        round_id,
+        bet,
+        pickaxe: input.pickaxe,
+        column: input.column,
+        grid,
+        events,
+        ores_collected,
+        multiplier_x100: mult_x100,
+        payout,
+        balance,
+    }))
+}
+
 
 /// One spin, one transaction: the stake leaves the balance, the result is rolled
 /// from OS randomness and any win is credited before the client hears about it.
@@ -10911,6 +11595,70 @@ mod test {
             assert_eq!(presets[index]["mines"], serde_json::json!(preset.mines as i64));
             assert_eq!(presets[index]["rtp_x10000"], serde_json::json!(mines_rtp_x10000(preset)));
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[tokio::test]
+    async fn minefall_play_requires_linked_player_valid_pickaxe_and_is_idempotent() -> TestResult {
+        let pool = connect().await?;
+        let (cookie, _user_id, uuid) = setup_linked_user(&pool).await?;
+        let broke_uuid = test_uuid(&random_ip());
+        fund_coins(&pool, &uuid, 10_000).await?;
+
+        let client_id = test_uuid(&random_ip());
+        let bad_pickaxe = post_session(
+            &pool,
+            "/api/minigames/minefall/play",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 50, "pickaxe": "rubber", "column": 4, "client_id": client_id }),
+        ).await?;
+        assert_eq!(bad_pickaxe.status(), StatusCode::BAD_REQUEST);
+
+        let bad_col = post_session(
+            &pool,
+            "/api/minigames/minefall/play",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 50, "pickaxe": "iron", "column": 99, "client_id": client_id }),
+        ).await?;
+        assert_eq!(bad_col.status(), StatusCode::BAD_REQUEST);
+
+        let broke = post_session(
+            &pool,
+            "/api/minigames/minefall/play",
+            &cookie,
+            serde_json::json!({ "uuid": broke_uuid, "bet": 50, "pickaxe": "iron", "column": 4, "client_id": client_id }),
+        ).await?;
+        assert_eq!(broke.status(), StatusCode::NOT_FOUND);
+
+        let before_bal = coins_of(&pool, &uuid).await?;
+        let play_resp = post_session(
+            &pool,
+            "/api/minigames/minefall/play",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 50, "pickaxe": "iron", "column": 4, "client_id": client_id }),
+        ).await?;
+        assert_eq!(play_resp.status(), StatusCode::OK);
+        let play = body_json(play_resp).await?;
+        assert_eq!(play["pickaxe"], "iron");
+        assert_eq!(play["column"], 4);
+        assert_eq!(play["bet"], 50);
+        let payout = play["payout"].as_i64().unwrap_or(0);
+        let after_bal = coins_of(&pool, &uuid).await?;
+        assert_eq!(after_bal, before_bal - 50 + payout);
+
+        let retry_resp = post_session(
+            &pool,
+            "/api/minigames/minefall/play",
+            &cookie,
+            serde_json::json!({ "uuid": uuid, "bet": 50, "pickaxe": "iron", "column": 4, "client_id": client_id }),
+        ).await?;
+        assert_eq!(retry_resp.status(), StatusCode::OK);
+        let retry = body_json(retry_resp).await?;
+        assert_eq!(retry["round_id"], play["round_id"]);
+        assert_eq!(retry["payout"], play["payout"]);
+        assert_eq!(coins_of(&pool, &uuid).await?, after_bal);
+
         Ok(())
     }
 

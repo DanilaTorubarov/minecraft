@@ -75,3 +75,5 @@ The Lucky Chest mini-game uses the official Minecraft item textures from the cli
 
 The Minesweeper mini-game uses the official Minecraft textures from client assets for its mining theme (`tnt.png` block texture for mines, `iron_ingot.png`, `gold_ingot.png`, and `diamond.png` for safe treasure ores). Mojang's texture artwork rights remain with their owners.
 
+
+The Minefall mini-game uses the official Minecraft tool and block textures from client assets (`wooden_pickaxe.png`, `stone_pickaxe.png`, `iron_pickaxe.png`, `golden_pickaxe.png`, `diamond_pickaxe.png`, `netherite_pickaxe.png`, `stone.png`, `deepslate.png`, `obsidian.png`, `bedrock.png`, `crafting_table_front.png`, `tnt_side.png`, `coal_ore.png`, `copper_ore.png`, `iron_ore.png`, `gold_ore.png`, `redstone_ore.png`, `lapis_ore.png`, `diamond_ore.png`, `emerald_ore.png`, `ancient_debris_side.png`). Mojang's texture artwork rights remain with their owners.

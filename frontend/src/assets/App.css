@@ -1314,3 +1314,287 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
   }
 }
 
+
+/* --- Minefall (Falling Pickaxe Minigame) --- */
+.minefall-stage-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.minefall-hud {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--surface-glass, rgba(255, 255, 255, 0.65));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.4));
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.minefall-durability-meter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.minefall-durability-bar {
+  width: 120px;
+  height: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 5px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.minefall-durability-fill {
+  height: 100%;
+  transition: width 0.25s ease, background-color 0.25s ease;
+}
+
+.minefall-live-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.minefall-boost-tag {
+  font-size: 14px;
+  color: #0284c7;
+  font-weight: 700;
+}
+
+[data-theme='dark'] .minefall-boost-tag {
+  color: #38bdf8;
+}
+
+.minefall-column-selector {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 4px;
+}
+
+.minefall-col-btn {
+  height: 28px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.3));
+  background: var(--btn-secondary-bg, rgba(255, 255, 255, 0.5));
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.minefall-col-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+}
+
+.minefall-col-btn.selected {
+  background: #0284c7;
+  color: #fff;
+  border-color: #0369a1;
+  box-shadow: 0 0 8px rgba(2, 132, 199, 0.5);
+}
+
+.minefall-canvas-container {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  background: #111116;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 2px solid var(--line, rgba(255, 255, 255, 0.25));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+.minefall-canvas {
+  width: 100%;
+  max-width: 342px;
+  height: auto;
+  aspect-ratio: 9 / 12;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: block;
+}
+
+.minefall-result-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.minefall-result-card {
+  background: var(--surface-glass, rgba(255, 255, 255, 0.92));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.5));
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  max-width: 300px;
+  width: 100%;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+}
+
+.minefall-result-card h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.minefall-result-payout {
+  margin: 14px 0;
+  font-size: 15px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+
+.minefall-result-payout strong {
+  font-size: 20px;
+}
+
+.win-text {
+  color: #16a34a;
+}
+
+.loss-text {
+  color: #dc2626;
+}
+
+[data-theme='dark'] .win-text {
+  color: #4ade80;
+}
+
+[data-theme='dark'] .loss-text {
+  color: #f87171;
+}
+
+.minefall-ores-summary {
+  margin-bottom: 16px;
+}
+
+.minefall-ores-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 6px;
+}
+
+.minefall-ore-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+[data-theme='dark'] .minefall-ore-chip {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.minefall-ore-chip img {
+  width: 14px;
+  height: 14px;
+  image-rendering: pixelated;
+}
+
+.minefall-pickaxe-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.minefall-pick-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.3));
+  background: var(--surface-well, rgba(255, 255, 255, 0.4));
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.minefall-pick-card:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: #38bdf8;
+}
+
+.minefall-pick-card.active {
+  border-color: #0284c7;
+  background: rgba(2, 132, 199, 0.15);
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.35);
+}
+
+.minefall-pick-card img {
+  width: 24px;
+  height: 24px;
+  image-rendering: pixelated;
+}
+
+.minefall-pick-card strong {
+  display: block;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.minefall-pick-card span.muted {
+  font-size: 10px;
+}
+
+.badge-gold {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  color: #b45309;
+  background: #fef3c7;
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin-top: 2px;
+}
+
+[data-theme='dark'] .badge-gold {
+  color: #fde047;
+  background: rgba(180, 83, 9, 0.3);
+}
+
+.minefall-paytable-list,
+.minefall-history-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.minefall-history-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.2));
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}

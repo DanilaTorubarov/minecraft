@@ -252,3 +252,50 @@ test('getLeaderboards fetches category rankings and parses entries', async () =>
   assert.equal(result.entries[0].rank, 1)
 })
 
+
+test('playMinefall sends request payload and parses returned round', async () => {
+  const { playMinefall } = await import('../src/lib/api.ts')
+  const mockRound = {
+    round_id: '123e4567-e89b-12d3-a456-426614174000',
+    payer_uuid: '00000000-0000-0000-0000-000000000001',
+    bet: 100,
+    pickaxe: 'iron',
+    column: 4,
+    grid: [['stone', 'coal_ore']],
+    events: [],
+    ores_collected: { coal_ore: 1 },
+    multiplier_x100: 105,
+    payout: 105,
+    balance: 1005,
+    economy_level: 0,
+    rtp_x10000: 9200,
+  }
+  let requestPath = ''
+  let requestOptions: RequestInit | undefined
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    requestPath = String(input)
+    requestOptions = init
+    return new Response(JSON.stringify(mockRound), { status: 200 })
+  }
+  const result = await playMinefall({
+    uuid: '00000000-0000-0000-0000-000000000001',
+    bet: 100,
+    pickaxe: 'iron',
+    column: 4,
+    client_id: 'client-1234',
+    economy_level: 0,
+  })
+  assert.equal(requestPath, '/api/minigames/minefall/play')
+  assert.equal(requestOptions?.method, 'POST')
+  assert.deepEqual(JSON.parse(String(requestOptions?.body)), {
+    uuid: '00000000-0000-0000-0000-000000000001',
+    bet: 100,
+    pickaxe: 'iron',
+    column: 4,
+    client_id: 'client-1234',
+    economy_level: 0,
+  })
+  assert.equal(result.round_id, mockRound.round_id)
+  assert.equal(result.payout, 105)
+  assert.equal(result.multiplier_x100, 105)
+})
