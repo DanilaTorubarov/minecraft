@@ -4062,6 +4062,7 @@ impl MinefallPickaxe {
         }
     }
 
+    #[allow(dead_code)]
     fn as_str(&self) -> &'static str {
         match self {
             Self::Wooden => "wooden",
@@ -4124,6 +4125,7 @@ enum MinefallBlock {
 }
 
 impl MinefallBlock {
+    #[allow(dead_code)]
     fn as_str(&self) -> &'static str {
         match self {
             Self::Air => "air",
@@ -4423,7 +4425,10 @@ fn simulate_minefall(
                 boost_x100: None,
                 affected: Some(affected),
             });
-            current_row += 1;
+            let upward_blast = (random_below(2)? as usize) + 1;
+            current_row = current_row.saturating_sub(upward_blast);
+            let blast_lateral = (random_below(5)? as i64) - 2;
+            current_col = (current_col as i64 + blast_lateral).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
             continue;
         }
 
@@ -4440,6 +4445,8 @@ fn simulate_minefall(
                 affected: None,
             });
             current_row += 1;
+            let lateral = (random_below(3)? as i64) - 1;
+            current_col = (current_col as i64 + lateral).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
             continue;
         }
 
@@ -4471,6 +4478,8 @@ fn simulate_minefall(
                 break;
             }
             current_row += 1;
+            let lateral = (random_below(3)? as i64) - 1;
+            current_col = (current_col as i64 + lateral).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
             continue;
         }
 
@@ -4489,6 +4498,8 @@ fn simulate_minefall(
                 affected: None,
             });
             current_row += 1;
+            let lateral = (random_below(3)? as i64) - 1;
+            current_col = (current_col as i64 + lateral).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
         } else {
             events.push(MinefallEventView {
                 event_type: "hit".to_string(),
@@ -4499,8 +4510,16 @@ fn simulate_minefall(
                 boost_x100: None,
                 affected: None,
             });
-            let dir = if random_below(2)? == 0 { -1i64 } else { 1i64 };
-            current_col = (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
+            if random_below(3)? == 0 && current_row > 0 {
+                current_row -= 1;
+            }
+            let lateral_dir = match random_below(4)? {
+                0 => -2,
+                1 => -1,
+                2 => 1,
+                _ => 2,
+            };
+            current_col = (current_col as i64 + lateral_dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
         }
 
         if durability <= 0 {

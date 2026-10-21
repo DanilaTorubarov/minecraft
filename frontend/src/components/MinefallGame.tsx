@@ -126,6 +126,7 @@ export default function MinefallGame({
   const [speed, setSpeed] = useState<'1x' | '2x'>('1x')
   const speedRef = useRef<'1x' | '2x'>('1x')
   const skipAnimRef = useRef(false)
+  const [texturesLoaded, setTexturesLoaded] = useState(false)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animFrameRef = useRef<number | null>(null)
@@ -136,7 +137,7 @@ export default function MinefallGame({
   const { balance, applySettled } = useStakedBalance(wallet.uuid, wallet.coins)
   const validBet = Number.isSafeInteger(bet) && bet >= rules.min_bet && bet <= rules.max_bet && bet <= balance
 
-  // Preload textures
+  // Preload textures and trigger initial preview once ready
   useEffect(() => {
     const loaded = new Map<string, HTMLImageElement>()
     const toLoad: Array<[string, string]> = [
@@ -144,12 +145,31 @@ export default function MinefallGame({
       ...Object.entries(BLOCK_TEXTURES),
     ]
 
+    let count = 0
+    const total = toLoad.length
+    const onLoaded = () => {
+      count += 1
+      if (count >= total) {
+        imagesRef.current = loaded
+        setTexturesLoaded(true)
+      }
+    }
+
     for (const [key, src] of toLoad) {
       const img = new Image()
       img.src = src
-      img.onload = () => loaded.set(key, img)
+      img.onload = () => {
+        loaded.set(key, img)
+        onLoaded()
+      }
+      img.onerror = () => {
+        onLoaded()
+      }
+      if (img.complete) {
+        loaded.set(key, img)
+        onLoaded()
+      }
     }
-    imagesRef.current = loaded
   }, [])
 
   // Update pickaxe durability limits when changing pickaxe
@@ -219,15 +239,15 @@ export default function MinefallGame({
     if (pickImg) {
       ctx.drawImage(pickImg, arrowX - 16, 22, 32, 32)
     }
-  }, [column, pickaxe])
+  }, [column, pickaxe, texturesLoaded])
 
   useEffect(() => {
     if (!isAnimating && !round) {
       drawPreview()
     }
-  }, [drawPreview, isAnimating, round])
+  }, [drawPreview, isAnimating, round, texturesLoaded])
 
-  // Play animation sequence based on server round events
+  // Play animation sequence with real 2D bouncing physics
   const runAnimation = (playRound: MinefallRound) => {
     skipAnimRef.current = false
     setIsAnimating(true)
@@ -244,30 +264,24 @@ export default function MinefallGame({
     canvas.height = totalH
     ctx.imageSmoothingEnabled = false
 
-    // Clone grid so animation modifies local copy
     const grid: string[][] = playRound.grid.map((row) => [...row])
     const events: MinefallEvent[] = [...playRound.events]
 
+    // 2D Physics Body for Pickaxe
     let pickX = playRound.column * cellW + cellW / 2
-    let pickY = 20
-    let pickAngle = 0
-    let startX = pickX
-    let startY = pickY
-    let startAngle = 0
-    let targetX = pickX
-    let targetY = pickY
-    let targetAngle = 0
+    let pickY = 15
+    let vx = (Math.random() - 0.5) * 2.0
+    let vy = 1.8
+    let angle = 0
+    let angularVel = 0.08
+    let cameraShake = 0
+    let cameraY = 0
 
     let currentEventIdx = 0
-    let eventTimer = 0
-    let stepDuration = 26
-    let impactTriggered = false
-    let cameraShake = 0
+    let timeSinceCollision = 0
+    const cooldownTicks = 8
 
-    const particles: Particle[] = []
-    const floatingTexts: FloatingText[] = []
-
-    let cameraY = 0
+    // Active stats
     let activeDur = PICKAXE_CONFIGS[playRound.pickaxe].durability
     const maxDur = activeDur
     let activeMult = 0
@@ -278,13 +292,29 @@ export default function MinefallGame({
     setLiveOres({})
     setLiveMultiplier(0)
 
+    const particles: Particle[] = []
+    const floatingTexts: FloatingText[] = []
+
+    type ToolFragment = {
+      x: number
+      y: number
+      vx: number
+      vy: number
+      angle: number
+      spin: number
+      size: number
+      life: number
+      maxLife: number
+    }
+    const fragments: ToolFragment[] = []
+
     const spawnBlockParticles = (bx: number, by: number, color: string, count = 14) => {
       for (let i = 0; i < count; i++) {
         particles.push({
           x: bx + cellW / 2,
           y: by + cellH / 2,
-          vx: (Math.random() - 0.5) * 7,
-          vy: (Math.random() - 0.5) * 6 - 2.5,
+          vx: (Math.random() - 0.5) * 8,
+          vy: (Math.random() - 0.5) * 7 - 2.5,
           color,
           size: Math.random() * 4 + 2,
           life: 0,
@@ -294,14 +324,14 @@ export default function MinefallGame({
     }
 
     const spawnExplosion = (bx: number, by: number) => {
-      for (let i = 0; i < 40; i++) {
-        const angle = Math.random() * Math.PI * 2
-        const spd = Math.random() * 9 + 2
+      for (let i = 0; i < 45; i++) {
+        const a = Math.random() * Math.PI * 2
+        const spd = Math.random() * 10 + 2
         particles.push({
           x: bx + cellW / 2,
           y: by + cellH / 2,
-          vx: Math.cos(angle) * spd,
-          vy: Math.sin(angle) * spd,
+          vx: Math.cos(a) * spd,
+          vy: Math.sin(a) * spd,
           color: Math.random() > 0.4 ? (Math.random() > 0.5 ? '#f97316' : '#eab308') : '#ef4444',
           size: Math.random() * 6 + 3,
           life: 0,
@@ -310,33 +340,24 @@ export default function MinefallGame({
       }
     }
 
-    const initEvent = (ev: MinefallEvent) => {
-      startX = pickX
-      startY = pickY
-      startAngle = pickAngle
-      targetX = ev.col * cellW + cellW / 2
-      targetY = ev.row * cellH + cellH / 2
-      targetAngle = startAngle + (ev.type === 'hit' ? -1.2 : 1.5)
-      impactTriggered = false
-
-      const base = speedRef.current === '2x' ? 13 : 26
-      if (ev.type === 'tnt_blast') {
-        stepDuration = Math.round(base * 1.6)
-      } else if (ev.type === 'pickaxe_break') {
-        stepDuration = Math.round(base * 1.5)
-      } else if (ev.type === 'repair' || ev.type === 'collect_ore') {
-        stepDuration = Math.round(base * 1.15)
-      } else {
-        stepDuration = base
+    const spawnToolFragments = (fx: number, fy: number) => {
+      for (let i = 0; i < 8; i++) {
+        fragments.push({
+          x: fx,
+          y: fy,
+          vx: (Math.random() - 0.5) * 8.0,
+          vy: -Math.random() * 7.0 - 2.0,
+          angle: Math.random() * Math.PI * 2,
+          spin: (Math.random() - 0.5) * 0.4,
+          size: Math.random() * 8 + 6,
+          life: 0,
+          maxLife: 60,
+        })
       }
     }
 
-    if (events.length > 0) {
-      initEvent(events[0])
-    }
-
     const step = () => {
-      // If skip was requested, finalize instantly
+      // Instant skip requested
       if (skipAnimRef.current) {
         setIsAnimating(false)
         setRound(playRound)
@@ -347,56 +368,90 @@ export default function MinefallGame({
         return
       }
 
-      // Smooth camera follows pickaxe
-      const desiredCameraY = Math.max(0, pickY - 170)
-      cameraY += (desiredCameraY - cameraY) * 0.08
+      const speedFactor = speedRef.current === '2x' ? 1.6 : 1.0
 
-      // Decay camera shake
-      if (cameraShake > 0) {
-        cameraShake *= 0.85
-        if (cameraShake < 0.2) cameraShake = 0
+      // Physics integration (gravity + drag + rotational tumble)
+      const gravity = 0.42 * speedFactor
+      vy = Math.min(vy + gravity, 13.0 * speedFactor)
+      vx *= Math.pow(0.99, speedFactor)
+      angle += angularVel * speedFactor
+
+      pickX += vx * speedFactor
+      pickY += vy * speedFactor
+
+      // Wall bounce physics (left & right mine shaft rock walls)
+      const wallMargin = 14
+      if (pickX < wallMargin) {
+        pickX = wallMargin
+        vx = Math.abs(vx) * 0.72 + 1.2
+        angularVel = (Math.random() - 0.5) * 0.35 + 0.2
+        cameraShake = Math.max(cameraShake, 1.8)
+        spawnBlockParticles(0, pickY, '#94a3b8', 6)
+        playSound('click')
+      } else if (pickX > totalW - wallMargin) {
+        pickX = totalW - wallMargin
+        vx = -Math.abs(vx) * 0.72 - 1.2
+        angularVel = (Math.random() - 0.5) * 0.35 - 0.2
+        cameraShake = Math.max(cameraShake, 1.8)
+        spawnBlockParticles(totalW - 16, pickY, '#94a3b8', 6)
+        playSound('click')
       }
 
+      timeSinceCollision += 1
+
+      // Physical guidance toward current event block
       if (currentEventIdx < events.length) {
         const ev = events[currentEventIdx]
-        eventTimer += 1
-        const t = Math.min(1.0, eventTimer / Math.max(1, stepDuration))
+        const targetX = ev.col * cellW + cellW / 2
+        const targetY = ev.row * cellH + 50 + cellH / 2
 
-        // Physics trajectory: smooth interpolation + bounce arc
-        pickX = startX + (targetX - startX) * t
-        const arc = Math.sin(t * Math.PI) * (ev.type === 'hit' ? 8 : 4)
-        pickY = startY + (targetY - startY) * t - arc
-        pickAngle = startAngle + (targetAngle - startAngle) * t
+        const dx = targetX - pickX
+        const dy = targetY - pickY
+        const dist = Math.hypot(dx, dy)
 
-        // Impact moment (at ~45% of step)
-        if (!impactTriggered && eventTimer >= Math.floor(stepDuration * 0.45)) {
-          impactTriggered = true
+        // Lateral and vertical momentum steering
+        vx += Math.sign(dx) * Math.min(Math.abs(dx) * 0.045, 0.45) * speedFactor
+        if (dy > 0 && pickY < targetY - 8) {
+          vy += 0.08 * speedFactor
+        }
+
+        // Collision detection with event block
+        const isImpact =
+          timeSinceCollision >= cooldownTicks &&
+          (dist < 22 || (Math.abs(dx) < 22 && pickY >= targetY - 12 && pickY <= targetY + 20))
+
+        if (isImpact) {
+          timeSinceCollision = 0
+          activeDur = ev.durabilityLeft
+          setCurrentDurability(activeDur)
 
           if (ev.type === 'hit') {
             playSound('click')
-            cameraShake = 2.0
-            activeDur = ev.durabilityLeft
-            setCurrentDurability(activeDur)
-            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#78716c', 10)
+            cameraShake = 3.0
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH + 50, '#78716c', 16)
+            // Hard rock rebound: bounces UPWARDS and deflecting sideways!
+            vy = -Math.abs(vy) * 0.75 - 4.0
+            vx = (Math.random() > 0.5 ? 1 : -1) * (Math.random() * 3.5 + 2.5)
+            angularVel = -angularVel * 1.4 + (Math.random() - 0.5) * 0.35
           } else if (ev.type === 'break') {
             playSound('click')
-            cameraShake = 2.5
+            cameraShake = 2.4
             grid[ev.row][ev.col] = 'air'
-            activeDur = ev.durabilityLeft
-            setCurrentDurability(activeDur)
-            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#57534e', 14)
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH + 50, '#57534e', 14)
+            // Stone smash bounce
+            vy = -Math.abs(vy) * 0.45 - 2.5
+            vx = (Math.random() - 0.5) * 5.0
+            angularVel = (Math.random() - 0.5) * 0.35
           } else if (ev.type === 'collect_ore') {
             playSound('click')
-            cameraShake = 3.0
+            cameraShake = 3.2
             grid[ev.row][ev.col] = 'air'
-            activeDur = ev.durabilityLeft
-            setCurrentDurability(activeDur)
             accumulatedOres[ev.block] = (accumulatedOres[ev.block] ?? 0) + 1
             setLiveOres({ ...accumulatedOres })
             const boost = ev.boostX100 ?? 0
             activeMult += boost
             setLiveMultiplier(activeMult)
-            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#38bdf8', 18)
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH + 50, '#38bdf8', 18)
             floatingTexts.push({
               x: targetX,
               y: targetY - 10,
@@ -405,13 +460,15 @@ export default function MinefallGame({
               life: 0,
               maxLife: 50,
             })
+            // Ore deflection bounce
+            vy = -Math.abs(vy) * 0.55 - 3.0
+            vx = (Math.random() - 0.5) * 6.0
+            angularVel = (Math.random() - 0.5) * 0.45
           } else if (ev.type === 'repair') {
             playSound('done')
-            cameraShake = 1.5
+            cameraShake = 1.8
             grid[ev.row][ev.col] = 'air'
-            activeDur = ev.durabilityLeft
-            setCurrentDurability(activeDur)
-            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#4ade80', 16)
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH + 50, '#4ade80', 16)
             floatingTexts.push({
               x: targetX,
               y: targetY - 10,
@@ -420,11 +477,14 @@ export default function MinefallGame({
               life: 0,
               maxLife: 50,
             })
+            vy = -Math.abs(vy) * 0.5 - 2.5
+            vx = (Math.random() - 0.5) * 4.0
+            angularVel = 0.25
           } else if (ev.type === 'tnt_blast') {
             playSound('close')
-            cameraShake = 7.0
+            cameraShake = 8.0
             grid[ev.row][ev.col] = 'air'
-            spawnExplosion(ev.col * cellW, ev.row * cellH)
+            spawnExplosion(ev.col * cellW, ev.row * cellH + 50)
             if (ev.affected) {
               for (const aff of ev.affected) {
                 grid[aff.row][aff.col] = 'air'
@@ -435,7 +495,7 @@ export default function MinefallGame({
                   setLiveMultiplier(activeMult)
                   floatingTexts.push({
                     x: aff.col * cellW + cellW / 2,
-                    y: aff.row * cellH,
+                    y: aff.row * cellH + 50,
                     text: `+${(boost / 100).toFixed(2)}x`,
                     color: '#fbbf24',
                     life: 0,
@@ -445,12 +505,16 @@ export default function MinefallGame({
               }
               setLiveOres({ ...accumulatedOres })
             }
+            // Massive explosive upward launch!
+            vy = -10.5 - Math.random() * 3.5
+            vx = (Math.random() - 0.5) * 9.0
+            angularVel = (Math.random() - 0.5) * 0.75
           } else if (ev.type === 'pickaxe_break') {
             playSound('close')
-            cameraShake = 4.0
+            cameraShake = 5.0
             activeDur = 0
             setCurrentDurability(0)
-            spawnBlockParticles(targetX, targetY, '#ef4444', 24)
+            spawnToolFragments(pickX, pickY)
             floatingTexts.push({
               x: targetX,
               y: targetY - 20,
@@ -459,17 +523,22 @@ export default function MinefallGame({
               life: 0,
               maxLife: 65,
             })
+            vx = 0
+            vy = 0
           }
-        }
 
-        // Advance to next event when duration reached
-        if (eventTimer >= stepDuration) {
-          eventTimer = 0
           currentEventIdx += 1
-          if (currentEventIdx < events.length) {
-            initEvent(events[currentEventIdx])
-          }
         }
+      }
+
+      // Smooth camera follows pickaxe
+      const desiredCameraY = Math.max(0, pickY - 180)
+      cameraY += (desiredCameraY - cameraY) * 0.08
+
+      // Camera shake decay
+      if (cameraShake > 0) {
+        cameraShake *= 0.85
+        if (cameraShake < 0.2) cameraShake = 0
       }
 
       // Render frame
@@ -487,7 +556,7 @@ export default function MinefallGame({
           const blockType = grid[r][c]
           if (blockType === 'air') continue
           const bx = c * cellW
-          const by = r * cellH
+          const by = r * cellH + 50
           if (by + cellH < cameraY - 40 || by > cameraY + totalH + 40) continue
 
           const img = imagesRef.current.get(blockType)
@@ -502,12 +571,12 @@ export default function MinefallGame({
         }
       }
 
-      // Draw particles
+      // Draw and update particles
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i]
         p.x += p.vx
         p.y += p.vy
-        p.vy += 0.2
+        p.vy += 0.22
         p.life += 1
         if (p.life >= p.maxLife) {
           particles.splice(i, 1)
@@ -517,7 +586,27 @@ export default function MinefallGame({
         ctx.fillRect(p.x, p.y, p.size, p.size)
       }
 
-      // Draw floating texts
+      // Draw and update tool fragments (if tool shattered)
+      for (let i = fragments.length - 1; i >= 0; i--) {
+        const f = fragments[i]
+        f.x += f.vx
+        f.y += f.vy
+        f.vy += 0.35
+        f.angle += f.spin
+        f.life += 1
+        if (f.life >= f.maxLife) {
+          fragments.splice(i, 1)
+          continue
+        }
+        ctx.save()
+        ctx.translate(f.x, f.y)
+        ctx.rotate(f.angle)
+        ctx.fillStyle = '#ef4444'
+        ctx.fillRect(-f.size / 2, -f.size / 2, f.size, f.size)
+        ctx.restore()
+      }
+
+      // Draw and update floating texts
       for (let i = floatingTexts.length - 1; i >= 0; i--) {
         const ft = floatingTexts[i]
         ft.y -= 0.8
@@ -532,11 +621,11 @@ export default function MinefallGame({
         ctx.fillText(ft.text, ft.x, ft.y)
       }
 
-      // Draw falling pickaxe if not fully broken
-      if (activeDur > 0 || currentEventIdx < events.length) {
+      // Draw pickaxe sprite if still intact
+      if (activeDur > 0) {
         ctx.save()
         ctx.translate(pickX, pickY)
-        ctx.rotate(pickAngle)
+        ctx.rotate(angle)
         const pickImg = imagesRef.current.get(playRound.pickaxe)
         if (pickImg) {
           ctx.drawImage(pickImg, -16, -16, 32, 32)
@@ -547,7 +636,7 @@ export default function MinefallGame({
       ctx.restore()
 
       // Continue animation loop until all events completed and settled
-      if (currentEventIdx < events.length || particles.length > 0 || floatingTexts.length > 0) {
+      if (currentEventIdx < events.length || particles.length > 0 || floatingTexts.length > 0 || fragments.length > 0) {
         animFrameRef.current = requestAnimationFrame(step)
       } else {
         setIsAnimating(false)
@@ -559,14 +648,7 @@ export default function MinefallGame({
     animFrameRef.current = requestAnimationFrame(step)
   }
 
-  // Cancel animation on unmount
-  useEffect(() => {
-    return () => {
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
-    }
-  }, [])
-
-  const toggleSpeed = () => {
+    const toggleSpeed = () => {
     setSpeed((prev) => {
       const next = prev === '1x' ? '2x' : '1x'
       speedRef.current = next
