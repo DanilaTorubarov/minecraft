@@ -783,9 +783,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 || materialName.contains("HOPPER");
         }
 
-        public static boolean canTntDamageBlock(String materialName, boolean isMember) {
+        public static boolean canTntDamageBlock(String materialName, boolean isMember, boolean isRaidTnt, boolean isZoneUnderRaid) {
             if (isMember) return true;
-            return !canOpenInRaid(materialName);
+            if (isRaidTnt && isZoneUnderRaid) {
+                return !canOpenInRaid(materialName);
+            }
+            return false;
         }
     }
 
@@ -1568,6 +1571,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private final Map<String, ActiveBreach> activeBreaches = new ConcurrentHashMap<>();
     private final List<PrimedCharge> primedCharges = new CopyOnWriteArrayList<>();
     private NamespacedKey creeperTriggerKey;
+    private NamespacedKey raidTntKey;
+    private NamespacedKey breachZoneKey;
+    private final Map<String, String> activeRaidTntBlocks = new ConcurrentHashMap<>();
 
     private static final class RegeneratingOreNode {
         final Material originalMaterial;
@@ -3137,6 +3143,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     private void initializePrivateAndMining() {
         creeperTriggerKey = new NamespacedKey(this, "creeper_trigger");
+        raidTntKey = new NamespacedKey(this, "raid_tnt");
+        breachZoneKey = new NamespacedKey(this, "breach_zone");
         if (getCommand("ps") != null) {
             getCommand("ps").setExecutor(this);
             getCommand("ps").setTabCompleter((sender, cmd, alias, args) -> {
@@ -3927,6 +3935,25 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         return item;
     }
 
+    public ItemStack createRaidTntItem(int amount) {
+        ItemStack item = new ItemStack(Material.TNT, amount);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text("§c§lRaid TNT"));
+        meta.lore(List.of(
+            Component.text("§7Tactical breaching explosive."),
+            Component.text("§7Place inside an active raid zone to blast open inner walls & doors!"),
+            Component.text("§a• 100% Auto-Regeneration after raid expires.")
+        ));
+        meta.getPersistentDataContainer().set(new NamespacedKey(this, "raid_tnt"), org.bukkit.persistence.PersistentDataType.BYTE, (byte) 1);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public boolean isRaidTnt(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) return false;
+        return item.getItemMeta().getPersistentDataContainer().has(new NamespacedKey(this, "raid_tnt"), org.bukkit.persistence.PersistentDataType.BYTE);
+    }
+
     private void detonateBreachCharge(PrimedCharge pc) {
         Location center = pc.location;
         World world = center.getWorld();
@@ -4099,7 +4126,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         return;
                     }
                     if (response.statusCode() == 200) {
-                        ItemStack tnt = new ItemStack(Material.TNT, finalAmount);
+                        ItemStack tnt = createRaidTntItem(finalAmount);
                         var leftovers = player.getInventory().addItem(tnt);
                         if (!leftovers.isEmpty()) {
                             for (ItemStack leftover : leftovers.values()) {
@@ -4108,7 +4135,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         }
                         player.playSound(player.getLocation(), Sound.ENTITY_TNT_PRIMED, 1.0f, 1.2f);
                         player.sendMessage(String.format(Locale.ROOT,
-                            "§a[Raid] Purchased %dx TNT for %,d coins! Place against enemy bases to blast open their walls!",
+                            "§a[Raid] Purchased %dx Raid TNT for %,d coins! Place against enemy walls during a raid to break the base further!",
                             finalAmount, expectedPrice));
                     } else if (response.statusCode() == 402) {
                         player.sendMessage(String.format(Locale.ROOT,
@@ -4673,12 +4700,18 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
         if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
-            if (block.getType() == Material.TNT) {
-                // Allow placing TNT in enemy private zones to blast open walls/doors!
-                return;
+            if (activeBreaches.containsKey(pb.id)) {
+                if (isRaidTnt(item)) {
+                    activeRaidTntBlocks.put(blockKey(block.getLocation()), pb.id);
+                    return;
+                } else if (block.getType() == Material.TNT) {
+                    event.setCancelled(true);
+                    player.sendMessage("§c[Raid] Only Raid TNT can be used to breach enemy bases! Use /raid tnt to get Raid TNT.");
+                    return;
+                }
             }
             event.setCancelled(true);
-            player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "!"));
+            player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "! Cannot build or place blocks without a raid."));
         }
     }
 
@@ -4689,6 +4722,32 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         Block block = event.getClickedBlock();
         if (block == null) return;
         Player player = event.getPlayer();
+
+        if (block.getType() == Material.TNT && activeRaidTntBlocks.containsKey(blockKey(block.getLocation()))) {
+            ItemStack tool = player.getInventory().getItem(event.getHand());
+            if (tool != null && (tool.getType() == Material.FLINT_AND_STEEL || tool.getType() == Material.FIRE_CHARGE)) {
+                String zoneId = activeRaidTntBlocks.remove(blockKey(block.getLocation()));
+                Location tntLoc = block.getLocation().clone().add(0.5, 0.0, 0.5);
+                block.setType(Material.AIR);
+                TNTPrimed primed = (TNTPrimed) block.getWorld().spawn(tntLoc, TNTPrimed.class);
+                primed.setSource(player);
+                primed.setFuseTicks(80);
+                primed.getPersistentDataContainer().set(raidTntKey, org.bukkit.persistence.PersistentDataType.BYTE, (byte) 1);
+                if (zoneId != null) {
+                    primed.getPersistentDataContainer().set(breachZoneKey, org.bukkit.persistence.PersistentDataType.STRING, zoneId);
+                }
+                block.getWorld().playSound(tntLoc, Sound.ENTITY_TNT_PRIMED, 1.0f, 1.0f);
+                if (tool.getType() == Material.FLINT_AND_STEEL) {
+                    Damageable dmg = (Damageable) tool.getItemMeta();
+                    if (dmg != null) {
+                        dmg.setDamage(dmg.getDamage() + 1);
+                        tool.setItemMeta(dmg);
+                    }
+                }
+                event.setCancelled(true);
+                return;
+            }
+        }
 
         ItemStack hand = player.getInventory().getItemInMainHand();
         if (hand != null && hand.hasItemMeta()) {
@@ -4960,20 +5019,43 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
 
-        if (event.getEntity() instanceof TNTPrimed tnt) {
-            UUID sourcePlayerUuid = null;
-            if (tnt.getSource() instanceof Player p) {
-                sourcePlayerUuid = p.getUniqueId();
+        // Trigger chain reaction on adjacent placed Raid TNT blocks
+        for (Block b : event.blockList()) {
+            String key = blockKey(b.getLocation());
+            if (activeRaidTntBlocks.containsKey(key)) {
+                String chainZone = activeRaidTntBlocks.remove(key);
+                Location chainLoc = b.getLocation().clone().add(0.5, 0.0, 0.5);
+                b.setType(Material.AIR);
+                TNTPrimed chainTnt = (TNTPrimed) b.getWorld().spawn(chainLoc, TNTPrimed.class);
+                chainTnt.setFuseTicks(15);
+                chainTnt.getPersistentDataContainer().set(raidTntKey, org.bukkit.persistence.PersistentDataType.BYTE, (byte) 1);
+                if (chainZone != null) {
+                    chainTnt.getPersistentDataContainer().set(breachZoneKey, org.bukkit.persistence.PersistentDataType.STRING, chainZone);
+                }
             }
+        }
 
-            final UUID finalTntSource = sourcePlayerUuid;
+        if (event.getEntity() instanceof TNTPrimed tnt) {
+            boolean isRaidTnt = tnt.getPersistentDataContainer().has(raidTntKey, org.bukkit.persistence.PersistentDataType.BYTE);
+            String zoneId = tnt.getPersistentDataContainer().get(breachZoneKey, org.bukkit.persistence.PersistentDataType.STRING);
+            ActiveBreach breach = (zoneId != null) ? activeBreaches.get(zoneId) : null;
+            UUID sourcePlayerUuid = (tnt.getSource() instanceof Player p) ? p.getUniqueId() : null;
+
             event.blockList().removeIf(b -> {
                 PlacedPrivateBlock pb = getProtectingBlock(b.getLocation());
                 if (pb == null) return false;
 
-                boolean isMember = finalTntSource != null && PrivateRules.canAccess(finalTntSource, pb.ownerUuid, pb.members);
-                boolean canDamage = PrivateRules.canTntDamageBlock(b.getType().name(), isMember);
-                return !canDamage;
+                boolean isMember = sourcePlayerUuid != null && PrivateRules.canAccess(sourcePlayerUuid, pb.ownerUuid, pb.members);
+                boolean isZoneUnderRaid = activeBreaches.containsKey(pb.id);
+                boolean canDamage = PrivateRules.canTntDamageBlock(b.getType().name(), isMember, isRaidTnt, isZoneUnderRaid);
+
+                if (canDamage) {
+                    if (!isMember && breach != null) {
+                        breach.restoredBlocks.add(new BreachedBlock(b.getLocation(), b.getBlockData().clone()));
+                    }
+                    return false;
+                }
+                return true;
             });
             return;
         }
