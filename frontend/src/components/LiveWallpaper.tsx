@@ -164,6 +164,8 @@ function compileShader(
 export default function LiveWallpaper() {
   const [lowPerf] = useLowPerformanceSetting()
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const isMobile = typeof window !== 'undefined' && (window.innerWidth <= 768 || (typeof window.matchMedia === 'function' && (window.matchMedia('(max-width: 768px)').matches || window.matchMedia('(hover: none) and (pointer: coarse)').matches)))
+  const showEffects = !lowPerf && !isMobile
 
   useEffect(() => {
     const canvasNode = canvasRef.current
@@ -266,8 +268,16 @@ export default function LiveWallpaper() {
       }
     }
 
+    function isMobileDevice() {
+      return (
+        window.innerWidth <= 768 ||
+        window.matchMedia('(max-width: 768px)').matches ||
+        window.matchMedia('(hover: none) and (pointer: coarse)').matches
+      )
+    }
+
     function addRipple(event: globalThis.PointerEvent) {
-      if (lowPerformanceEnabled() || motionPreference.matches || document.visibilityState !== 'visible') return
+      if (lowPerformanceEnabled() || isMobileDevice() || motionPreference.matches || document.visibilityState !== 'visible') return
       const now = performance.now()
       pointerTarget.x = event.clientX / Math.max(1, window.innerWidth)
       pointerTarget.y = 1 - event.clientY / Math.max(1, window.innerHeight)
@@ -335,7 +345,7 @@ export default function LiveWallpaper() {
     function start() {
       if (running || motionPreference.matches || document.visibilityState !== 'visible') return
       if (!isLoaded(wantedImage())) return
-      if (lowPerformanceEnabled()) {
+      if (lowPerformanceEnabled() || isMobileDevice()) {
         renderStatic()
         return
       }
@@ -393,7 +403,7 @@ export default function LiveWallpaper() {
   return (
     <div className="live-wallpaper" aria-hidden="true">
       <canvas ref={canvasRef} />
-      {!lowPerf && (
+      {showEffects && (
         <>
           <span className="live-wallpaper-glow" />
           <span className="live-wallpaper-beams">

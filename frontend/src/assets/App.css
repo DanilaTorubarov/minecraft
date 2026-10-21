@@ -261,18 +261,22 @@
   .stat-cell { text-align: left; }
 }
 @media (max-width: 760px) {
-  .desktop-menubar { position: sticky; top: 0; gap: 8px; padding: 0 10px; }
+  html, body {
+    -webkit-overflow-scrolling: touch;
+  }
+  .desktop-menubar { position: sticky; top: 0; gap: 8px; padding: 0 10px; backdrop-filter: blur(10px) saturate(125%) !important; -webkit-backdrop-filter: blur(10px) saturate(125%) !important; }
   .desktop-brand span, .desktop-menu-caption { display: none; }
   .desktop-menubar .desktop-brand { font-size: 12px; gap: 4px; }
   .desktop-menu { margin-left: auto; gap: 0; }
   .desktop-menubar button { padding: 3px 6px; font-size: 11px; }
   .desktop-stage { height: auto; min-height: calc(100dvh - 40px); padding: 16px 10px 220px; display: flex; flex-direction: column; gap: 18px; }
-  .desktop-window { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; max-height: none; flex: none; }
+  .desktop-window { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; max-height: none; flex: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22) !important; }
+  .desktop-window::before { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: var(--surface-soft) !important; opacity: 0.98 !important; }
   .window-body { overflow: visible; }
   .window-titlebar { cursor: default; }
   .window-reset, .window-resize, .light-maximize { display: none; }
   .window-title { font-size: 12px; }
-  .window-footer { padding: 8px 12px; font-size: 9px; gap: 6px; }
+  .window-footer { padding: 8px 12px; font-size: 9px; gap: 6px; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: var(--surface-soft) !important; }
   .account-toolbar { padding: 10px 14px; }
   .account-toolbar > span { font-size: 11px; }
   .main { padding: 25px 18px; }
@@ -285,9 +289,12 @@
   .code-copy { padding: 5px 8px; }
   .settings-content { padding: 24px 20px; }
   .field input { font-size: 16px; }
-  .desktop-dock { bottom: 12px; padding: 6px 14px 9px; }
+  .desktop-dock { bottom: 12px; padding: 6px 14px 9px; max-width: calc(100vw - 16px); overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; justify-content: flex-start; touch-action: pan-x; backdrop-filter: blur(10px) saturate(125%) !important; -webkit-backdrop-filter: blur(10px) saturate(125%) !important; }
+  .desktop-dock::-webkit-scrollbar { display: none; }
+  .dock-app:hover { transform: none !important; }
   .dock-app img, .dock-app .player-head { width: 43px; height: 43px; }
   .dock-app .player-head { width: 32px; height: 32px; margin: 5.5px 0; }
+  .live-wallpaper-bubbles, .live-wallpaper-beams, .live-wallpaper-glints, .live-wallpaper-particles, .cursor-click-waves { display: none !important; }
   /* Stacked windows sit in normal flow: no floating motion of their own. */
   .desktop-window { transition: none; }
   .desktop-window:not([hidden]) { animation: none; }

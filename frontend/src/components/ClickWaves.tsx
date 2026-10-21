@@ -10,6 +10,8 @@ export default function ClickWaves() {
     const layer = layerRef.current
     if (layer === null) return
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const isTouch = window.matchMedia('(hover: none) and (pointer: coarse)')
+    if (isTouch.matches || window.innerWidth <= 768) return
     const clear = () => layer.replaceChildren()
     const click = (event: MouseEvent) => {
       if (motion.matches || document.hidden || event.button !== 0) return
