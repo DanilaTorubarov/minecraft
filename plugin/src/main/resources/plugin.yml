@@ -1,5 +1,5 @@
 name: LinkBridge
-version: '1.11.0'
+version: '1.12.0'
 main: dev.mcpanel.linkbridge.LinkBridgePlugin
 description: Links a Minecraft account to a web panel account and reports per-player statistics and inventory snapshots to the panel.
 api-version: '1.21'
@@ -50,7 +50,14 @@ commands:
         description: Purchase and manage siege breach charges for raiding private zones.
         usage: /raid [buy|help]
         permission: linkbridge.ps
+    mail:
+        description: Check and claim deliveries and parcels sent from the website or other players.
+        usage: /mail [claim|list]
+        permission: linkbridge.mail
 permissions:
+    linkbridge.mail:
+        description: Check and claim deliveries after authentication.
+        default: true
     linkbridge.ps:
         description: Use private block protection commands after authentication.
         default: true

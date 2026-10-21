@@ -4,9 +4,11 @@ import {
   depositPrivateFuel,
   getPlayerInventory,
   getPlayerPrivates,
+  getTerritoryAlerts,
   type InventorySlot,
   type InventoryView,
   type PrivateBlockView,
+  type TerritoryAlert,
 } from '../lib/api'
 import {
   detectFuelCrystal,
@@ -14,6 +16,7 @@ import {
   PRIVATE_BLOCK_PRICES,
   type FuelCrystalInfo,
 } from '../lib/fuel'
+import { isFuelCriticallyLow } from '../lib/parcels'
 import { playSound } from '../lib/sounds'
 import firewallWarningIcon from '../assets/icons/vista-firewall-warning.png'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
@@ -36,6 +39,7 @@ interface InventoryCrystal {
 export default function PrivatesPage({ uuid, username, visible, onOpenMarketplace }: Props) {
   const [blocks, setBlocks] = useState<PrivateBlockView[] | null>(null)
   const [inventory, setInventory] = useState<InventoryView | null>(null)
+  const [alerts, setAlerts] = useState<TerritoryAlert[]>([])
   const [loadError, setLoadError] = useState('')
   const [actionError, setActionError] = useState('')
   const [actionMessage, setActionMessage] = useState('')
@@ -43,12 +47,14 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
 
   const refreshData = async () => {
     try {
-      const [privates, inv] = await Promise.all([
+      const [privates, inv, al] = await Promise.all([
         getPlayerPrivates(uuid),
         getPlayerInventory(uuid),
+        getTerritoryAlerts().catch(() => []),
       ])
       setBlocks(privates)
       setInventory(inv)
+      setAlerts(al.filter((a) => a.uuid === uuid))
       setLoadError('')
     } catch {
       setLoadError('Could not load private blocks. Try again shortly.')
@@ -60,13 +66,15 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
     let active = true
     const load = async () => {
       try {
-        const [privates, inv] = await Promise.all([
+        const [privates, inv, al] = await Promise.all([
           getPlayerPrivates(uuid),
           getPlayerInventory(uuid),
+          getTerritoryAlerts().catch(() => []),
         ])
         if (active) {
           setBlocks(privates)
           setInventory(inv)
+          setAlerts(al.filter((a) => a.uuid === uuid))
           setLoadError('')
         }
       } catch {
@@ -155,6 +163,29 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
           Owned: {blocks.length} / 3 Cores
         </div>
       </header>
+
+      {alerts.length > 0 && (
+        <section className="territory-alerts-panel" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.4)', borderRadius: '8px', padding: '14px 16px', display: 'grid', gap: '10px' }}>
+          <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#ef4444', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <img src={firewallWarningIcon} alt="" style={{ width: '20px', height: '20px' }} />
+            Territory Defense Alerts ({alerts.length})
+          </h3>
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '8px' }}>
+            {alerts.map((al) => (
+              <li key={al.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: '13px', background: 'rgba(0, 0, 0, 0.2)', padding: '8px 12px', borderRadius: '6px' }}>
+                <div>
+                  <strong>{al.title}:</strong> {al.message}
+                </div>
+                {al.fuel_seconds !== undefined && isFuelCriticallyLow(al.fuel_seconds) && (
+                  <span style={{ background: '#ef4444', color: '#fff', fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+                    &lt; 2h Fuel!
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {actionMessage && (
         <div className="note" data-tone="success" role="status" style={{ margin: 0 }}>
@@ -294,6 +325,12 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                       : 'None (Owner only)'}
                   </dd>
                 </dl>
+
+                {isPlaced && isFuelCriticallyLow(block.fuel_seconds) && (
+                  <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', borderRadius: '6px', padding: '6px 10px', fontSize: '12px', color: '#ef4444', fontWeight: 600 }}>
+                    ⚠️ Critical Fuel: Under 2 hours remaining! Deposit crystals to prevent deactivation.
+                  </div>
+                )}
 
                 {/* Fuel Deposit Area */}
                 {isPlaced ? (

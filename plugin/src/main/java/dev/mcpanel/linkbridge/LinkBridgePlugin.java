@@ -224,6 +224,15 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             getCommand("sell").setExecutor(this);
             getCommand("sell").setTabCompleter((sender, command, alias, args) -> List.of());
         }
+        if (getCommand("mail") != null) {
+            getCommand("mail").setExecutor(this);
+            getCommand("mail").setTabCompleter((sender, command, alias, args) -> {
+                if (args.length == 1) {
+                    return List.of("claim", "list").stream().filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                }
+                return List.of();
+            });
+        }
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimerAsynchronously(this, this::syncSkins, 40L, 100L);
 
@@ -408,6 +417,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return true;
             }
             raidCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("mail")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Mail] Wait a few seconds and try again.");
+                return true;
+            }
+            handleMailCommand(player, args);
             return true;
         }
 
@@ -1398,12 +1415,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onLogin(LoginEvent event) {
         countLogin(event.getPlayer());
         announce(event.getPlayer());
+        checkPendingMail(event.getPlayer());
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onRegister(RegisterEvent event) {
         countLogin(event.getPlayer());
         announce(event.getPlayer());
+        checkPendingMail(event.getPlayer());
     }
 
     /**
@@ -3900,6 +3919,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         PlacedPrivateBlock pb = getPlacedBlockById(pc.zoneId);
         if (pb != null) {
+            reportTerritoryAlertAsync(pb.ownerUuid, "breach", "Base Breached!",
+                String.format(Locale.ROOT, "Your base at (%d, %d, %d) was breached by %s! Containers are vulnerable for 5 minutes!", pb.x, pb.y, pb.z, pc.planterName),
+                pb.blockIndex, pb.world, pb.x, pb.y, pb.z);
             Player owner = getServer().getPlayer(pb.ownerUuid);
             if (owner != null && owner.isOnline()) {
                 owner.sendMessage(String.format(Locale.ROOT,
@@ -3907,6 +3929,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 owner.playSound(owner.getLocation(), Sound.ENTITY_WITHER_SPAWN, 1.0f, 1.0f);
             }
             for (UUID memberUuid : pb.members) {
+                reportTerritoryAlertAsync(memberUuid, "breach", "Team Base Breached!",
+                    String.format(Locale.ROOT, "Your team base at (%d, %d, %d) was breached by %s! Containers are vulnerable for 5 minutes!", pb.x, pb.y, pb.z, pc.planterName),
+                    pb.blockIndex, pb.world, pb.x, pb.y, pb.z);
                 Player member = getServer().getPlayer(memberUuid);
                 if (member != null && member.isOnline()) {
                     member.sendMessage(String.format(Locale.ROOT,
@@ -4853,6 +4878,192 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 outgoingChatQueue.addAll(batch);
             }
         }
+    }
+
+    // --- Offline Mail & Delivery Parcels --------------------------------------
+
+    private void checkPendingMail(Player player) {
+        if (!isEnabled() || player == null || !player.isOnline()) return;
+        String uuid = player.getUniqueId().toString();
+        getServer().getScheduler().runTaskLaterAsynchronously(this, () -> {
+            if (!player.isOnline() || !isAuthenticated(player)) return;
+            try {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("uuid", uuid);
+                var resp = post(internalBase + "/mail/pending", body.toString(), requestTimeout);
+                if (resp != null && resp.statusCode() == 200) {
+                    var json = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+                    if (json.has("has_pending") && json.get("has_pending").getAsBoolean()) {
+                        var senders = json.getAsJsonArray("senders");
+                        String sender = senders.size() > 0 ? senders.get(0).getAsString() : "someone";
+                        getServer().getScheduler().runTask(this, () -> {
+                            if (!player.isOnline() || !isAuthenticated(player)) return;
+                            player.sendMessage(String.format(Locale.ROOT,
+                                "§6§l[Mail] §eYou received a delivery from §b%s§e! Type §a/mail claim§e.", sender));
+                            player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                        });
+                    }
+                }
+            } catch (Exception e) {
+                getLogger().warning("Failed to check pending mail on login: " + e.getMessage());
+            }
+        }, 30L);
+    }
+
+    private void handleMailCommand(Player player, String[] args) {
+        boolean claim = args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("claim"));
+        boolean list = args.length == 1 && args[0].equalsIgnoreCase("list");
+
+        if (!claim && !list) {
+            player.sendMessage("§6§l[Mail] §eUsage: §a/mail claim §eor §a/mail list");
+            return;
+        }
+
+        UUID uuid = player.getUniqueId();
+        String uuidStr = uuid.toString();
+
+        if (list) {
+            getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    var body = new com.google.gson.JsonObject();
+                    body.addProperty("uuid", uuidStr);
+                    var resp = post(internalBase + "/mail/pending", body.toString(), requestTimeout);
+                    if (resp != null && resp.statusCode() == 200) {
+                        var json = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+                        int count = json.get("count").getAsInt();
+                        getServer().getScheduler().runTask(this, () -> {
+                            if (!player.isOnline()) return;
+                            if (count > 0) {
+                                player.sendMessage(String.format(Locale.ROOT,
+                                    "§6§l[Mail] §eYou have §b%d§e pending delivery(ies). Type §a/mail claim§e to collect them.", count));
+                            } else {
+                                player.sendMessage("§e[Mail] You have no pending deliveries.");
+                            }
+                        });
+                    } else {
+                        getServer().getScheduler().runTask(this, () -> {
+                            if (player.isOnline()) player.sendMessage("§c[Mail] Could not check deliveries. Try again shortly.");
+                        });
+                    }
+                } catch (Exception e) {
+                    getLogger().warning("Mail check failed: " + e.getMessage());
+                }
+            });
+            return;
+        }
+
+        player.sendMessage("§6§l[Mail] §eChecking for pending deliveries...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("uuid", uuidStr);
+                var resp = post(internalBase + "/mail/claim", body.toString(), requestTimeout);
+                if (resp != null && resp.statusCode() == 200) {
+                    var arr = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonArray();
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (!player.isOnline()) return;
+                        if (arr.isEmpty()) {
+                            player.sendMessage("§c[Mail] You have no pending deliveries.");
+                            return;
+                        }
+
+                        int claimedCount = 0;
+                        for (var el : arr) {
+                            var itemObj = el.getAsJsonObject();
+                            String sender = itemObj.get("sender_username").getAsString();
+                            long coins = itemObj.get("coins").getAsLong();
+                            int qty = itemObj.get("quantity").getAsInt();
+                            String msg = itemObj.has("message") ? itemObj.get("message").getAsString() : "";
+
+                            if (coins > 0) {
+                                player.sendMessage(String.format(Locale.ROOT,
+                                    "§a§l[Mail] §eClaimed §6%d coins§e from §b%s§e!", coins, sender));
+                            }
+
+                            if (qty > 0) {
+                                ItemStack stack = null;
+                                if (itemObj.has("item_bytes") && !itemObj.get("item_bytes").isJsonNull()) {
+                                    String b64 = itemObj.get("item_bytes").getAsString();
+                                    if (b64 != null && !b64.isEmpty()) {
+                                        try {
+                                            byte[] raw = java.util.Base64.getDecoder().decode(b64);
+                                            stack = ItemStack.deserializeBytes(raw);
+                                            stack.setAmount(qty);
+                                        } catch (Exception ignored) {}
+                                    }
+                                }
+                                if (stack == null && itemObj.has("item") && !itemObj.get("item").isJsonNull()) {
+                                    var it = itemObj.getAsJsonObject("item");
+                                    String key = it.has("key") ? it.get("key").getAsString() : "minecraft:chest";
+                                    Material mat = Material.matchMaterial(key);
+                                    if (mat == null) mat = Material.CHEST;
+                                    stack = new ItemStack(mat, qty);
+                                    if (it.has("display_name") && !it.get("display_name").isJsonNull()) {
+                                        var meta = stack.getItemMeta();
+                                        if (meta != null) {
+                                            meta.displayName(Component.text(it.get("display_name").getAsString()));
+                                            stack.setItemMeta(meta);
+                                        }
+                                    }
+                                }
+
+                                if (stack != null && !stack.getType().isAir()) {
+                                    String itemName = stack.getItemMeta() != null && stack.getItemMeta().hasDisplayName()
+                                        ? net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(stack.getItemMeta().displayName())
+                                        : stack.getType().name().replace('_', ' ').toLowerCase(Locale.ROOT);
+
+                                    var leftovers = player.getInventory().addItem(stack);
+                                    if (!leftovers.isEmpty()) {
+                                        for (ItemStack drop : leftovers.values()) {
+                                            player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                                        }
+                                        player.sendMessage("§e[Mail] Inventory full! Leftover items dropped safely at your feet.");
+                                    }
+                                    player.sendMessage(String.format(Locale.ROOT,
+                                        "§a§l[Mail] §eClaimed §b%dx %s§e from §b%s§e!", qty, itemName, sender));
+                                }
+                            }
+
+                            if (msg != null && !msg.isBlank()) {
+                                player.sendMessage("§7\"" + msg + "\"");
+                            }
+                            claimedCount++;
+                        }
+
+                        player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                        player.sendMessage(String.format(Locale.ROOT,
+                            "§a§l[Mail] §fSuccessfully collected %d delivery(ies)!", claimedCount));
+                    });
+                } else {
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (player.isOnline()) player.sendMessage("§c[Mail] Failed to claim deliveries. Try again shortly.");
+                    });
+                }
+            } catch (Exception e) {
+                getLogger().warning("Mail claim failed: " + e.getMessage());
+            }
+        });
+    }
+
+    private void reportTerritoryAlertAsync(UUID uuid, String kind, String title, String message, int blockIndex, String world, int x, int y, int z) {
+        if (internalBase == null || internalBase.isBlank() || serviceToken == null || serviceToken.isBlank()) return;
+        var body = new com.google.gson.JsonObject();
+        body.addProperty("uuid", uuid.toString());
+        body.addProperty("kind", kind);
+        body.addProperty("title", title);
+        body.addProperty("message", message);
+        body.addProperty("block_index", blockIndex);
+        body.addProperty("world", world);
+        body.addProperty("x", x);
+        body.addProperty("y", y);
+        body.addProperty("z", z);
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                post(internalBase + "/territory/alert", body.toString(), requestTimeout);
+            } catch (Exception e) {
+                getLogger().warning("Failed to report territory alert: " + e.getMessage());
+            }
+        });
     }
 
     /** Bounded NBT codec. Keeps every player tag, and atomically replaces only the

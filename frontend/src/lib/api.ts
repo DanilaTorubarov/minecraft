@@ -545,3 +545,92 @@ export async function getLeaderboards(category = 'balance', limit = 50): Promise
   if (!response.ok) throw new ApiError(response.status)
   return (await response.json()) as LeaderboardResponse
 }
+
+// --- Offline Mail & Delivery Parcels --------------------------------------
+
+export type Parcel = {
+  id: string
+  sender_uuid: string
+  sender_username: string
+  recipient_uuid: string
+  recipient_username: string
+  coins: number
+  item: InventorySlot | null
+  quantity: number
+  message: string
+  status: 'pending' | 'claimed' | 'cancelled'
+  source: 'inventory' | 'marketplace' | 'direct'
+  created_at: string
+  claimed_at: string | null
+}
+
+export type SendParcelInput = {
+  sender_uuid: string
+  recipient_username: string
+  coins?: number
+  slot?: number
+  fingerprint?: string
+  quantity?: number
+  message?: string
+}
+
+export type MarketGiftInput = {
+  buyer_uuid: string
+  recipient_username: string
+  request_id: string
+  quantity: number
+  pricing: 'unit' | 'lot'
+  expected_total: number
+  expected_remaining: number
+  message?: string
+}
+
+export async function sendParcel(input: SendParcelInput): Promise<Parcel> {
+  const response = await send('POST', '/api/parcels/send', input)
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as Parcel
+}
+
+export async function getParcels(): Promise<{ received: Parcel[]; sent: Parcel[] }> {
+  const response = await fetch('/api/parcels')
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as { received: Parcel[]; sent: Parcel[] }
+}
+
+export async function giftMarketListing(id: string, input: MarketGiftInput): Promise<void> {
+  const response = await fetch(`/api/marketplace/${encodeURIComponent(id)}/gift`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-marketplace': 'trade' },
+    body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+// --- Territory Defense Alerts ----------------------------------------------
+
+export type TerritoryAlert = {
+  id: string
+  uuid: string
+  kind: 'breach' | 'fuel_low'
+  title: string
+  message: string
+  block_index?: number
+  world?: string
+  x?: number
+  y?: number
+  z?: number
+  fuel_seconds?: number
+  read: boolean
+  created_at: string
+}
+
+export async function getTerritoryAlerts(): Promise<TerritoryAlert[]> {
+  const response = await fetch('/api/territory/alerts')
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as TerritoryAlert[]
+}
+
+export async function markTerritoryAlertsRead(): Promise<void> {
+  const response = await send('POST', '/api/territory/alerts/read', {})
+  if (!response.ok) throw new ApiError(response.status)
+}

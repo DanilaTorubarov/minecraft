@@ -125,6 +125,14 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/link/email", post(link_email))
         .route("/internal/stats/report", post(report_stats))
         .route("/internal/balance", post(balance_for_player))
+        .route("/api/parcels", get(get_parcels))
+        .route("/api/parcels/send", post(send_parcel))
+        .route("/api/marketplace/{id}/gift", post(gift_market_listing))
+        .route("/internal/mail/pending", post(internal_mail_pending))
+        .route("/internal/mail/claim", post(internal_mail_claim))
+        .route("/api/territory/alerts", get(get_territory_alerts))
+        .route("/api/territory/alerts/read", post(mark_territory_alerts_read))
+        .route("/internal/territory/alert", post(internal_report_territory_alert))
         // An unmatched API path answers 404 instead of falling through to the SPA
         // shell, so a wrong endpoint never returns an HTML page with a 200.
         .route("/api/{*rest}", any(not_found))
@@ -6215,6 +6223,828 @@ async fn sync_chat_messages(
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(InternalChatSyncResponse { outgoing }))
+}
+
+// --- Offline Mail & Parcels and Territory Alerts ----------------------------
+
+#[derive(serde::Deserialize)]
+struct SendParcelInput {
+    sender_uuid: String,
+    recipient_username: String,
+    #[serde(default)]
+    coins: i64,
+    slot: Option<usize>,
+    fingerprint: Option<String>,
+    quantity: Option<i32>,
+    #[serde(default)]
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+struct ParcelView {
+    id: String,
+    sender_uuid: String,
+    sender_username: String,
+    recipient_uuid: String,
+    recipient_username: String,
+    coins: i64,
+    item: Option<serde_json::Value>,
+    quantity: i32,
+    message: String,
+    status: String,
+    source: String,
+    created_at: String,
+    claimed_at: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ParcelsResponse {
+    received: Vec<ParcelView>,
+    sent: Vec<ParcelView>,
+}
+
+#[derive(serde::Deserialize)]
+struct InternalMailPendingRequest {
+    uuid: String,
+}
+
+#[derive(serde::Serialize)]
+struct InternalMailPendingResponse {
+    has_pending: bool,
+    count: usize,
+    senders: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct InternalMailClaimRequest {
+    uuid: String,
+}
+
+#[derive(serde::Serialize)]
+struct ClaimedParcelView {
+    id: String,
+    sender_username: String,
+    coins: i64,
+    item: Option<serde_json::Value>,
+    item_bytes: Option<String>,
+    quantity: i32,
+    message: String,
+}
+
+#[derive(serde::Deserialize)]
+struct MarketGiftPurchaseInput {
+    buyer_uuid: String,
+    recipient_username: String,
+    request_id: String,
+    quantity: i32,
+    pricing: String,
+    expected_total: i64,
+    expected_remaining: i32,
+    #[serde(default)]
+    message: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ReportTerritoryAlertInput {
+    uuid: String,
+    kind: String,
+    title: String,
+    message: String,
+    block_index: Option<i32>,
+    world: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    z: Option<i32>,
+}
+
+#[derive(serde::Serialize)]
+struct TerritoryAlertView {
+    id: String,
+    uuid: String,
+    kind: String,
+    title: String,
+    message: String,
+    block_index: Option<i32>,
+    world: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    z: Option<i32>,
+    fuel_seconds: Option<i64>,
+    read: bool,
+    created_at: String,
+}
+
+async fn send_parcel(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<SendParcelInput>,
+) -> Result<(StatusCode, Json<ParcelView>), StatusCode> {
+    let sender_uuid = body.sender_uuid.trim().to_lowercase();
+    if !is_uuid(&sender_uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let recipient_name = body.recipient_username.trim();
+    if recipient_name.is_empty() || recipient_name.len() > 32 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if body.coins < 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let has_item = body.slot.is_some();
+    if body.coins == 0 && !has_item {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(slot) = body.slot {
+        if slot >= 36 {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let qty = body.quantity.unwrap_or(0);
+        if qty <= 0 || qty > 230 {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        if body.fingerprint.as_deref().map(valid_item_fingerprint) != Some(true) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let sender_username: Option<String> = sqlx::query_scalar(
+        "SELECT username FROM minecraft_accounts WHERE uuid = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(&sender_uuid)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let sender_username = sender_username.ok_or(StatusCode::NOT_FOUND)?;
+
+    let recipient_row = sqlx::query(
+        "SELECT uuid, username FROM player_stats WHERE lower(username) = lower($1)
+         UNION ALL
+         SELECT uuid, username FROM minecraft_accounts WHERE lower(username) = lower($1)
+         LIMIT 1",
+    )
+    .bind(recipient_name)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let recipient_row = recipient_row.ok_or(StatusCode::NOT_FOUND)?;
+    let recipient_uuid: String = recipient_row.get("uuid");
+    let recipient_canonical_name: String = recipient_row.get("username");
+
+    if recipient_uuid == sender_uuid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if body.coins > 0 {
+        coin_reason(&mut tx, "mail_send", &sender_uuid).await?;
+        let rows = sqlx::query(
+            "UPDATE player_stats SET coins = coins - $2 WHERE uuid = $1 AND coins >= $2",
+        )
+        .bind(&sender_uuid)
+        .bind(body.coins)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .rows_affected();
+
+        if rows == 0 {
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
+    let mut item_json: Option<serde_json::Value> = None;
+    let mut item_quantity = 0;
+
+    if let Some(slot) = body.slot {
+        let expected_fp = body.fingerprint.as_deref().unwrap();
+        let qty = body.quantity.unwrap();
+
+        let inv_row: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT slots FROM player_inventory WHERE uuid = $1 FOR UPDATE",
+        )
+        .bind(&sender_uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let mut inv_slots = inv_row.ok_or(StatusCode::CONFLICT)?;
+        let slots_arr = inv_slots.as_array_mut().ok_or(StatusCode::CONFLICT)?;
+        if slot >= slots_arr.len() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let slot_val = slots_arr[slot].take();
+        if slot_val.is_null() {
+            return Err(StatusCode::CONFLICT);
+        }
+        if slot_val["fingerprint"].as_str() != Some(expected_fp) {
+            return Err(StatusCode::CONFLICT);
+        }
+        let cur_amount = slot_val["amount"].as_i64().unwrap_or(0);
+        if cur_amount < i64::from(qty) {
+            return Err(StatusCode::CONFLICT);
+        }
+
+        let mut sent_item = slot_val.clone();
+        sent_item["amount"] = serde_json::json!(qty);
+        item_quantity = qty;
+        item_json = Some(sent_item);
+
+        let left = cur_amount - i64::from(qty);
+        if left > 0 {
+            let mut remaining_item = slot_val;
+            remaining_item["amount"] = serde_json::json!(left);
+            slots_arr[slot] = remaining_item;
+        } else {
+            slots_arr[slot] = serde_json::Value::Null;
+        }
+
+        sqlx::query("UPDATE player_inventory SET slots = $2, updated_at = now() WHERE uuid = $1")
+            .bind(&sender_uuid)
+            .bind(&inv_slots)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let req_id = new_session_token()?;
+        sqlx::query(
+            "INSERT INTO inventory_deletions(uuid, request_id, slot, fingerprint, status)
+             VALUES($1, $2, $3, $4, 'pending')
+             ON CONFLICT (uuid) DO UPDATE SET request_id=EXCLUDED.request_id, slot=EXCLUDED.slot, fingerprint=EXCLUDED.fingerprint, status='pending', created_at=now()",
+        )
+        .bind(&sender_uuid)
+        .bind(&req_id)
+        .bind(slot as i32)
+        .bind(expected_fp)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    let message = body.message.trim();
+    let message = if message.len() > 256 {
+        &message[..256]
+    } else {
+        message
+    };
+
+    let inserted = sqlx::query(
+        "INSERT INTO mail_parcels (sender_user_id, sender_uuid, sender_username, recipient_uuid, recipient_username, coins, item, quantity, message, status, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', 'inventory')
+         RETURNING id::text AS id, created_at::text AS created_at",
+    )
+    .bind(user_id)
+    .bind(&sender_uuid)
+    .bind(&sender_username)
+    .bind(&recipient_uuid)
+    .bind(&recipient_canonical_name)
+    .bind(body.coins)
+    .bind(&item_json)
+    .bind(item_quantity)
+    .bind(message)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let parcel_id: String = inserted.get("id");
+    let created_at: String = inserted.get("created_at");
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ParcelView {
+            id: parcel_id,
+            sender_uuid,
+            sender_username,
+            recipient_uuid,
+            recipient_username: recipient_canonical_name,
+            coins: body.coins,
+            item: item_json,
+            quantity: item_quantity,
+            message: message.to_string(),
+            status: "pending".to_string(),
+            source: "inventory".to_string(),
+            created_at,
+            claimed_at: None,
+        }),
+    ))
+}
+
+async fn gift_market_listing(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<MarketGiftPurchaseInput>,
+) -> Result<StatusCode, StatusCode> {
+    market_header(&headers)?;
+    let buyer_uuid = body.buyer_uuid.trim().to_lowercase();
+    if !is_uuid(&buyer_uuid)
+        || !is_uuid(&body.request_id)
+        || !(1..=230).contains(&body.quantity)
+        || !matches!(body.pricing.as_str(), "unit" | "lot")
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let recipient_name = body.recipient_username.trim();
+    if recipient_name.is_empty() || recipient_name.len() > 32 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = pool.begin().await.map_err(market_db)?;
+
+    let buyer_username: Option<String> = sqlx::query_scalar(
+        "SELECT username FROM minecraft_accounts WHERE uuid = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(&buyer_uuid)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    let buyer_username = buyer_username.ok_or(StatusCode::NOT_FOUND)?;
+
+    let recipient_row = sqlx::query(
+        "SELECT uuid, username FROM player_stats WHERE lower(username) = lower($1)
+         UNION ALL
+         SELECT uuid, username FROM minecraft_accounts WHERE lower(username) = lower($1)
+         LIMIT 1",
+    )
+    .bind(recipient_name)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    let recipient_row = recipient_row.ok_or(StatusCode::NOT_FOUND)?;
+    let recipient_uuid: String = recipient_row.get("uuid");
+    let recipient_canonical_name: String = recipient_row.get("username");
+
+    let listing = sqlx::query("SELECT * FROM market_listings WHERE id=$1 FOR UPDATE")
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(market_db)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if listing.get::<i64, _>("user_id") == user_id
+        || listing.get::<String, _>("status") != "active"
+    {
+        return Err(StatusCode::CONFLICT);
+    }
+    let remaining: i32 = listing.get("remaining");
+    if remaining != body.expected_remaining || body.quantity > remaining {
+        return Err(StatusCode::CONFLICT);
+    }
+    let price: Option<i64> = if body.pricing == "unit" {
+        listing
+            .get::<Option<i64>, _>("unit_price")
+            .map(|p| p * i64::from(body.quantity))
+    } else if body.quantity == remaining {
+        listing
+            .get::<Option<i64>, _>("lot_price")
+            .map(|p| market_lot_price(p, remaining, listing.get("quantity")))
+    } else {
+        None
+    };
+    let total = price.ok_or(StatusCode::BAD_REQUEST)?;
+    if total != body.expected_total {
+        return Err(StatusCode::CONFLICT);
+    }
+    let fee_bps = i64::from(listing.get::<i32, _>("commission_bps"));
+    let gross: i64 = listing.get("gross_sold");
+    let commission = market_commission(gross, total, fee_bps);
+    let seller: String = listing.get("uuid");
+    let bytes: String = listing
+        .get::<Option<String>, _>("item_bytes")
+        .ok_or(StatusCode::CONFLICT)?;
+    let item_json: serde_json::Value = listing.get("item");
+
+    coin_reason(&mut tx, "market_gift_purchase", &body.request_id).await?;
+    let charged =
+        sqlx::query("UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1 AND coins >= $2")
+            .bind(&buyer_uuid)
+            .bind(total)
+            .execute(&mut *tx)
+            .await
+            .map_err(market_db)?
+            .rows_affected();
+    if charged == 0 {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    coin_reason(&mut tx, "market_sale", &body.request_id).await?;
+    let paid = sqlx::query(
+        "UPDATE player_stats SET coins=coins+$2 WHERE uuid=$1 AND coins <= 9223372036854775807-$2",
+    )
+    .bind(&seller)
+    .bind(total)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?
+    .rows_affected();
+    if paid == 0 {
+        return Err(StatusCode::CONFLICT);
+    }
+    if commission > 0 {
+        coin_reason(&mut tx, "market_commission", &body.request_id).await?;
+        sqlx::query("UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1")
+            .bind(&seller)
+            .bind(commission)
+            .execute(&mut *tx)
+            .await
+            .map_err(market_db)?;
+    }
+
+    sqlx::query(
+        "UPDATE market_listings SET gross_sold=gross_sold+$2,fee_paid=fee_paid+$3 WHERE id=$1",
+    )
+    .bind(&id)
+    .bind(total)
+    .bind(commission)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    let new_remaining = remaining - body.quantity;
+    let new_status = if new_remaining == 0 {
+        "closed"
+    } else {
+        "active"
+    };
+    sqlx::query("UPDATE market_listings SET remaining=$2,status=$3 WHERE id=$1")
+        .bind(&id)
+        .bind(new_remaining)
+        .bind(new_status)
+        .execute(&mut *tx)
+        .await
+        .map_err(market_db)?;
+
+    let message = body.message.trim();
+    let message = if message.len() > 256 {
+        &message[..256]
+    } else {
+        message
+    };
+
+    sqlx::query(
+        "INSERT INTO mail_parcels (sender_user_id, sender_uuid, sender_username, recipient_uuid, recipient_username, coins, item, item_bytes, quantity, message, status, source)
+         VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9, 'pending', 'marketplace')",
+    )
+    .bind(user_id)
+    .bind(&buyer_uuid)
+    .bind(&buyer_username)
+    .bind(&recipient_uuid)
+    .bind(&recipient_canonical_name)
+    .bind(&item_json)
+    .bind(&bytes)
+    .bind(body.quantity)
+    .bind(message)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    tx.commit().await.map_err(market_db)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn get_parcels(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<ParcelsResponse>, StatusCode> {
+    let uuids: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if uuids.is_empty() {
+        return Ok(Json(ParcelsResponse {
+            received: Vec::new(),
+            sent: Vec::new(),
+        }));
+    }
+
+    let rec_rows = sqlx::query(
+        "SELECT id::text AS id, sender_uuid, sender_username, recipient_uuid, recipient_username,
+                coins, item, quantity, message, status, source, created_at::text AS created_at, claimed_at::text AS claimed_at
+         FROM mail_parcels
+         WHERE recipient_uuid = ANY($1::text[])
+         ORDER BY created_at DESC
+         LIMIT 50",
+    )
+    .bind(&uuids)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut received = Vec::new();
+    for r in rec_rows {
+        received.push(ParcelView {
+            id: r.get("id"),
+            sender_uuid: r.get("sender_uuid"),
+            sender_username: r.get("sender_username"),
+            recipient_uuid: r.get("recipient_uuid"),
+            recipient_username: r.get("recipient_username"),
+            coins: r.get("coins"),
+            item: r.get("item"),
+            quantity: r.get("quantity"),
+            message: r.get("message"),
+            status: r.get("status"),
+            source: r.get("source"),
+            created_at: r.get("created_at"),
+            claimed_at: r.get("claimed_at"),
+        });
+    }
+
+    let sent_rows = sqlx::query(
+        "SELECT id::text AS id, sender_uuid, sender_username, recipient_uuid, recipient_username,
+                coins, item, quantity, message, status, source, created_at::text AS created_at, claimed_at::text AS claimed_at
+         FROM mail_parcels
+         WHERE sender_uuid = ANY($1::text[])
+         ORDER BY created_at DESC
+         LIMIT 50",
+    )
+    .bind(&uuids)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut sent = Vec::new();
+    for r in sent_rows {
+        sent.push(ParcelView {
+            id: r.get("id"),
+            sender_uuid: r.get("sender_uuid"),
+            sender_username: r.get("sender_username"),
+            recipient_uuid: r.get("recipient_uuid"),
+            recipient_username: r.get("recipient_username"),
+            coins: r.get("coins"),
+            item: r.get("item"),
+            quantity: r.get("quantity"),
+            message: r.get("message"),
+            status: r.get("status"),
+            source: r.get("source"),
+            created_at: r.get("created_at"),
+            claimed_at: r.get("claimed_at"),
+        });
+    }
+
+    Ok(Json(ParcelsResponse { received, sent }))
+}
+
+async fn internal_mail_pending(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<InternalMailPendingRequest>,
+) -> Result<Json<InternalMailPendingResponse>, StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = body.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let rows = sqlx::query(
+        "SELECT sender_username FROM mail_parcels WHERE recipient_uuid = $1 AND status = 'pending' ORDER BY created_at ASC",
+    )
+    .bind(&uuid)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let count = rows.len();
+    let senders: Vec<String> = rows.into_iter().map(|r| r.get("sender_username")).collect();
+    let has_pending = count > 0;
+
+    Ok(Json(InternalMailPendingResponse {
+        has_pending,
+        count,
+        senders,
+    }))
+}
+
+async fn internal_mail_claim(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<InternalMailClaimRequest>,
+) -> Result<Json<Vec<ClaimedParcelView>>, StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = body.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let rows = sqlx::query(
+        "SELECT id::text AS id, sender_username, coins, item, item_bytes, quantity, message
+         FROM mail_parcels
+         WHERE recipient_uuid = $1 AND status = 'pending'
+         ORDER BY created_at ASC
+         FOR UPDATE",
+    )
+    .bind(&uuid)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut claimed = Vec::new();
+    let mut total_coins: i64 = 0;
+    let mut ids: Vec<String> = Vec::new();
+
+    for r in &rows {
+        let coins: i64 = r.get("coins");
+        total_coins += coins;
+        let id: String = r.get("id");
+        ids.push(id.clone());
+        claimed.push(ClaimedParcelView {
+            id,
+            sender_username: r.get("sender_username"),
+            coins,
+            item: r.get("item"),
+            item_bytes: r.get("item_bytes"),
+            quantity: r.get("quantity"),
+            message: r.get("message"),
+        });
+    }
+
+    if !claimed.is_empty() {
+        if total_coins > 0 {
+            coin_reason(&mut tx, "mail_claim", "bulk_claim").await?;
+            sqlx::query(
+                "INSERT INTO player_stats(uuid, username) VALUES($1, '') ON CONFLICT (uuid) DO NOTHING",
+            )
+            .bind(&uuid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            sqlx::query("UPDATE player_stats SET coins = coins + $2 WHERE uuid = $1")
+                .bind(&uuid)
+                .bind(total_coins)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+
+        sqlx::query(
+            "UPDATE mail_parcels SET status = 'claimed', claimed_at = now() WHERE id = ANY($1::uuid[])",
+        )
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(claimed))
+}
+
+async fn internal_report_territory_alert(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<ReportTerritoryAlertInput>,
+) -> Result<StatusCode, StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = body.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) || !matches!(body.kind.as_str(), "breach" | "fuel_low") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    sqlx::query(
+        "INSERT INTO territory_alerts (uuid, kind, title, message, block_index, world, x, y, z)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(&uuid)
+    .bind(&body.kind)
+    .bind(body.title.trim())
+    .bind(body.message.trim())
+    .bind(body.block_index)
+    .bind(body.world.as_deref().map(str::trim))
+    .bind(body.x)
+    .bind(body.y)
+    .bind(body.z)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn get_territory_alerts(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<Vec<TerritoryAlertView>>, StatusCode> {
+    let uuids: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if uuids.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let mut alerts = Vec::new();
+
+    // 1. Dynamic check for low fuel on placed private blocks (< 2 hours = 7200 seconds)
+    let low_fuel_blocks = sqlx::query(
+        "SELECT id::text AS id, uuid, block_index, world, x, y, z, fuel_seconds
+         FROM private_blocks
+         WHERE uuid = ANY($1::text[]) AND placed = true AND fuel_seconds > 0 AND fuel_seconds <= 7200
+         ORDER BY fuel_seconds ASC",
+    )
+    .bind(&uuids)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for b in low_fuel_blocks {
+        let block_index: i32 = b.get("block_index");
+        let fuel_seconds: i64 = b.get("fuel_seconds");
+        let hours = fuel_seconds / 3600;
+        let mins = (fuel_seconds % 3600) / 60;
+        let time_str = if hours > 0 {
+            format!("{hours}h {mins}m")
+        } else {
+            format!("{mins}m")
+        };
+        let x: i32 = b.get("x");
+        let y: i32 = b.get("y");
+        let z: i32 = b.get("z");
+        let world: String = b.get("world");
+
+        alerts.push(TerritoryAlertView {
+            id: format!("fuel-{}", b.get::<String, _>("id")),
+            uuid: b.get("uuid"),
+            kind: "fuel_low".to_string(),
+            title: format!("Core #{block_index} Low Fuel Warning"),
+            message: format!(
+                "Protection Core #{block_index} at ({x}, {y}, {z}) has critically low fuel ({time_str} remaining)! Deposit fuel crystals to maintain defensive barrier."
+            ),
+            block_index: Some(block_index),
+            world: Some(world),
+            x: Some(x),
+            y: Some(y),
+            z: Some(z),
+            fuel_seconds: Some(fuel_seconds),
+            read: false,
+            created_at: "now".to_string(),
+        });
+    }
+
+    // 2. Fetch stored alerts (e.g. breach alerts)
+    let stored = sqlx::query(
+        "SELECT id::text AS id, uuid, kind, title, message, block_index, world, x, y, z, read, created_at::text AS created_at
+         FROM territory_alerts
+         WHERE uuid = ANY($1::text[])
+         ORDER BY created_at DESC
+         LIMIT 50",
+    )
+    .bind(&uuids)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for s in stored {
+        alerts.push(TerritoryAlertView {
+            id: s.get("id"),
+            uuid: s.get("uuid"),
+            kind: s.get("kind"),
+            title: s.get("title"),
+            message: s.get("message"),
+            block_index: s.get("block_index"),
+            world: s.get("world"),
+            x: s.get("x"),
+            y: s.get("y"),
+            z: s.get("z"),
+            fuel_seconds: None,
+            read: s.get("read"),
+            created_at: s.get("created_at"),
+        });
+    }
+
+    Ok(Json(alerts))
+}
+
+async fn mark_territory_alerts_read(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<StatusCode, StatusCode> {
+    sqlx::query(
+        "UPDATE territory_alerts SET read = true
+         WHERE uuid IN (SELECT uuid FROM minecraft_accounts WHERE user_id = $1) AND read = false",
+    )
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
 }
 // --- Player skins ----------------------------------------------------------
 
@@ -12788,6 +13618,196 @@ mod test {
         let since_arr = since_json.as_array().expect("array");
         assert_eq!(since_arr.len(), 1);
         assert_eq!(since_arr[0]["sender_name"], "SteveMiner");
+
+        delete_user(&pool, &email).await?;
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+    #[tokio::test]
+    async fn offline_mail_parcel_send_and_claim() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let token = test_service_token();
+        let random = random_id();
+
+        let email_a = format!("sender_{random}@example.com").to_lowercase();
+        let login_a = format!("sender_{random}").to_lowercase();
+        register_request(&pool, "SenderUser", &login_a, &email_a, "password12345").await?;
+        let cookie_a = login_cookie(&pool, &email_a, "password12345").await?;
+
+        let email_b = format!("recip_{random}@example.com").to_lowercase();
+        let login_b = format!("recip_{random}").to_lowercase();
+        register_request(&pool, "RecipUser", &login_b, &email_b, "password12345").await?;
+        let cookie_b = login_cookie(&pool, &email_b, "password12345").await?;
+
+        let sender_uuid = test_uuid(&random_ip());
+        let recip_uuid = test_uuid(&random_ip());
+
+        // Link both accounts
+        let user_a_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email_a).fetch_one(&pool).await?;
+        let user_b_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email_b).fetch_one(&pool).await?;
+
+        sqlx::query("INSERT INTO minecraft_accounts (user_id, uuid, username) VALUES ($1, $2, 'SteveSender'), ($3, $4, 'AlexRecip')")
+            .bind(user_a_id).bind(&sender_uuid).bind(user_b_id).bind(&recip_uuid)
+            .execute(&pool).await?;
+
+        // Give sender 1,000 coins in player_stats
+        sqlx::query("INSERT INTO player_stats (uuid, username, coins) VALUES ($1, 'SteveSender', 1000), ($2, 'AlexRecip', 0)")
+            .bind(&sender_uuid).bind(&recip_uuid).execute(&pool).await?;
+
+        // Give sender an inventory item in slot 0
+        let mut slots = vec![serde_json::Value::Null; 41];
+        slots[0] = serde_json::json!({
+            "key": "minecraft:diamond_sword",
+            "amount": 2,
+            "damage": 0,
+            "max_damage": 1561,
+            "display_name": "Hero Blade",
+            "enchantments": {"sharpness": 5},
+            "icon": null,
+            "fingerprint": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        });
+        sqlx::query("INSERT INTO player_inventory (uuid, username, slots) VALUES ($1, 'SteveSender', $2)")
+            .bind(&sender_uuid).bind(serde_json::to_value(&slots).unwrap()).execute(&pool).await?;
+
+        // 1. Pending check before send
+        let check_none = post_internal(&pool, "/internal/mail/pending", Some(&token), serde_json::json!({"uuid": recip_uuid}), &random_ip()).await?;
+        assert_eq!(check_none.status(), StatusCode::OK);
+        let check_none_json = body_json(check_none).await?;
+        assert_eq!(check_none_json["has_pending"], false);
+        assert_eq!(check_none_json["count"], 0);
+
+        // 2. Sender dispatches parcel with 250 coins and 1 diamond sword
+        let send_res = send(&pool, "POST", "/api/parcels/send", Some(&cookie_a), Some(serde_json::json!({
+            "sender_uuid": sender_uuid,
+            "recipient_username": "AlexRecip",
+            "coins": 250,
+            "slot": 0,
+            "fingerprint": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "quantity": 1,
+            "message": "Enjoy the blade!"
+        }))).await?;
+        assert_eq!(send_res.status(), StatusCode::CREATED);
+        let parcel_json = body_json(send_res).await?;
+        assert_eq!(parcel_json["sender_username"], "SteveSender");
+        assert_eq!(parcel_json["recipient_username"], "AlexRecip");
+        assert_eq!(parcel_json["coins"], 250);
+        assert_eq!(parcel_json["quantity"], 1);
+
+        // Sender coins decremented to 750
+        let sender_coins: i64 = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1").bind(&sender_uuid).fetch_one(&pool).await?;
+        assert_eq!(sender_coins, 750);
+
+        // 3. Recipient joins Minecraft and checks pending mail
+        let check_res = post_internal(&pool, "/internal/mail/pending", Some(&token), serde_json::json!({"uuid": recip_uuid}), &random_ip()).await?;
+        assert_eq!(check_res.status(), StatusCode::OK);
+        let check_json = body_json(check_res).await?;
+        assert_eq!(check_json["has_pending"], true);
+        assert_eq!(check_json["count"], 1);
+        assert_eq!(check_json["senders"][0], "SteveSender");
+
+        // 4. Recipient types /mail claim
+        let claim_res = post_internal(&pool, "/internal/mail/claim", Some(&token), serde_json::json!({"uuid": recip_uuid}), &random_ip()).await?;
+        assert_eq!(claim_res.status(), StatusCode::OK);
+        let claimed = body_json(claim_res).await?;
+        let claimed_arr = claimed.as_array().expect("array");
+        assert_eq!(claimed_arr.len(), 1);
+        assert_eq!(claimed_arr[0]["sender_username"], "SteveSender");
+        assert_eq!(claimed_arr[0]["coins"], 250);
+        assert_eq!(claimed_arr[0]["quantity"], 1);
+        assert_eq!(claimed_arr[0]["message"], "Enjoy the blade!");
+
+        // Recipient coins now 250
+        let recip_coins: i64 = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1").bind(&recip_uuid).fetch_one(&pool).await?;
+        assert_eq!(recip_coins, 250);
+
+        // 5. Subsequent check reports no more pending
+        let check_after = post_internal(&pool, "/internal/mail/pending", Some(&token), serde_json::json!({"uuid": recip_uuid}), &random_ip()).await?;
+        assert_eq!(body_json(check_after).await?["has_pending"], false);
+
+        // 6. Web query /api/parcels shows sent and received
+        let parcels_res_a = send(&pool, "GET", "/api/parcels", Some(&cookie_a), None).await?;
+        let parcels_a = body_json(parcels_res_a).await?;
+        assert_eq!(parcels_a["sent"].as_array().unwrap().len(), 1);
+        assert_eq!(parcels_a["sent"][0]["status"], "claimed");
+
+        let parcels_res_b = send(&pool, "GET", "/api/parcels", Some(&cookie_b), None).await?;
+        let parcels_b = body_json(parcels_res_b).await?;
+        assert_eq!(parcels_b["received"].as_array().unwrap().len(), 1);
+        assert_eq!(parcels_b["received"][0]["sender_username"], "SteveSender");
+        assert_eq!(parcels_b["received"][0]["status"], "claimed");
+
+        delete_user(&pool, &email_a).await?;
+        delete_user(&pool, &email_b).await?;
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+    #[tokio::test]
+    async fn territory_defense_alerts_low_fuel_and_breach() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let token = test_service_token();
+        let random = random_id();
+
+        let email = format!("defender_{random}@example.com").to_lowercase();
+        let login = format!("defender_{random}").to_lowercase();
+        register_request(&pool, "DefenderUser", &login, &email, "password12345").await?;
+        let cookie = login_cookie(&pool, &email, "password12345").await?;
+
+        let player_uuid = test_uuid(&random_ip());
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email).fetch_one(&pool).await?;
+        sqlx::query("INSERT INTO minecraft_accounts (user_id, uuid, username) VALUES ($1, $2, 'BaseOwner')")
+            .bind(user_id).bind(&player_uuid).execute(&pool).await?;
+        sqlx::query("INSERT INTO economy_players (uuid) VALUES ($1)").bind(&player_uuid).execute(&pool).await?;
+
+        // 1. Initial check has no alerts
+        let alerts_res = send(&pool, "GET", "/api/territory/alerts", Some(&cookie), None).await?;
+        assert_eq!(alerts_res.status(), StatusCode::OK);
+        assert_eq!(body_json(alerts_res).await?.as_array().unwrap().len(), 0);
+
+        // 2. Add private block with 1 hour of fuel (3600 seconds <= 7200 -> LOW FUEL ALERT)
+        sqlx::query(
+            "INSERT INTO private_blocks (uuid, block_index, world, x, y, z, placed, radius, fuel_seconds, fuel_tier)
+             VALUES ($1, 1, 'world', 100, 64, -200, true, 1, 3600, 1)"
+        )
+        .bind(&player_uuid)
+        .execute(&pool)
+        .await?;
+
+        // Check alerts -> should contain automated low fuel warning
+        let alerts_res2 = send(&pool, "GET", "/api/territory/alerts", Some(&cookie), None).await?;
+        let al_json2 = body_json(alerts_res2).await?;
+        let al_arr2 = al_json2.as_array().unwrap();
+        assert_eq!(al_arr2.len(), 1);
+        assert_eq!(al_arr2[0]["kind"], "fuel_low");
+        assert_eq!(al_arr2[0]["block_index"], 1);
+        assert_eq!(al_arr2[0]["fuel_seconds"], 3600);
+
+        // 3. Breach charge detonated on base -> plugin reports territory alert
+        let breach_alert_req = serde_json::json!({
+            "uuid": player_uuid,
+            "kind": "breach",
+            "title": "Base Breached!",
+            "message": "Your base at (100, 64, -200) was breached by RaiderSteve! Containers are vulnerable for 5 minutes!",
+            "block_index": 1,
+            "world": "world",
+            "x": 100,
+            "y": 64,
+            "z": -200
+        });
+
+        let breach_res = post_internal(&pool, "/internal/territory/alert", Some(&token), breach_alert_req, &random_ip()).await?;
+        assert_eq!(breach_res.status(), StatusCode::OK);
+
+        // 4. Web query now returns both fuel_low and breach alerts
+        let alerts_res3 = send(&pool, "GET", "/api/territory/alerts", Some(&cookie), None).await?;
+        let al_json3 = body_json(alerts_res3).await?;
+        let al_arr3 = al_json3.as_array().unwrap();
+        assert_eq!(al_arr3.len(), 2);
+        assert!(al_arr3.iter().any(|a| a["kind"] == "fuel_low"));
+        assert!(al_arr3.iter().any(|a| a["kind"] == "breach"));
+
+        // 5. Mark alerts read
+        let read_res = send(&pool, "POST", "/api/territory/alerts/read", Some(&cookie), Some(serde_json::json!({}))).await?;
+        assert_eq!(read_res.status(), StatusCode::OK);
 
         delete_user(&pool, &email).await?;
         drop_budget_pool(admin, pool, schema).await

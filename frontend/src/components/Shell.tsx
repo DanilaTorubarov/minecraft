@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../lib/auth-context'
 import ThemeControl from './ThemeControl'
@@ -16,12 +16,14 @@ import globeIcon from '../assets/icons/vista-search-globe.png'
 import personalizationIcon from '../assets/icons/vista-personalization.png'
 import perfCenterIcon from '../assets/icons/vista-perf-center.png'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
+import firewallWarningIcon from '../assets/icons/vista-firewall-warning.png'
 import minigamesIcon from '../assets/icons/minigames-gamepad.png'
 import MinigamesPage from '../pages/MinigamesPage'
 import AdminPage from '../pages/AdminPage'
 import ChatPage from '../pages/ChatPage'
 import MapPage from '../pages/MapPage'
 import LeaderboardsPage from '../pages/LeaderboardsPage'
+import { getTerritoryAlerts, markTerritoryAlertsRead, type TerritoryAlert } from '../lib/api'
 
 function Shell() {
   const { user, signOut } = useAuth()
@@ -53,6 +55,27 @@ function Shell() {
   const [leaderboardsActivation, setLeaderboardsActivation] = useState(0)
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
+  const [territoryAlerts, setTerritoryAlerts] = useState<TerritoryAlert[]>([])
+  const [alertDismissed, setAlertDismissed] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    if (!user || statsAccounts.length === 0) return
+    let active = true
+    const checkAlerts = async () => {
+      if (document.visibilityState !== 'visible') return
+      try {
+        const al = await getTerritoryAlerts()
+        if (active) setTerritoryAlerts(al)
+      } catch {
+        // quiet failure
+      }
+    }
+    void checkAlerts()
+    const timer = window.setInterval(() => { void checkAlerts() }, 6000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [user, statsAccounts.length])
+
+  const activeAlerts = territoryAlerts.filter((a) => !alertDismissed[a.id])
   const [playerOpen, setPlayerOpen] = useState(false)
   const [playerActivation, setPlayerActivation] = useState(0)
   const [playerSelection, setPlayerSelection] = useState<{ userId: number; uuid: string } | null>(null)
@@ -139,11 +162,93 @@ function Shell() {
             <button onClick={openAdmin} data-ui-sound={adminOpen ? 'click' : 'open'} aria-controls="admin-window">Admin Panel</button>
           )}
         </nav>
+        {activeAlerts.length > 0 && (
+          <button
+            type="button"
+            className="desktop-menu-alert-badge"
+            onClick={() => {
+              const targetUuid = activeAlerts[0]?.uuid
+              if (targetUuid) openPlayer(targetUuid)
+            }}
+            title="Click to view territory defense in Player Controls"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'rgba(239, 68, 68, 0.25)',
+              border: '1px solid rgba(239, 68, 68, 0.5)',
+              color: '#ef4444',
+              padding: '2px 10px',
+              borderRadius: '12px',
+              fontSize: '12px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              marginRight: '8px',
+            }}
+          >
+            <img src={firewallWarningIcon} alt="" style={{ width: '16px', height: '16px' }} />
+            <span>{activeAlerts.length} Alert{activeAlerts.length === 1 ? '' : 's'}</span>
+          </button>
+        )}
         <span className="desktop-menu-caption">Your world, connected.</span>
         {user !== null && <button className="menu-logout" onClick={handleSignOut} disabled={leaving}>{leaving ? 'Logging out…' : 'Log out'}</button>}
       </header>
 
       <div className="desktop-stage">
+        {activeAlerts.length > 0 && (
+          <aside
+            className="territory-alert-toast"
+            role="alert"
+            style={{
+              position: 'fixed',
+              top: '52px',
+              right: '20px',
+              zIndex: 9999,
+              width: '340px',
+              background: 'var(--content-glass)',
+              backdropFilter: 'blur(24px) saturate(145%)',
+              border: '1px solid rgba(239, 68, 68, 0.5)',
+              borderRadius: '10px',
+              padding: '14px 16px',
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.35)',
+              display: 'grid',
+              gap: '8px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, color: '#ef4444', fontSize: '13px' }}>
+                <img src={firewallWarningIcon} alt="" style={{ width: '18px', height: '18px' }} />
+                <span>{activeAlerts[0].title}</span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-quiet"
+                onClick={() => {
+                  setAlertDismissed((prev) => ({ ...prev, [activeAlerts[0].id]: true }))
+                  void markTerritoryAlertsRead().catch(() => {})
+                }}
+                style={{ fontSize: '11px', padding: '2px 6px' }}
+              >
+                Dismiss
+              </button>
+            </div>
+            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.4, color: 'var(--text)' }}>
+              {activeAlerts[0].message}
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  openPlayer(activeAlerts[0].uuid)
+                }}
+                style={{ fontSize: '12px', padding: '4px 10px' }}
+              >
+                View in Player Controls →
+              </button>
+            </div>
+          </aside>
+        )}
         <DesktopWindow id="account-window" title="Account" icon={globeIcon} open={accountOpen} activation={accountActivation} active={active === 'account'} onFocus={() => setActive('account')} onClose={hideAccount} onMinimize={hideAccount}>
           <div className="account-toolbar">
             <span>{user === null ? 'Welcome to your account' : 'Your Minecraft identity'}</span>

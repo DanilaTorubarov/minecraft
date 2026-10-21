@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { ApiError, getMarketQuote, type MarketQuote, sendInventoryToMarket, getPlayerInventory, type InventorySlot, type InventoryView } from '../lib/api'
+import { ApiError, getMarketQuote, type MarketQuote, sendInventoryToMarket, getPlayerInventory, type InventorySlot, type InventoryView, sendParcel } from '../lib/api'
 import ItemBubble from '../components/ItemBubble'
 import { itemName, slotDescription } from '../lib/inventory'
+import { playSound } from '../lib/sounds'
 
 const ARMOR_LABELS = ['Helmet', 'Chestplate', 'Leggings', 'Boots'] as const
 
@@ -13,9 +14,13 @@ export default function InventoryPage({ uuid, username, visible }: { uuid: strin
   const [submitting, setSubmitting] = useState(false)
   const [actionMessage, setActionMessage] = useState('')
   const [actionError, setActionError] = useState('')
+  const [actionType, setActionType] = useState<'market' | 'parcel'>('market')
   const [quantity, setQuantity] = useState('1')
   const [unitPrice, setUnitPrice] = useState('')
   const [lotPrice, setLotPrice] = useState('')
+  const [parcelRecipient, setParcelRecipient] = useState('')
+  const [parcelCoins, setParcelCoins] = useState('')
+  const [parcelMessage, setParcelMessage] = useState('')
   const [quote, setQuote] = useState<{ key: string; value: MarketQuote } | null>(null)
   const quoteKey = JSON.stringify([quantity, unitPrice, lotPrice])
   const currentQuote = quote?.key === quoteKey ? quote.value : null
@@ -37,9 +42,44 @@ export default function InventoryPage({ uuid, username, visible }: { uuid: strin
     const item = inventory?.slots?.[index]
     if (!item) return
     returnFocus.current = document.activeElement as HTMLElement
-    setQuantity(String(item.amount)); setUnitPrice(''); setLotPrice(''); setSelected({ index, item }); setActionError(''); setActionMessage('')
+    setQuantity(String(item.amount)); setUnitPrice(''); setLotPrice(''); setSelected({ index, item }); setActionError(''); setActionMessage(''); setActionType('market'); setParcelRecipient(''); setParcelCoins(''); setParcelMessage('')
   }
   const dismiss = () => { setSelected(null); returnFocus.current?.focus() }
+  const sendAsParcel = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!selected?.item.fingerprint || submitting) return
+    if (!parcelRecipient.trim()) { setActionError('Enter a recipient player username.'); return }
+    const qty = Number(quantity)
+    if (isNaN(qty) || qty < 1 || qty > selected.item.amount) { setActionError('Enter a valid quantity.'); return }
+    const extraCoins = parcelCoins.trim() ? Number(parcelCoins) : 0
+    if (isNaN(extraCoins) || extraCoins < 0) { setActionError('Enter a valid coin amount.'); return }
+    setSubmitting(true); setActionError('')
+    try {
+      await sendParcel({
+        sender_uuid: uuid,
+        recipient_username: parcelRecipient.trim(),
+        slot: selected.index,
+        fingerprint: selected.item.fingerprint,
+        quantity: qty,
+        coins: extraCoins,
+        message: parcelMessage.trim() || undefined,
+      })
+      playSound('done')
+      setActionMessage(`Parcel sent to ${parcelRecipient.trim()}! When they log into Minecraft, they will see: You received a delivery from ${username}! Type /mail claim.`)
+      dismiss()
+    } catch (error) {
+      playSound('click')
+      setActionError(
+        error instanceof ApiError && error.status === 404
+          ? 'Recipient player not found. Make sure the username has joined the server.'
+          : error instanceof ApiError && error.status === 422
+          ? 'Insufficient coins to send this parcel.'
+          : error instanceof ApiError && error.status === 409
+          ? 'The stack changed or another transfer is pending. Refresh and try again.'
+          : 'Could not send parcel. Check connection and try again.'
+      )
+    } finally { setSubmitting(false); setVersion((value) => value + 1) }
+  }
   const sendToMarket = async (event: FormEvent) => {
     event.preventDefault()
     if (!selected?.item.fingerprint || !currentQuote || submitting) return
@@ -91,27 +131,54 @@ export default function InventoryPage({ uuid, username, visible }: { uuid: strin
         : inventory?.marketplace?.status === 'conflict' ? <p className="note">The stack changed or could not be transferred. Nothing was sent. Refresh and select it again.</p>
         : null}
     </div>
-    {selected && <form key={selected.index} className="note inv-selection" aria-labelledby={selectionId} onSubmit={(event) => { void sendToMarket(event) }}
+    {selected && <form key={selected.index} className="note inv-selection" aria-labelledby={selectionId} onSubmit={(event) => { if (actionType === 'market') void sendToMarket(event); else void sendAsParcel(event) }}
       onKeyDown={(event) => { if (event.key === 'Escape' && !submitting) { event.stopPropagation(); dismiss() } }}>
       <h2 id={selectionId} ref={selectionHeading} tabIndex={-1}>{itemName(selected.item)}</h2>
       <p>{slotDescription(selected.item)}</p>
-      <p>These items leave {username}’s inventory when the game server confirms the transfer. Cancel a listing on Marketplace to have its unsold items returned.</p>
-      <div className="market-fields">
-        <label>Quantity <input type="number" min="1" max={selected.item.amount} step="1" required value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
-        <label>Price per item (coins) <input type="number" min="1" max="1000000000" step="1" value={unitPrice} onChange={(event) => setUnitPrice(event.target.value)} placeholder="Optional" /></label>
-        <label>Whole-lot price (coins) <input type="number" min="1" max="1000000000" step="1" value={lotPrice} onChange={(event) => setLotPrice(event.target.value)} placeholder="Optional" /></label>
+
+      <div className="inv-actions" style={{ marginBottom: '14px' }}>
+        <button type="button" className="btn" aria-pressed={actionType === 'market'} onClick={() => { setActionType('market'); setActionError('') }}>Sell on Marketplace</button>
+        <button type="button" className="btn" aria-pressed={actionType === 'parcel'} onClick={() => { setActionType('parcel'); setActionError('') }}>📬 Send as Mail Parcel</button>
       </div>
-      <p>Set either price or both. The whole-lot price is independent, so you can offer a bulk discount. After a partial sale, its price reduces proportionally, rounded up to a whole coin.</p>
-      {!selected.item.fingerprint && <p>This snapshot has no item fingerprint. After the inventory refreshes, close these details and select the item again to send it.</p>}
-      {(unitPrice || lotPrice) && <div aria-live="polite">{currentQuote ? <>
-        <p>Seller commission: {currentQuote.commission_bps / 100}%, fixed for this listing. Charged only on completed sales; fractions round up cumulatively across partial sales.</p>
-        {currentQuote.unit && <p>If all selected items sell at the unit price: {currentQuote.unit.proceeds.toLocaleString()} coins to you · {currentQuote.unit.fee.toLocaleString()} coins commission.</p>}
-        {currentQuote.lot && <p>If the whole lot sells now: {currentQuote.lot.proceeds.toLocaleString()} coins to you · {currentQuote.lot.fee.toLocaleString()} coins commission.</p>}
-      </> : <p>Enter valid prices to load seller proceeds. If unavailable, <button type="button" className="btn btn-quiet" onClick={() => setVersion((value) => value + 1)}>Retry quote</button></p>}</div>}
-      <div className="inv-actions">
-        <button type="submit" className="btn btn-primary" disabled={submitting || !currentQuote || !selected.item.fingerprint || (!unitPrice && !lotPrice) || inventory?.marketplace?.status === 'pending'}>{submitting ? 'Sending…' : 'Send to Marketplace'}</button>
-        <button type="button" className="btn" disabled={submitting} onClick={dismiss}>Cancel</button>
-      </div>
+
+      {actionType === 'market' ? (
+        <>
+          <p>These items leave {username}’s inventory when the game server confirms the transfer. Cancel a listing on Marketplace to have its unsold items returned.</p>
+          <div className="market-fields">
+            <label>Quantity <input type="number" min="1" max={selected.item.amount} step="1" required value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
+            <label>Price per item (coins) <input type="number" min="1" max="1000000000" step="1" value={unitPrice} onChange={(event) => setUnitPrice(event.target.value)} placeholder="Optional" /></label>
+            <label>Whole-lot price (coins) <input type="number" min="1" max="1000000000" step="1" value={lotPrice} onChange={(event) => setLotPrice(event.target.value)} placeholder="Optional" /></label>
+          </div>
+          <p>Set either price or both. The whole-lot price is independent, so you can offer a bulk discount. After a partial sale, its price reduces proportionally, rounded up to a whole coin.</p>
+          {!selected.item.fingerprint && <p>This snapshot has no item fingerprint. After the inventory refreshes, close these details and select the item again to send it.</p>}
+          {(unitPrice || lotPrice) && <div aria-live="polite">{currentQuote ? <>
+            <p>Seller commission: {currentQuote.commission_bps / 100}%, fixed for this listing. Charged only on completed sales; fractions round up cumulatively across partial sales.</p>
+            {currentQuote.unit && <p>If all selected items sell at the unit price: {currentQuote.unit.proceeds.toLocaleString()} coins to you · {currentQuote.unit.fee.toLocaleString()} coins commission.</p>}
+            {currentQuote.lot && <p>If the whole lot sells now: {currentQuote.lot.proceeds.toLocaleString()} coins to you · {currentQuote.lot.fee.toLocaleString()} coins commission.</p>}
+          </> : <p>Enter valid prices to load seller proceeds. If unavailable, <button type="button" className="btn btn-quiet" onClick={() => setVersion((value) => value + 1)}>Retry quote</button></p>}</div>}
+          <div className="inv-actions">
+            <button type="submit" className="btn btn-primary" disabled={submitting || !currentQuote || !selected.item.fingerprint || (!unitPrice && !lotPrice) || inventory?.marketplace?.status === 'pending'}>{submitting ? 'Sending…' : 'Send to Marketplace'}</button>
+            <button type="button" className="btn" disabled={submitting} onClick={dismiss}>Cancel</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p>Deliver this item stack to an offline or online player. When they join Minecraft, they will receive an in-game alert: <em>You received a delivery from {username}! Type /mail claim.</em></p>
+          <div className="market-fields">
+            <label>Recipient Username <input type="text" required maxLength={32} placeholder="e.g. Danila" value={parcelRecipient} onChange={(event) => setParcelRecipient(event.target.value)} /></label>
+            <label>Quantity <input type="number" min="1" max={selected.item.amount} step="1" required value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
+            <label>Include Coins (optional) <input type="number" min="0" placeholder="0" value={parcelCoins} onChange={(event) => setParcelCoins(event.target.value)} /></label>
+          </div>
+          <label style={{ display: 'grid', gap: '4px', margin: '8px 0' }}>
+            Letter Message / Note (optional)
+            <input type="text" maxLength={256} placeholder="e.g. Here is that sword you needed!" value={parcelMessage} onChange={(event) => setParcelMessage(event.target.value)} />
+          </label>
+          <div className="inv-actions">
+            <button type="submit" className="btn btn-primary" disabled={submitting || !selected.item.fingerprint || !parcelRecipient.trim()}>{submitting ? 'Dispatching…' : 'Send Delivery Parcel'}</button>
+            <button type="button" className="btn" disabled={submitting} onClick={dismiss}>Cancel</button>
+          </div>
+        </>
+      )}
       {actionError && <p role="alert">{actionError}</p>}
     </form>}
     {loadError !== '' && <div className="note" data-tone="error" role="alert"><p>{loadError}</p><button className="btn" onClick={() => setVersion((value) => value + 1)}>Retry loading inventory</button></div>}

@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { ApiError, buyMarketListing, cancelMarketListing, getMarketplace, type MarketListing, type MarketPurchase, type MarketView, type StatsAccount } from '../lib/api'
+import { ApiError, buyMarketListing, cancelMarketListing, getMarketplace, giftMarketListing, type MarketListing, type MarketPurchase, type MarketView, type StatsAccount } from '../lib/api'
 import ItemBubble from '../components/ItemBubble'
 import { itemName, slotDescription } from '../lib/inventory'
 import { invalidateServerData } from '../lib/serverData'
+import { playSound } from '../lib/sounds'
 
 export default function MarketplacePage({ visible, accounts, onOpenInventory }: { visible: boolean; accounts: StatsAccount[]; onOpenInventory: (uuid: string) => void }) {
   const [market, setMarket] = useState<MarketView | null>(null)
@@ -19,6 +20,9 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [isGift, setIsGift] = useState(false)
+  const [giftRecipient, setGiftRecipient] = useState('')
+  const [giftMessage, setGiftMessage] = useState('')
   // Keep a failed network request's ID and exact quote for a safe retry, even if
   // the server committed it before the connection was lost.
   const [purchase, setPurchase] = useState<{ id: string; body: MarketPurchase } | null>(null)
@@ -46,7 +50,7 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
   const selected = purchase ? selection : market?.listings.find((listing) => listing.id === selection?.id) ?? selection
   const buyerAccount = accounts.find((account) => account.uuid === buyer) ?? accounts[0]
   const buyerPending = market?.deliveries.filter((d) => d.username === buyerAccount?.username && d.status === 'pending').length ?? 0
-  const buyerQueueFull = buyerPending >= 5
+  const buyerQueueFull = !isGift && buyerPending >= 5
   const sellerPending = selected?.mine ? (market?.deliveries.filter((d) => d.username === selected.seller && d.status === 'pending').length ?? 0) : 0
   const sellerQueueFull = sellerPending >= 5
   const amount = pricing === 'lot' ? selected?.remaining ?? 0 : Number(quantity)
@@ -54,29 +58,58 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
   const valid = selected?.status === 'active' && amount >= 1 && amount <= selected.remaining && Number.isInteger(amount) && total !== null
   const choose = (listing: MarketListing) => {
     returnFocus.current = document.activeElement as HTMLElement
-    setSelection(listing); setQuantity('1'); setPricing(listing.unit_price !== null ? 'unit' : 'lot'); setError(''); setMessage(''); setPurchase(null)
+    setSelection(listing); setQuantity('1'); setPricing(listing.unit_price !== null ? 'unit' : 'lot'); setError(''); setMessage(''); setPurchase(null); setIsGift(false); setGiftRecipient(''); setGiftMessage('')
   }
   const dismiss = () => { setSelection(null); setPurchase(null); returnFocus.current?.focus() }
   const trade = async (cancel = false) => {
     if (!selected || busy || (!cancel && !buyerAccount)) return
+    if (!cancel && isGift && !giftRecipient.trim()) {
+      setError('Please enter a recipient player username.')
+      return
+    }
     setBusy(true); setError(''); setMessage('')
     try {
       if (cancel) await cancelMarketListing(selected.id)
-      else {
+      else if (isGift) {
+        if (!valid || total === null) return
+        await giftMarketListing(selected.id, {
+          buyer_uuid: buyerAccount.uuid,
+          recipient_username: giftRecipient.trim(),
+          request_id: crypto.randomUUID(),
+          quantity: amount,
+          pricing,
+          expected_total: total,
+          expected_remaining: selected.remaining,
+          message: giftMessage.trim() || undefined,
+        })
+        playSound('done')
+        setMessage(`Parcel sent to ${giftRecipient.trim()}! When they log into Minecraft, they will see: You received a delivery from ${buyerAccount.username}! Type /mail claim.`)
+        invalidateServerData('stats'); dismiss()
+        return
+      } else {
         if (!purchase && (!valid || total === null)) return
         const request = purchase ?? { id: selected.id, body: { request_id: crypto.randomUUID(), buyer_uuid: buyerAccount.uuid, quantity: amount, pricing, expected_total: total!, expected_remaining: selected.remaining } }
         setPurchase(request)
         await buyMarketListing(request.id, request.body)
       }
+      playSound('done')
       setMessage(cancel ? 'Listing cancelled. Unsold items are queued for return to the seller’s inventory.' : 'Purchase confirmed. Your items are queued for delivery. Keep an empty storage slot for them.')
       invalidateServerData('stats'); dismiss()
     } catch (problem) {
+      playSound('click')
       const status = problem instanceof ApiError ? problem.status : 0
       if (status !== 0 && status < 500) setPurchase(null)
-      setError(status === 422 ? 'This player does not have enough coins. Choose another player or a smaller quantity.'
-        : status === 429 ? 'This player already has 5 items queued for delivery. Free inventory space in-game before adding more.'
-        : status === 409 ? 'This listing changed or the request is already being processed. Refresh and select it again.'
-        : 'Could not confirm the request. Retry to check the same purchase safely.')
+      setError(
+        status === 404 && isGift
+          ? 'Recipient player not found. Make sure the username has joined the server.'
+          : status === 422
+          ? 'This player does not have enough coins. Choose another player or a smaller quantity.'
+          : status === 429
+          ? 'This player already has 5 items queued for delivery. Free inventory space in-game before adding more.'
+          : status === 409
+          ? 'This listing changed or the request is already being processed. Refresh and select it again.'
+          : 'Could not confirm the request. Retry to check the same purchase safely.'
+      )
     } finally { setBusy(false); setVersion((value) => value + 1) }
   }
   const listings = market?.listings ?? []
@@ -111,11 +144,29 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
               </select></label>
               {pricing === 'unit' && <label>Quantity<input type="number" min="1" max={selected.remaining} step="1" required value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>}
             </div>
+            <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--line)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
+                <input type="checkbox" checked={isGift} onChange={(e) => setIsGift(e.target.checked)} />
+                📬 Deliver as Parcel to another player (/mail claim)
+              </label>
+              {isGift && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px', marginTop: '8px' }}>
+                  <label style={{ fontSize: '12px' }}>
+                    Recipient Player Username
+                    <input type="text" required placeholder="e.g. Danila" value={giftRecipient} onChange={(e) => setGiftRecipient(e.target.value)} style={{ padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--line)', width: '100%' }} />
+                  </label>
+                  <label style={{ fontSize: '12px' }}>
+                    Gift Note / Message (optional)
+                    <input type="text" maxLength={256} placeholder="e.g. Enjoy this item!" value={giftMessage} onChange={(e) => setGiftMessage(e.target.value)} style={{ padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--line)', width: '100%' }} />
+                  </label>
+                </div>
+              )}
+            </div>
           </fieldset>
           <p className="market-total">{purchase ? `Retrying the same purchase: ${purchase.body.quantity} items for ${purchase.body.expected_total.toLocaleString()} coins.` : valid ? `${amount} ${amount === 1 ? 'item' : 'items'} · ${total?.toLocaleString()} coins total` : 'Choose a valid quantity.'}</p>
-          <p>Coins transfer immediately after purchase. Items arrive in {buyerAccount?.username ?? 'your player'}’s inventory once a storage slot is free, online or offline.</p>
+          <p>{isGift ? `Coins debit from ${buyerAccount?.username ?? 'your account'}. The recipient will receive an alert in Minecraft: "You received a delivery from ${buyerAccount?.username ?? 'you'}! Type /mail claim."` : `Coins transfer immediately after purchase. Items arrive in ${buyerAccount?.username ?? 'your player'}’s inventory once a storage slot is free, online or offline.`}</p>
           {buyerQueueFull && <p className="note" data-tone="error" role="alert">{buyerAccount?.username} already has 5 items queued for delivery. Free inventory space in-game before buying more.</p>}
-          <button className="btn btn-primary" type="submit" disabled={busy || buyerQueueFull || (!purchase && (!valid || !buyerAccount))}>{busy ? 'Confirming…' : purchase ? 'Retry purchase' : 'Confirm purchase'}</button>
+          <button className="btn btn-primary" type="submit" disabled={busy || buyerQueueFull || (!purchase && (!valid || !buyerAccount || (isGift && !giftRecipient.trim())))}>{busy ? 'Confirming…' : isGift ? 'Dispatch Parcel Gift' : purchase ? 'Retry purchase' : 'Confirm purchase'}</button>
         </form>}
       <button className="btn market-dismiss" disabled={busy} onClick={dismiss}>Close details</button>
       {error && <p role="alert">{error}</p>}

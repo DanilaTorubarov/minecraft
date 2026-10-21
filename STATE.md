@@ -1,6 +1,30 @@
 # Project checkpoint — 2026-10-21
 
 
+## Offline Mail & Delivery Parcel System and Territory Alerts — 2026-10-21
+
+- **Offline Mail & Delivery Parcel System**:
+  - Implemented offline delivery parcel sending from website inventory, marketplace (as gifts), and direct currency/parcel dispatch in Player Controls.
+  - Stored parcels durably in PostgreSQL (`mail_parcels` in migration `0023_offline_mail_and_territory_alerts.sql`).
+  - Item withdrawal and escrow handled losslessly from inventory or marketplace listing.
+  - On Minecraft login (AuthMe `LoginEvent` / `RegisterEvent`), players receive the exact in-game alert:
+    `You received a delivery from [Player]! Type /mail claim.`
+  - In-game command `/mail claim` (and `/mail list`) connects to `/internal/mail/claim`, credits coins, and places items into player inventory with drop-safety fallback if inventory is full.
+  - Added dedicated `MailPage.tsx` tab in Player Controls with incoming delivery status, sent parcel history, and direct coin parcel dispatch.
+- **Territory Defense Alerts**:
+  - Automated web alerts when a player's private protection core fuel drops below 2 hours (< 7200 seconds) or when a breach charge detonates on their base.
+  - In `LinkBridgePlugin.java`, breach charge detonations report territory alerts asynchronously to `/internal/territory/alert`.
+  - Backend dynamically detects low fuel (< 2 hours) on placed private blocks and merges with persisted alerts in `GET /api/territory/alerts`.
+  - Desktop UI in `Shell.tsx` features automated alert polling, menubar alert badges, and rich floating Aero alert toast banners with quick navigation to Player Controls.
+  - `PrivatesPage.tsx` displays active defense alerts and per-core critical fuel warnings.
+- **Verification**:
+  - `cargo check --tests`: Clean compilation with zero warnings/errors and full integration test coverage (`offline_mail_parcel_send_and_claim`, `territory_defense_alerts_low_fuel_and_breach`).
+  - `npm --prefix frontend test`: 73 unit tests passed.
+  - `npm --prefix frontend run build`: Clean production build (131ms).
+  - `npm --prefix frontend run lint`: Zero lint errors.
+  - `./scripts/build-plugin.sh`: LinkBridge 1.12.0 built and installed into `mc/purpur/plugins/LinkBridge-1.12.0.jar`.
+
+
 ## Live 3D map restored (Caddy `map` route) — 2026-10-21
 
 - Symptom: the Live 3D Map window on `oasisaero.ru` did not load BlueMap. `/map/`
