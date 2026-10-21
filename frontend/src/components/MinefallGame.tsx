@@ -190,7 +190,7 @@ export default function MinefallGame({
     const wallW = 34
     const cellW = 34
     const cellH = 34
-    const totalW = wallW + MINEFALL_COLS * cellW + wallW // 374
+    const totalW = wallW + MINEFALL_COLS * cellW + wallW // 408
     const totalH = 460
     canvas.width = totalW
     canvas.height = totalH
@@ -237,9 +237,22 @@ export default function MinefallGame({
         if (r === 3 && c === 2) texKey = 'crafting_table'
         if (r === 5 && c === 6) texKey = 'tnt'
 
+        if ((r + c * 3) % 11 === 0) texKey = 'slime'
+        if (r < 3 && (r + c) % 2 === 0) texKey = 'dirt'
+
         const img = imagesRef.current.get(texKey)
         if (img) {
           ctx.drawImage(img, x, y, cellW, cellH)
+        } else if (texKey === 'slime') {
+          ctx.fillStyle = '#70c042'
+          ctx.fillRect(x, y, cellW, cellH)
+          ctx.fillStyle = '#4e9828'
+          ctx.fillRect(x + 6, y + 6, cellW - 12, cellH - 12)
+          ctx.fillStyle = '#9cf562'
+          ctx.fillRect(x + 2, y + 2, 4, 4)
+        } else if (texKey === 'dirt') {
+          ctx.fillStyle = '#866043'
+          ctx.fillRect(x, y, cellW, cellH)
         } else {
           ctx.fillStyle = r > 6 ? '#323438' : '#57575b'
           ctx.fillRect(x, y, cellW, cellH)
@@ -427,35 +440,22 @@ export default function MinefallGame({
         pickX += vx * speedFactor
         pickY += vy * speedFactor
 
-        // Open cavity & bedrock boundary check: prevent pickaxe from penetrating unmined solid blocks
-        const currentCol = Math.floor((pickX - wallW) / cellW)
-        const currentRow = Math.floor((pickY - 50) / cellH)
-        let leftWallBound = wallW + 12
-        let rightWallBound = totalW - wallW - 12
+        // Solid Bedrock Wall boundaries enclosing the shaft
+        const leftWallBound = wallW + 10
+        const rightWallBound = totalW - wallW - 10
 
-        if (currentRow >= 0 && currentRow < MINEFALL_ROWS) {
-          if (currentCol > 0 && grid[currentRow]?.[currentCol - 1] !== 'air') {
-            leftWallBound = Math.max(leftWallBound, wallW + currentCol * cellW + 10)
-          }
-          if (currentCol < MINEFALL_COLS - 1 && grid[currentRow]?.[currentCol + 1] !== 'air') {
-            rightWallBound = Math.min(rightWallBound, wallW + (currentCol + 1) * cellW - 10)
-          }
-        }
-
-        if (leftWallBound < rightWallBound) {
-          if (pickX < leftWallBound) {
-            pickX = leftWallBound
-            vx = Math.abs(vx) * 0.7 + 0.3 * speedFactor
-            angularVel = Math.random() * 0.12 + 0.06
-            cameraShake = Math.max(cameraShake, 1.2)
-            playSound('click')
-          } else if (pickX > rightWallBound) {
-            pickX = rightWallBound
-            vx = -Math.abs(vx) * 0.7 - 0.3 * speedFactor
-            angularVel = -Math.random() * 0.12 - 0.06
-            cameraShake = Math.max(cameraShake, 1.2)
-            playSound('click')
-          }
+        if (pickX < leftWallBound) {
+          pickX = leftWallBound
+          vx = Math.abs(vx) * 0.75 + 0.3 * speedFactor
+          angularVel = Math.random() * 0.12 + 0.06
+          cameraShake = Math.max(cameraShake, 1.2)
+          playSound('click')
+        } else if (pickX > rightWallBound) {
+          pickX = rightWallBound
+          vx = -Math.abs(vx) * 0.75 - 0.3 * speedFactor
+          angularVel = -Math.random() * 0.12 - 0.06
+          cameraShake = Math.max(cameraShake, 1.2)
+          playSound('click')
         }
 
         // If descending on top of a solid surface before aligning horizontally, slide across surface (NO TELEPORT)
@@ -479,10 +479,27 @@ export default function MinefallGame({
             playSound('click')
             cameraShake = 3.0
             spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#78716c', 16)
-            // High springy elastic rock recoil: bounces UP ~50px within the mined shaft
+            // Elastic rock recoil: bounces UP and rebounds to adjacent column
             vy = -3.8 * speedFactor
-            vx = (Math.random() - 0.5) * 0.8 * speedFactor
-            angularVel = (Math.random() - 0.5) * 0.15
+            vx = (Math.random() - 0.5) * 1.6 * speedFactor
+            angularVel = (Math.random() - 0.5) * 0.18
+            isRecoiling = true
+          } else if (ev.type === 'slime_bounce') {
+            playSound('done')
+            cameraShake = 4.2
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#8eed58', 22)
+            floatingTexts.push({
+              x: targetX,
+              y: targetY - 12,
+              text: 'BOING!',
+              color: '#8eed58',
+              life: 0,
+              maxLife: 45,
+            })
+            // Huge elastic bounce upwards and across the shaft
+            vy = -5.0 * speedFactor
+            vx = (Math.random() - 0.5) * 3.4 * speedFactor
+            angularVel = (Math.random() - 0.5) * 0.24
             isRecoiling = true
           } else if (ev.type === 'break') {
             playSound('click')
@@ -525,7 +542,7 @@ export default function MinefallGame({
             floatingTexts.push({
               x: targetX,
               y: targetY - 10,
-              text: '+2 Durability!',
+              text: '+25 Durability!',
               color: '#4ade80',
               life: 0,
               maxLife: 50,
@@ -657,6 +674,19 @@ export default function MinefallGame({
           const img = imagesRef.current.get(blockType)
           if (img) {
             ctx.drawImage(img, bx, by, cellW, cellH)
+          } else if (blockType === 'slime') {
+            ctx.fillStyle = '#70c042'
+            ctx.fillRect(bx, by, cellW, cellH)
+            ctx.fillStyle = '#4e9828'
+            ctx.fillRect(bx + 6, by + 6, cellW - 12, cellH - 12)
+            ctx.fillStyle = '#9cf562'
+            ctx.fillRect(bx + 2, by + 2, 4, 4)
+          } else if (blockType === 'dirt') {
+            ctx.fillStyle = '#866043'
+            ctx.fillRect(bx, by, cellW, cellH)
+          } else if (blockType === 'cobblestone') {
+            ctx.fillStyle = '#686868'
+            ctx.fillRect(bx, by, cellW, cellH)
           } else {
             ctx.fillStyle = blockType === 'bedrock' ? '#1c1917' : '#57534e'
             ctx.fillRect(bx, by, cellW, cellH)

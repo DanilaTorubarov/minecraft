@@ -5,10 +5,13 @@ export type PickaxeTier = 'wooden' | 'stone' | 'iron' | 'golden' | 'diamond' | '
 
 export type BlockType =
   | 'air'
+  | 'dirt'
   | 'stone'
+  | 'cobblestone'
   | 'deepslate'
   | 'obsidian'
   | 'bedrock'
+  | 'slime'
   | 'tnt'
   | 'crafting_table'
   | 'coal_ore'
@@ -39,84 +42,88 @@ export type BlockConfig = {
   isTnt: boolean
   isCraftingTable: boolean
   isBedrock: boolean
+  isSlime: boolean
 }
 
 export const PICKAXE_CONFIGS: Record<PickaxeTier, PickaxeConfig> = {
   wooden: {
     id: 'wooden',
     name: 'Wooden Pickaxe',
-    durability: 6,
+    durability: 100,
     oreBonus: 1.0,
-    scaleX1000: 2620,
-    description: 'High Volatility · 6 durability. Fragile wood, but rare ore finds yield massive 2.6x rewards!',
+    scaleX1000: 26,
+    description: 'High Volatility · 100 durability. Fragile wood, but rare ore finds yield massive rewards!',
   },
   stone: {
     id: 'stone',
     name: 'Stone Pickaxe',
-    durability: 10,
+    durability: 150,
     oreBonus: 1.0,
-    scaleX1000: 1430,
-    description: 'Medium Volatility · 10 durability. Reliable stone tool with balanced risk.',
+    scaleX1000: 16,
+    description: 'Medium Volatility · 150 durability. Reliable stone tool with balanced risk.',
   },
   iron: {
     id: 'iron',
     name: 'Iron Pickaxe',
-    durability: 16,
+    durability: 200,
     oreBonus: 1.0,
-    scaleX1000: 660,
-    description: 'Balanced · 16 durability. Standard miner pickaxe with smooth depth.',
+    scaleX1000: 12,
+    description: 'Balanced · 200 durability. Standard miner pickaxe with smooth depth.',
   },
   golden: {
     id: 'golden',
     name: 'Golden Pickaxe',
-    durability: 5,
+    durability: 120,
     oreBonus: 2.0,
-    scaleX1000: 1570,
-    description: 'Midas Rush · 5 durability. Extremely brittle, but 2x gold value and huge vein payouts!',
+    scaleX1000: 11,
+    description: 'Midas Rush · 120 durability. 2x gold value and huge vein payouts!',
   },
   diamond: {
     id: 'diamond',
     name: 'Diamond Pickaxe',
-    durability: 24,
+    durability: 400,
     oreBonus: 1.0,
-    scaleX1000: 380,
-    description: 'Deep Explorer · 24 durability. High endurance to reach diamond and emerald layers.',
+    scaleX1000: 6,
+    description: 'Deep Explorer · 400 durability. High endurance to reach diamond and emerald layers.',
   },
   netherite: {
     id: 'netherite',
     name: 'Netherite Pickaxe',
-    durability: 32,
+    durability: 600,
     oreBonus: 1.0,
-    scaleX1000: 260,
-    description: 'Abyss Master · 32 durability. Maximum resilience to break through ancient debris.',
+    scaleX1000: 4,
+    description: 'Abyss Master · 600 durability. Maximum resilience to break through ancient debris.',
   },
 }
 
 export const BLOCK_CONFIGS: Record<BlockType, BlockConfig> = {
-  air: { id: 'air', name: 'Air', hitsNeeded: 0, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false },
-  stone: { id: 'stone', name: 'Stone', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false },
-  deepslate: { id: 'deepslate', name: 'Deepslate', hitsNeeded: 2, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false },
-  obsidian: { id: 'obsidian', name: 'Obsidian', hitsNeeded: 3, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false },
-  bedrock: { id: 'bedrock', name: 'Bedrock', hitsNeeded: 9999, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: true },
-  tnt: { id: 'tnt', name: 'TNT', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: true, isCraftingTable: false, isBedrock: false },
-  crafting_table: { id: 'crafting_table', name: 'Crafting Table', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: true, isBedrock: false },
-  coal_ore: { id: 'coal_ore', name: 'Coal Ore', hitsNeeded: 1, multiplierX100: 8, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  copper_ore: { id: 'copper_ore', name: 'Copper Ore', hitsNeeded: 1, multiplierX100: 12, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  iron_ore: { id: 'iron_ore', name: 'Iron Ore', hitsNeeded: 1, multiplierX100: 25, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  gold_ore: { id: 'gold_ore', name: 'Gold Ore', hitsNeeded: 1, multiplierX100: 45, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  redstone_ore: { id: 'redstone_ore', name: 'Redstone Ore', hitsNeeded: 1, multiplierX100: 35, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  lapis_ore: { id: 'lapis_ore', name: 'Lapis Ore', hitsNeeded: 1, multiplierX100: 40, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  diamond_ore: { id: 'diamond_ore', name: 'Diamond Ore', hitsNeeded: 1, multiplierX100: 90, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  emerald_ore: { id: 'emerald_ore', name: 'Emerald Ore', hitsNeeded: 1, multiplierX100: 150, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
-  ancient_debris: { id: 'ancient_debris', name: 'Ancient Debris', hitsNeeded: 2, multiplierX100: 300, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false },
+  air: { id: 'air', name: 'Air', hitsNeeded: 0, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  dirt: { id: 'dirt', name: 'Dirt', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  stone: { id: 'stone', name: 'Stone', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  cobblestone: { id: 'cobblestone', name: 'Cobblestone', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  deepslate: { id: 'deepslate', name: 'Deepslate', hitsNeeded: 2, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  obsidian: { id: 'obsidian', name: 'Obsidian', hitsNeeded: 3, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  bedrock: { id: 'bedrock', name: 'Bedrock', hitsNeeded: 9999, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: true, isSlime: false },
+  slime: { id: 'slime', name: 'Slime Block', hitsNeeded: 9999, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: true },
+  tnt: { id: 'tnt', name: 'TNT', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: true, isCraftingTable: false, isBedrock: false, isSlime: false },
+  crafting_table: { id: 'crafting_table', name: 'Crafting Table', hitsNeeded: 1, multiplierX100: 0, isOre: false, isTnt: false, isCraftingTable: true, isBedrock: false, isSlime: false },
+  copper_ore: { id: 'copper_ore', name: 'Copper Ore', hitsNeeded: 5, multiplierX100: 1, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  coal_ore: { id: 'coal_ore', name: 'Coal Ore', hitsNeeded: 3, multiplierX100: 2, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  iron_ore: { id: 'iron_ore', name: 'Iron Ore', hitsNeeded: 4, multiplierX100: 3, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  redstone_ore: { id: 'redstone_ore', name: 'Redstone Ore', hitsNeeded: 10, multiplierX100: 5, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  lapis_ore: { id: 'lapis_ore', name: 'Lapis Ore', hitsNeeded: 5, multiplierX100: 4, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  gold_ore: { id: 'gold_ore', name: 'Gold Ore', hitsNeeded: 15, multiplierX100: 20, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  diamond_ore: { id: 'diamond_ore', name: 'Diamond Ore', hitsNeeded: 20, multiplierX100: 100, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  emerald_ore: { id: 'emerald_ore', name: 'Emerald Ore', hitsNeeded: 30, multiplierX100: 500, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
+  ancient_debris: { id: 'ancient_debris', name: 'Ancient Debris', hitsNeeded: 2, multiplierX100: 800, isOre: true, isTnt: false, isCraftingTable: false, isBedrock: false, isSlime: false },
 }
 
-export const MINEFALL_COLS = 9
+export const MINEFALL_COLS = 10
 export const MINEFALL_ROWS = 120
-export const CRAFTING_TABLE_REPAIR = 2
+export const CRAFTING_TABLE_REPAIR = 25
 
 export type MinefallEvent = {
-  type: 'hit' | 'break' | 'tnt_blast' | 'repair' | 'collect_ore' | 'pickaxe_break' | 'reach_bottom'
+  type: 'hit' | 'break' | 'tnt_blast' | 'slime_bounce' | 'repair' | 'collect_ore' | 'pickaxe_break' | 'reach_bottom'
   row: number
   col: number
   block: BlockType

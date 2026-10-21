@@ -4031,9 +4031,9 @@ where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
     }))
 }
 
-const MINEFALL_COLS: usize = 9;
+const MINEFALL_COLS: usize = 10;
 const MINEFALL_ROWS: usize = 120;
-const MINEFALL_CRAFTING_TABLE_REPAIR: i64 = 2;
+const MINEFALL_CRAFTING_TABLE_REPAIR: i64 = 25;
 
 fn minefall_rtp_at(level: i32) -> i64 {
     9200 + i64::from(level) * 150
@@ -4076,12 +4076,12 @@ impl MinefallPickaxe {
 
     fn base_durability(&self) -> i64 {
         match self {
-            Self::Wooden => 6,
-            Self::Stone => 10,
-            Self::Iron => 16,
-            Self::Golden => 5,
-            Self::Diamond => 24,
-            Self::Netherite => 32,
+            Self::Wooden => 100,
+            Self::Stone => 150,
+            Self::Iron => 200,
+            Self::Golden => 120,
+            Self::Diamond => 400,
+            Self::Netherite => 600,
         }
     }
 
@@ -4094,12 +4094,12 @@ impl MinefallPickaxe {
 
     fn ore_scale_factor_x1000(&self) -> i64 {
         match self {
-            Self::Wooden => 2620,
-            Self::Golden => 1570,
-            Self::Stone => 1430,
-            Self::Iron => 660,
-            Self::Diamond => 380,
-            Self::Netherite => 260,
+            Self::Wooden => 26,
+            Self::Stone => 16,
+            Self::Iron => 12,
+            Self::Golden => 11,
+            Self::Diamond => 6,
+            Self::Netherite => 4,
         }
     }
 }
@@ -4107,10 +4107,13 @@ impl MinefallPickaxe {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MinefallBlock {
     Air,
+    Dirt,
     Stone,
+    Cobblestone,
     Deepslate,
     Obsidian,
     Bedrock,
+    Slime,
     Tnt,
     CraftingTable,
     CoalOre,
@@ -4129,10 +4132,13 @@ impl MinefallBlock {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Air => "air",
+            Self::Dirt => "dirt",
             Self::Stone => "stone",
+            Self::Cobblestone => "cobblestone",
             Self::Deepslate => "deepslate",
             Self::Obsidian => "obsidian",
             Self::Bedrock => "bedrock",
+            Self::Slime => "slime",
             Self::Tnt => "tnt",
             Self::CraftingTable => "crafting_table",
             Self::CoalOre => "coal_ore",
@@ -4150,11 +4156,19 @@ impl MinefallBlock {
     fn hits_needed(&self) -> i64 {
         match self {
             Self::Air => 0,
-            Self::Stone => 1,
+            Self::Dirt | Self::Stone | Self::Cobblestone => 1,
             Self::Deepslate => 2,
             Self::Obsidian => 3,
             Self::AncientDebris => 2,
-            Self::Bedrock => 9999,
+            Self::Slime | Self::Bedrock => 9999,
+            Self::CopperOre => 5,
+            Self::CoalOre => 3,
+            Self::IronOre => 4,
+            Self::RedstoneOre => 10,
+            Self::LapisOre => 5,
+            Self::GoldOre => 15,
+            Self::DiamondOre => 20,
+            Self::EmeraldOre => 30,
             _ => 1,
         }
     }
@@ -4176,15 +4190,15 @@ impl MinefallBlock {
 
     fn ore_boost_x100(&self) -> i64 {
         match self {
-            Self::CoalOre => 8,
-            Self::CopperOre => 12,
-            Self::IronOre => 25,
-            Self::GoldOre => 45,
-            Self::RedstoneOre => 35,
-            Self::LapisOre => 40,
-            Self::DiamondOre => 90,
-            Self::EmeraldOre => 150,
-            Self::AncientDebris => 300,
+            Self::CopperOre => 1,
+            Self::CoalOre => 2,
+            Self::IronOre => 3,
+            Self::RedstoneOre => 5,
+            Self::LapisOre => 4,
+            Self::GoldOre => 20,
+            Self::DiamondOre => 100,
+            Self::EmeraldOre => 500,
+            Self::AncientDebris => 800,
             _ => 0,
         }
     }
@@ -4269,53 +4283,63 @@ fn simulate_minefall(
         for c in 0..MINEFALL_COLS {
             if r == MINEFALL_ROWS - 1 {
                 grid_blocks[r][c] = MinefallBlock::Bedrock;
-            } else if r < 12 {
+            } else if r < 10 {
                 let roll = random_below(100)? as i64;
-                grid_blocks[r][c] = if roll < 3 {
+                grid_blocks[r][c] = if roll < 2 {
                     MinefallBlock::CraftingTable
-                } else if roll < 7 {
+                } else if roll < 5 {
                     MinefallBlock::Tnt
-                } else if roll < 18 {
+                } else if roll < 8 {
+                    MinefallBlock::Slime
+                } else if roll < 20 {
                     MinefallBlock::CoalOre
-                } else if roll < 28 {
+                } else if roll < 35 {
                     MinefallBlock::CopperOre
-                } else if roll < 36 {
-                    MinefallBlock::IronOre
+                } else if roll < 55 {
+                    MinefallBlock::Dirt
+                } else if roll < 75 {
+                    MinefallBlock::Cobblestone
                 } else {
                     MinefallBlock::Stone
                 };
-            } else if r < 28 {
+            } else if r < 35 {
                 let roll = random_below(100)? as i64;
-                grid_blocks[r][c] = if roll < 3 {
+                grid_blocks[r][c] = if roll < 2 {
                     MinefallBlock::CraftingTable
-                } else if roll < 8 {
+                } else if roll < 6 {
                     MinefallBlock::Tnt
-                } else if roll < 16 {
+                } else if roll < 9 {
+                    MinefallBlock::Slime
+                } else if roll < 20 {
                     MinefallBlock::IronOre
-                } else if roll < 24 {
+                } else if roll < 28 {
                     MinefallBlock::GoldOre
-                } else if roll < 30 {
+                } else if roll < 38 {
                     MinefallBlock::RedstoneOre
-                } else if roll < 35 {
+                } else if roll < 46 {
                     MinefallBlock::LapisOre
-                } else if roll < 65 {
+                } else if roll < 72 {
                     MinefallBlock::Deepslate
                 } else {
                     MinefallBlock::Stone
                 };
-            } else if r < 55 {
+            } else if r < 75 {
                 let roll = random_below(100)? as i64;
                 grid_blocks[r][c] = if roll < 2 {
                     MinefallBlock::CraftingTable
-                } else if roll < 7 {
+                } else if roll < 6 {
                     MinefallBlock::Tnt
-                } else if roll < 14 {
-                    MinefallBlock::RedstoneOre
+                } else if roll < 9 {
+                    MinefallBlock::Slime
                 } else if roll < 20 {
+                    MinefallBlock::RedstoneOre
+                } else if roll < 28 {
+                    MinefallBlock::GoldOre
+                } else if roll < 36 {
                     MinefallBlock::DiamondOre
-                } else if roll < 24 {
+                } else if roll < 42 {
                     MinefallBlock::EmeraldOre
-                } else if roll < 65 {
+                } else if roll < 75 {
                     MinefallBlock::Deepslate
                 } else {
                     MinefallBlock::Obsidian
@@ -4326,13 +4350,15 @@ fn simulate_minefall(
                     MinefallBlock::CraftingTable
                 } else if roll < 6 {
                     MinefallBlock::Tnt
-                } else if roll < 13 {
-                    MinefallBlock::DiamondOre
+                } else if roll < 8 {
+                    MinefallBlock::Slime
                 } else if roll < 18 {
+                    MinefallBlock::DiamondOre
+                } else if roll < 26 {
                     MinefallBlock::EmeraldOre
-                } else if roll < 22 {
+                } else if roll < 32 {
                     MinefallBlock::AncientDebris
-                } else if roll < 60 {
+                } else if roll < 70 {
                     MinefallBlock::Deepslate
                 } else {
                     MinefallBlock::Obsidian
@@ -4358,12 +4384,19 @@ fn simulate_minefall(
     let mut block_hits = vec![vec![0i64; MINEFALL_COLS]; MINEFALL_ROWS];
 
     let mut iterations = 0;
-    while iterations < 600 && durability > 0 && current_row < MINEFALL_ROWS - 1 {
+    while iterations < 1500 && durability > 0 && current_row < MINEFALL_ROWS - 1 {
         iterations += 1;
         let block = grid_blocks[current_row][current_col];
 
         if block == MinefallBlock::Air {
             current_row += 1;
+            if random_below(3)? == 0 {
+                let dir = if random_below(2)? == 0 { -1i64 } else { 1i64 };
+                let target_c = (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
+                if grid_blocks[current_row.min(MINEFALL_ROWS - 1)][target_c] == MinefallBlock::Air {
+                    current_col = target_c;
+                }
+            }
             continue;
         }
 
@@ -4378,6 +4411,32 @@ fn simulate_minefall(
                 affected: None,
             });
             break;
+        }
+
+        if block == MinefallBlock::Slime {
+            // Indestructible! Huge bouncy elastic repulsion across the shaft
+            events.push(MinefallEventView {
+                event_type: "slime_bounce".to_string(),
+                row: current_row,
+                col: current_col,
+                block: "slime".to_string(),
+                durability_left: durability,
+                boost_x100: None,
+                affected: None,
+            });
+            let bounce_up = 1 + (random_below(2)? as usize);
+            current_row = current_row.saturating_sub(bounce_up);
+            let dir = if current_col == 0 {
+                1i64
+            } else if current_col >= MINEFALL_COLS - 1 {
+                -1i64
+            } else if random_below(2)? == 0 {
+                1i64
+            } else {
+                -1i64
+            };
+            current_col = (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
+            continue;
         }
 
         if block == MinefallBlock::Tnt {
@@ -4444,54 +4503,38 @@ fn simulate_minefall(
             continue;
         }
 
-        if block.is_ore() {
-            durability -= 1;
-            grid_blocks[current_row][current_col] = MinefallBlock::Air;
-            let boost = (block.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
-            mult_x100 += boost;
-            *ores_collected.entry(block.as_str().to_string()).or_insert(0) += 1;
-            events.push(MinefallEventView {
-                event_type: "collect_ore".to_string(),
-                row: current_row,
-                col: current_col,
-                block: block.as_str().to_string(),
-                durability_left: durability,
-                boost_x100: Some(boost),
-                affected: None,
-            });
-            if durability <= 0 {
-                events.push(MinefallEventView {
-                    event_type: "pickaxe_break".to_string(),
-                    row: current_row,
-                    col: current_col,
-                    block: block.as_str().to_string(),
-                    durability_left: 0,
-                    boost_x100: None,
-                    affected: None,
-                });
-                break;
-            }
-            current_row += 1;
-            continue;
-        }
-
         durability -= 1;
         block_hits[current_row][current_col] += 1;
         let hits = block_hits[current_row][current_col];
         if hits >= block.hits_needed() {
             grid_blocks[current_row][current_col] = MinefallBlock::Air;
-            events.push(MinefallEventView {
-                event_type: "break".to_string(),
-                row: current_row,
-                col: current_col,
-                block: block.as_str().to_string(),
-                durability_left: durability,
-                boost_x100: None,
-                affected: None,
-            });
+            if block.is_ore() {
+                let boost = (block.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
+                mult_x100 += boost;
+                *ores_collected.entry(block.as_str().to_string()).or_insert(0) += 1;
+                events.push(MinefallEventView {
+                    event_type: "collect_ore".to_string(),
+                    row: current_row,
+                    col: current_col,
+                    block: block.as_str().to_string(),
+                    durability_left: durability,
+                    boost_x100: Some(boost),
+                    affected: None,
+                });
+            } else {
+                events.push(MinefallEventView {
+                    event_type: "break".to_string(),
+                    row: current_row,
+                    col: current_col,
+                    block: block.as_str().to_string(),
+                    durability_left: durability,
+                    boost_x100: None,
+                    affected: None,
+                });
+            }
             current_row += 1;
         } else {
-            // Unbroken rock hit: pickaxe bounces UP and ricochets to an adjacent column on the SAME row!
+            // Unbroken rock hit: pickaxe bounces UP and ricochets to an adjacent column from above!
             events.push(MinefallEventView {
                 event_type: "hit".to_string(),
                 row: current_row,
@@ -4501,7 +4544,17 @@ fn simulate_minefall(
                 boost_x100: None,
                 affected: None,
             });
-// Unbroken hit stays in the same column, bouncing straight up and falling down
+            current_row = current_row.saturating_sub(1);
+            let dir = if current_col == 0 {
+                1i64
+            } else if current_col >= MINEFALL_COLS - 1 {
+                -1i64
+            } else if random_below(2)? == 0 {
+                1i64
+            } else {
+                -1i64
+            };
+            current_col = (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
         }
 
         if durability <= 0 {
@@ -4517,7 +4570,7 @@ fn simulate_minefall(
             break;
         }
     }
-
+
     if current_row >= MINEFALL_ROWS - 1 && durability > 0 {
         events.push(MinefallEventView {
             event_type: "reach_bottom".to_string(),
