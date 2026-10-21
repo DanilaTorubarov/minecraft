@@ -21,6 +21,8 @@ import lapisOreImg from '../assets/minefall/lapis_ore.png'
 import diamondOreImg from '../assets/minefall/diamond_ore.png'
 import emeraldOreImg from '../assets/minefall/emerald_ore.png'
 import ancientDebrisImg from '../assets/minefall/ancient_debris_side.png'
+import dirtImg from '../assets/minefall/dirt.png'
+import cobblestoneImg from '../assets/minefall/cobblestone.png'
 
 import PayerSelect from './PayerSelect'
 import GameBetControls from './GameBetControls'
@@ -59,6 +61,8 @@ const PICKAXE_TEXTURES: Record<PickaxeTier, string> = {
 }
 
 const BLOCK_TEXTURES: Record<string, string> = {
+  dirt: dirtImg,
+  cobblestone: cobblestoneImg,
   stone: stoneImg,
   deepslate: deepslateImg,
   obsidian: obsidianImg,
@@ -139,36 +143,36 @@ export default function MinefallGame({
 
   // Preload textures and trigger initial preview once ready
   useEffect(() => {
+    let active = true
     const loaded = new Map<string, HTMLImageElement>()
     const toLoad: Array<[string, string]> = [
       ...Object.entries(PICKAXE_TEXTURES),
       ...Object.entries(BLOCK_TEXTURES),
     ]
 
-    let count = 0
-    const total = toLoad.length
-    const onLoaded = () => {
-      count += 1
-      if (count >= total) {
+    Promise.all(
+      toLoad.map(([key, src]) => {
+        return new Promise<void>((resolve) => {
+          const img = new Image()
+          img.onload = () => {
+            loaded.set(key, img)
+            resolve()
+          }
+          img.onerror = () => {
+            resolve()
+          }
+          img.src = src
+        })
+      })
+    ).then(() => {
+      if (active) {
         imagesRef.current = loaded
         setTexturesLoaded(true)
       }
-    }
+    })
 
-    for (const [key, src] of toLoad) {
-      const img = new Image()
-      img.src = src
-      img.onload = () => {
-        loaded.set(key, img)
-        onLoaded()
-      }
-      img.onerror = () => {
-        onLoaded()
-      }
-      if (img.complete) {
-        loaded.set(key, img)
-        onLoaded()
-      }
+    return () => {
+      active = false
     }
   }, [])
 
@@ -242,10 +246,6 @@ export default function MinefallGame({
         const img = imagesRef.current.get(texKey)
         if (img) {
           ctx.drawImage(img, x, y, cellW, cellH)
-
-        } else if (texKey === 'dirt') {
-          ctx.fillStyle = '#866043'
-          ctx.fillRect(x, y, cellW, cellH)
         } else {
           ctx.fillStyle = r > 6 ? '#323438' : '#57575b'
           ctx.fillRect(x, y, cellW, cellH)
@@ -299,19 +299,17 @@ export default function MinefallGame({
     const grid: string[][] = playRound.grid.map((row) => [...row])
     const events: MinefallEvent[] = [...playRound.events]
 
-    // 2D Physics Body for Pickaxe (framed inside bedrock boundaries)
+    // 2D Elastic Rigid Body Physics for Pickaxe
     let pickX = wallW + playRound.column * cellW + cellW / 2
-    let pickY = 15
-    let angle = 0
+    let pickY = 12
+    let vx = (Math.random() - 0.5) * 0.8
+    let vy = 1.6
+    let angle = -0.25
+    let angularVel = 0.08
     let cameraShake = 0
     let cameraY = 0
 
     let currentEventIdx = 0
-    let animPhase: 'travel' | 'strike' = 'travel'
-    let phaseFrame = 0
-    let startX = pickX
-    let startY = pickY
-    let strikeAngle = 0
 
     // Active stats
     let activeDur = PICKAXE_CONFIGS[playRound.pickaxe].durability
@@ -400,151 +398,163 @@ export default function MinefallGame({
         return
       }
 
-      const speedFactor = speedRef.current === '2x' ? 2.0 : 1.0
-      const travelFrames = Math.max(5, Math.round(15 / speedFactor))
-      const strikeFrames = Math.max(4, Math.round(11 / speedFactor))
+      const speedFactor = speedRef.current === '2x' ? 1.8 : 1.0
 
       if (currentEventIdx < events.length) {
         const ev = events[currentEventIdx]
         const targetX = wallW + ev.col * cellW + cellW / 2
         const targetY = ev.row * cellH + 50 + cellH / 2
 
-        if (animPhase === 'travel') {
-          phaseFrame += 1
-          const t = Math.min(1, phaseFrame / travelFrames)
-          // Smooth weighted descent
-          const ease = t * (2 - t)
-          pickX = startX + (targetX - startX) * t
-          pickY = startY + (targetY - startY) * ease
+        // Physics 1: Gravity
+        const gravity = 0.24 * speedFactor
+        vy = Math.min(vy + gravity, 4.8 * speedFactor)
 
-          // Tilt pickaxe naturally toward movement direction
-          const dx = targetX - startX
-          if (dx < -2) {
-            angle = -0.45 + Math.sin(phaseFrame * 0.45) * 0.1
-          } else if (dx > 2) {
-            angle = 0.55 + Math.sin(phaseFrame * 0.45) * 0.1
-          } else {
-            angle = 0.22 + Math.sin(phaseFrame * 0.4) * 0.12
-          }
+        // Physics 2: Gentle steering towards next event column
+        const dx = targetX - pickX
+        vx += Math.sign(dx) * Math.min(Math.abs(dx) * 0.05, 0.42) * speedFactor
+        vx *= 0.965
 
-          if (phaseFrame >= travelFrames) {
-            pickX = targetX
-            pickY = targetY
-            animPhase = 'strike'
-            phaseFrame = 0
-            strikeAngle = angle
-          }
-        } else {
-          // Strike & mining hit phase
-          phaseFrame += 1
+        // Physics 3: Dynamic rotational momentum
+        angle += angularVel * speedFactor
+        angularVel *= 0.99
 
-          if (phaseFrame === 1) {
-            activeDur = ev.durabilityLeft
-            setCurrentDurability(activeDur)
+        // Update Position
+        pickX += vx * speedFactor
+        pickY += vy * speedFactor
 
-            if (ev.type === 'tnt_blast') {
-              playSound('close')
-              cameraShake = 7.0
-              grid[ev.row][ev.col] = 'air'
-              spawnExplosion(wallW + ev.col * cellW, ev.row * cellH + 50)
-              if (ev.affected) {
-                for (const aff of ev.affected) {
-                  grid[aff.row][aff.col] = 'air'
-                  spawnBlockParticles(wallW + aff.col * cellW, aff.row * cellH + 50, '#78716c', 8)
-                  if (aff.isOre) {
-                    accumulatedOres[aff.block] = (accumulatedOres[aff.block] ?? 0) + 1
-                    const boost = aff.boostX100 ?? 0
-                    activeMult += boost
-                    setLiveMultiplier(activeMult)
-                    floatingTexts.push({
-                      x: wallW + aff.col * cellW + cellW / 2,
-                      y: aff.row * cellH + 50,
-                      text: `+${(boost / 100).toFixed(2)}x`,
-                      color: '#fbbf24',
-                      life: 0,
-                      maxLife: 40,
-                    })
-                  }
+        // Physics 4: Elastic Bedrock Wall Boundaries (Ping sound & particle deflect)
+        if (pickX < wallW + 12) {
+          pickX = wallW + 12
+          vx = Math.abs(vx) * 0.78 + 1.2
+          angularVel = 0.15
+          playSound('click')
+          spawnBlockParticles(wallW, pickY - 10, '#3f3f46', 6)
+        } else if (pickX > totalW - wallW - 12) {
+          pickX = totalW - wallW - 12
+          vx = -Math.abs(vx) * 0.78 - 1.2
+          angularVel = -0.15
+          playSound('click')
+          spawnBlockParticles(totalW - wallW - 16, pickY - 10, '#3f3f46', 6)
+        }
+
+        // Physics 5: Check Impact with Solid Target Block
+        const distToTarget = Math.hypot(targetX - pickX, targetY - pickY)
+        const isApproachingTarget = (targetY - pickY < cellH * 0.6) && (Math.abs(targetX - pickX) < cellW * 0.7)
+
+        if (distToTarget < cellW * 0.65 || isApproachingTarget) {
+          // IMPACT! Break block into air in any direction!
+          pickX = targetX
+          pickY = targetY
+          grid[ev.row][ev.col] = 'air'
+          activeDur = ev.durabilityLeft
+          setCurrentDurability(activeDur)
+
+          if (ev.type === 'tnt_blast') {
+            playSound('close')
+            cameraShake = 7.5
+            spawnExplosion(wallW + ev.col * cellW, ev.row * cellH + 50)
+            if (ev.affected) {
+              for (const aff of ev.affected) {
+                grid[aff.row][aff.col] = 'air'
+                spawnBlockParticles(wallW + aff.col * cellW, aff.row * cellH + 50, '#78716c', 8)
+                if (aff.isOre) {
+                  accumulatedOres[aff.block] = (accumulatedOres[aff.block] ?? 0) + 1
+                  const boost = aff.boostX100 ?? 0
+                  activeMult += boost
+                  setLiveMultiplier(activeMult)
+                  floatingTexts.push({
+                    x: wallW + aff.col * cellW + cellW / 2,
+                    y: aff.row * cellH + 50,
+                    text: `+${(boost / 100).toFixed(2)}x`,
+                    color: '#fbbf24',
+                    life: 0,
+                    maxLife: 40,
+                  })
                 }
-                setLiveOres({ ...accumulatedOres })
               }
-            } else if (ev.type === 'repair') {
-              playSound('done')
-              cameraShake = 2.5
-              grid[ev.row][ev.col] = 'air'
-              spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#4ade80', 16)
-              floatingTexts.push({
-                x: targetX,
-                y: targetY - 10,
-                text: '+4 Durability!',
-                color: '#4ade80',
-                life: 0,
-                maxLife: 45,
-              })
-            } else if (ev.type === 'collect_ore') {
-              playSound('click')
-              cameraShake = 3.0
-              grid[ev.row][ev.col] = 'air'
-              accumulatedOres[ev.block] = (accumulatedOres[ev.block] ?? 0) + 1
               setLiveOres({ ...accumulatedOres })
-              const boost = ev.boostX100 ?? 0
-              activeMult += boost
-              setLiveMultiplier(activeMult)
-              spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#38bdf8', 16)
-              floatingTexts.push({
-                x: targetX,
-                y: targetY - 10,
-                text: `+${(boost / 100).toFixed(2)}x`,
-                color: '#38bdf8',
-                life: 0,
-                maxLife: 45,
-              })
-            } else if (ev.type === 'break') {
-              playSound('click')
-              cameraShake = 2.0
-              grid[ev.row][ev.col] = 'air'
-              spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#57534e', 12)
-            } else if (ev.type === 'reach_bottom') {
-              playSound('click')
-              cameraShake = 4.0
-              spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#e2e8f0', 16)
-            } else if (ev.type === 'pickaxe_break') {
-              playSound('close')
-              cameraShake = 5.0
-              activeDur = 0
-              setCurrentDurability(0)
-              spawnToolFragments(pickX, pickY)
-              floatingTexts.push({
-                x: targetX,
-                y: targetY - 20,
-                text: 'Tool Broken!',
-                color: '#ef4444',
-                life: 0,
-                maxLife: 60,
-              })
             }
+            // Explosive blast upward and outward
+            vy = -3.8 * speedFactor
+            vx = (Math.random() - 0.5) * 4.2
+            angularVel = (Math.random() - 0.5) * 0.4
+          } else if (ev.type === 'repair') {
+            playSound('done')
+            cameraShake = 2.5
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#4ade80', 16)
+            floatingTexts.push({
+              x: targetX,
+              y: targetY - 10,
+              text: '+4 Durability!',
+              color: '#4ade80',
+              life: 0,
+              maxLife: 45,
+            })
+            // Elastic upward rebound
+            vy = -2.8 * speedFactor
+            vx = (Math.random() - 0.5) * 2.8
+            angularVel = (Math.random() - 0.5) * 0.3
+          } else if (ev.type === 'collect_ore') {
+            playSound('click')
+            cameraShake = 3.2
+            accumulatedOres[ev.block] = (accumulatedOres[ev.block] ?? 0) + 1
+            setLiveOres({ ...accumulatedOres })
+            const boost = ev.boostX100 ?? 0
+            activeMult += boost
+            setLiveMultiplier(activeMult)
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#38bdf8', 16)
+            floatingTexts.push({
+              x: targetX,
+              y: targetY - 10,
+              text: `+${(boost / 100).toFixed(2)}x`,
+              color: '#38bdf8',
+              life: 0,
+              maxLife: 45,
+            })
+            // Elastic upward rebound
+            vy = -2.7 * speedFactor
+            vx = (Math.random() - 0.5) * 3.0
+            angularVel = (Math.random() - 0.5) * 0.35
+          } else if (ev.type === 'break') {
+            playSound('click')
+            cameraShake = 2.0
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#57534e', 12)
+            // Elastic upward rebound
+            vy = -2.5 * speedFactor
+            vx = (Math.random() - 0.5) * 2.6
+            angularVel = (Math.random() - 0.5) * 0.3
+          } else if (ev.type === 'reach_bottom') {
+            playSound('click')
+            cameraShake = 4.0
+            spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#e2e8f0', 16)
+            vy = -1.8 * speedFactor
+            vx = (Math.random() - 0.5) * 1.5
+          } else if (ev.type === 'pickaxe_break') {
+            playSound('close')
+            cameraShake = 5.0
+            activeDur = 0
+            setCurrentDurability(0)
+            spawnToolFragments(pickX, pickY)
+            floatingTexts.push({
+              x: targetX,
+              y: targetY - 20,
+              text: 'Tool Broken!',
+              color: '#ef4444',
+              life: 0,
+              maxLife: 60,
+            })
+            vy = 0
+            vx = 0
           }
 
-          // Pickaxe mining swing motion: strike into block, then elastic recoil
-          const s = phaseFrame / strikeFrames
-          if (s < 0.4) {
-            angle = strikeAngle + 0.45 * (s / 0.4)
-          } else {
-            angle = strikeAngle + 0.45 * (1 - (s - 0.4) / 0.6)
-          }
-
-          if (phaseFrame >= strikeFrames) {
-            currentEventIdx += 1
-            startX = pickX
-            startY = pickY
-            animPhase = 'travel'
-            phaseFrame = 0
-          }
+          currentEventIdx += 1
         }
       } else {
         // All events completed: gentle settle
         if (activeDur > 0) {
-          pickY += 0.2
+          vy += 0.15
+          pickY += vy
+          pickX += vx
         }
       }
 
