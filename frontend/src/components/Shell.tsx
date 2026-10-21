@@ -132,7 +132,7 @@ function Shell() {
           <button onClick={openCasino} data-ui-sound={casinoOpen ? 'click' : 'open'} aria-controls="casino-window">Minigames</button>
           <button onClick={openMarket} data-ui-sound={marketOpen ? 'click' : 'open'} aria-controls="marketplace-window">Marketplace</button>
           <button onClick={openChat} data-ui-sound={chatOpen ? 'click' : 'open'} aria-controls="chat-window">Chat</button>
-          <button onClick={openMap} data-ui-sound={mapOpen ? 'click' : 'open'} aria-controls="map-window">Live 3D Map</button>
+          <button onClick={openMap} data-ui-sound={mapOpen ? 'click' : 'open'} aria-controls="map-window">Live Map</button>
           <button onClick={() => openPlayer()} data-ui-sound={playerOpen ? 'click' : 'open'} aria-controls="player-controls-window">Player Controls</button>
           <button onClick={openSettings} data-ui-sound={settingsOpen ? 'click' : 'open'} aria-controls="settings-window">Settings</button>
           {user?.is_admin && (
@@ -235,7 +235,7 @@ function Shell() {
         <DesktopWindow id="chat-window" title="Server Chat" icon={globeIcon} kind="chat" open={chatOpen} activation={chatActivation} active={active === 'chat'} onFocus={() => setActive('chat')} onClose={hideChat} onMinimize={hideChat}>
           <ChatPage visible={chatOpen} onOpenAccount={openAccount} />
         </DesktopWindow>
-        <DesktopWindow id="map-window" title="Live 3D World Map" icon={globeIcon} kind="map" open={mapOpen} activation={mapActivation} active={active === 'map'} onFocus={() => setActive('map')} onClose={hideMap} onMinimize={hideMap}>
+        <DesktopWindow id="map-window" title="Live World Map" icon={globeIcon} kind="map" open={mapOpen} activation={mapActivation} active={active === 'map'} onFocus={() => setActive('map')} onClose={hideMap} onMinimize={hideMap}>
           <MapPage visible={mapOpen} />
         </DesktopWindow>
         <DesktopWindow id="leaderboards-window" title="Hall of Fame & Leaderboards" icon={perfCenterIcon} kind="leaderboards" open={leaderboardsOpen} activation={leaderboardsActivation} active={active === 'leaderboards'} onFocus={() => setActive('leaderboards')} onClose={hideLeaderboards} onMinimize={hideLeaderboards}>
@@ -249,7 +249,7 @@ function Shell() {
         <button ref={casinoDock} className="dock-app" data-ui-sound={casinoOpen ? active === 'casino' ? 'close' : 'click' : 'open'} onClick={casinoOpen && active === 'casino' ? hideCasino : openCasino} aria-controls="casino-window" aria-expanded={casinoOpen} data-open={casinoOpen}><img src={minigamesIcon} alt="" /><span>Minigames</span></button>
         <button ref={marketDock} className="dock-app" data-ui-sound={marketOpen ? active === 'market' ? 'close' : 'click' : 'open'} onClick={marketOpen && active === 'market' ? hideMarket : openMarket} aria-controls="marketplace-window" aria-expanded={marketOpen} data-open={marketOpen}><img src={globeIcon} alt="" /><span>Marketplace</span></button>
         <button ref={chatDock} className="dock-app" data-ui-sound={chatOpen ? active === 'chat' ? 'close' : 'click' : 'open'} onClick={chatOpen && active === 'chat' ? hideChat : openChat} aria-controls="chat-window" aria-expanded={chatOpen} data-open={chatOpen}><img src={globeIcon} alt="" /><span>Chat</span></button>
-        <button ref={mapDock} className="dock-app" data-ui-sound={mapOpen ? active === 'map' ? 'close' : 'click' : 'open'} onClick={mapOpen && active === 'map' ? hideMap : openMap} aria-controls="map-window" aria-expanded={mapOpen} data-open={mapOpen}><img src={globeIcon} alt="" /><span>Live 3D Map</span></button>
+        <button ref={mapDock} className="dock-app" data-ui-sound={mapOpen ? active === 'map' ? 'close' : 'click' : 'open'} onClick={mapOpen && active === 'map' ? hideMap : openMap} aria-controls="map-window" aria-expanded={mapOpen} data-open={mapOpen}><img src={globeIcon} alt="" /><span>Live Map</span></button>
         <button ref={playerDock} className="dock-app" onClick={playerOpen && active === 'player' ? hidePlayer : () => openPlayer()} aria-controls="player-controls-window" aria-expanded={playerOpen} data-open={playerOpen} data-ui-sound={playerOpen ? active === 'player' ? 'close' : 'click' : 'open'}>{selectedPlayer ? <PlayerHead username={selectedPlayer.username} textureHash={selectedPlayer.skin_hash} /> : <img src={perfCenterIcon} alt="" />}<span>Player Controls</span></button>
         {user?.is_admin && (
           <button ref={adminDock} className="dock-app" data-ui-sound={adminOpen ? active === 'admin' ? 'close' : 'click' : 'open'} onClick={adminOpen && active === 'admin' ? hideAdmin : openAdmin} aria-controls="admin-window" aria-expanded={adminOpen} data-open={adminOpen}><img src={firewallOnIcon} alt="" /><span>Admin Panel</span></button>
