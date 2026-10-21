@@ -18958,7 +18958,35 @@ mod economy_simulation {
 
     #[test]
     fn economy_simulation_incorporates_new_gameplay_sinks() {
-        let run = simulate_experiment("stable_20", 42, true, 180, MODELS[0], Some(IMPLEMENTED));
+        let run = simulate_experiment("stable_20", 42, true, 365, MODELS[0], Some(IMPLEMENTED));
+        println!("=== YEAR SIMULATION RESULTS (stable_20, reference model, 365 days) ===");
+        println!("Money target met: {}", run.acceptance.money_target_met);
+        println!("Starter affordability met: {}", run.acceptance.starter_affordability_met);
+        println!("Tail active money ratio: {:?}", run.acceptance.tail_money_ratio);
+        println!("Tail starter basket availability: {:.1}%", run.acceptance.tail_basket_availability * 100.0);
+        println!("Final total coins: {}", run.days.last().unwrap().total_money);
+        println!("Total quests issued: {}", run.accounting.quests);
+        println!("Total services burned: {}", run.accounting.services);
+        println!("  - Repaired iron units: {} ({} coins)", run.accounting.repaired_iron, run.accounting.repaired_iron * REPAIR_PRICE);
+        println!("  - Private blocks bought: {} ({} coins)", run.accounting.private_blocks_bought, run.accounting.private_block_coins);
+        println!("  - Prospector pickaxes bought: {} ({} coins)", run.accounting.pickaxes_bought, run.accounting.pickaxe_coins);
+        println!("  - Raid items bought: {} ({} coins)", run.accounting.raid_items_bought, run.accounting.raid_item_coins);
+        println!("Minigame stakes: {}, payouts: {}, net burn: {}", run.accounting.stakes, run.accounting.payouts, run.accounting.stakes - run.accounting.payouts);
+        println!("Market trade volume: {}, commission fee burn: {}", run.accounting.trade_volume, run.accounting.commission);
+        println!("Total trades: {}", run.accounting.trades);
+
+        let growth = simulate_experiment("growth_5_to_20", 42, true, 365, MODELS[0], Some(IMPLEMENTED));
+        println!("=== YEAR SIMULATION RESULTS (growth_5_to_20, reference model, 365 days) ===");
+        println!("Money target met: {}", growth.acceptance.money_target_met);
+        println!("Starter affordability met: {}", growth.acceptance.starter_affordability_met);
+        println!("Tail active money ratio: {:?}", growth.acceptance.tail_money_ratio);
+        println!("Tail starter basket availability: {:.1}%", growth.acceptance.tail_basket_availability * 100.0);
+        println!("Final total coins: {}", growth.days.last().unwrap().total_money);
+        println!("Total services burned: {}", growth.accounting.services);
+        println!("  - Private blocks bought: {} ({} coins)", growth.accounting.private_blocks_bought, growth.accounting.private_block_coins);
+        println!("  - Prospector pickaxes bought: {} ({} coins)", growth.accounting.pickaxes_bought, growth.accounting.pickaxe_coins);
+        println!("  - Raid items bought: {} ({} coins)", growth.accounting.raid_items_bought, growth.accounting.raid_item_coins);
+
         assert!(run.accounting.private_blocks_bought > 0, "agents purchase private blocks");
         assert!(run.accounting.private_block_coins > 0);
         assert!(run.accounting.pickaxes_bought > 0, "agents purchase prospector pickaxes");
