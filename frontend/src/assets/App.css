@@ -260,8 +260,8 @@
   .stat-row { grid-template-columns: minmax(0, 1fr) repeat(4, minmax(0, 1fr)); }
   .stat-cell { text-align: left; }
 }
-/* Mobile Apps 3-Lines Button & Sheet */
-.mobile-apps-btn,
+/* Mobile Apps & Music Bottom Bar & Drawer */
+.mobile-bottom-bar,
 .mobile-apps-overlay {
   display: none;
 }
@@ -286,7 +286,23 @@
   .desktop-menu { margin-left: auto; gap: 0; }
   .desktop-menubar button { padding: 3px 6px; font-size: 11px; }
   .desktop-stage { height: auto; min-height: calc(100dvh - 40px); padding: 16px 10px 140px; display: flex; flex-direction: column; gap: 18px; }
-  .desktop-window { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; max-height: none; flex: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22) !important; }
+
+  /* On phone, instead of a lot of windows you can only select one */
+  .desktop-window {
+    display: none !important;
+    position: relative;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none;
+    flex: none;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22) !important;
+  }
+  .desktop-window[data-active='true'] {
+    display: flex !important;
+  }
+
   .desktop-window::before { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: var(--surface-soft) !important; opacity: 0.98 !important; }
   .window-body { overflow: visible; }
   .window-titlebar { cursor: default; }
@@ -306,38 +322,59 @@
   .settings-content { padding: 24px 20px; }
   .field input { font-size: 16px; }
 
-  /* Replace heavy horizontal dock on mobile with the lightweight 3-lines Apps button */
+  /* Replace heavy horizontal dock on mobile with the centered Apps + Music row */
   .desktop-dock { display: none !important; }
 
-  .mobile-apps-btn {
+  .mobile-bottom-bar {
     display: flex;
     align-items: center;
-    gap: 9px;
+    justify-content: center;
+    gap: 10px;
     position: fixed;
-    z-index: 48;
+    z-index: 55;
     bottom: 18px;
-    left: 20px;
-    height: 46px;
-    padding: 0 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: calc(100vw - 24px);
+    pointer-events: none;
+  }
+
+  .mobile-bottom-bar > button {
+    pointer-events: auto;
+  }
+
+  .mobile-apps-btn,
+  .mobile-music-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 44px;
+    padding: 0 18px;
     border: 1px solid var(--glass-edge);
-    border-radius: 23px;
-    background: linear-gradient(135deg, rgb(255 255 255 / 80%), rgb(255 255 255 / 40%)), var(--surface-soft);
+    border-radius: 22px;
+    background: linear-gradient(135deg, rgb(255 255 255 / 80%), rgb(255 255 255 / 45%)), var(--surface-soft);
     backdrop-filter: blur(14px) saturate(135%);
     -webkit-backdrop-filter: blur(14px) saturate(135%);
     box-shadow: 0 8px 24px rgba(0, 25, 50, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.85);
     color: var(--text);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
     cursor: pointer;
     touch-action: manipulation;
+    white-space: nowrap;
+    transition: transform 120ms ease;
   }
 
-  [data-theme='dark'] .mobile-apps-btn {
+  [data-theme='dark'] .mobile-apps-btn,
+  [data-theme='dark'] .mobile-music-btn {
     background: linear-gradient(135deg, rgb(255 255 255 / 16%), transparent), var(--surface-soft);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
   }
 
-  .mobile-apps-btn:active {
+  .mobile-apps-btn:active,
+  .mobile-music-btn:active {
     transform: scale(0.96);
   }
 
@@ -345,7 +382,7 @@
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    width: 17px;
+    width: 16px;
     height: 12px;
   }
 
@@ -363,21 +400,13 @@
     letter-spacing: -0.2px;
   }
 
-  .music-mobile-toggle {
-    display: block;
-    position: fixed;
-    z-index: 46;
-    right: 20px;
-    left: auto;
-    transform: none;
-    bottom: 18px;
-    min-height: 46px;
-    padding: 0 16px;
-    border-radius: 23px;
+  .mobile-music-icon {
+    font-size: 14px;
+    line-height: 1;
   }
 
   .music-player {
-    bottom: 76px;
+    bottom: 74px;
   }
 
   /* Full mobile application sheet */

@@ -1,16 +1,33 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { formatTime, readPlayerSettings, TRACKS, writePlayerSettings, type PlayerSettings } from '../lib/player'
 import { TRACK_SOURCES } from '../lib/playerSources'
 
+interface MusicPlayerProps {
+  mobileOpen?: boolean
+  onToggleMobile?: () => void
+  showDefaultToggle?: boolean
+}
+
 // Desktop transport; mobile keeps the controls behind a compact toggle.
-export default function MusicPlayer() {
+export default function MusicPlayer({
+  mobileOpen: controlledMobileOpen,
+  onToggleMobile,
+  showDefaultToggle = true,
+}: MusicPlayerProps = {}) {
   const [settings, setSettings] = useState<PlayerSettings>(readPlayerSettings)
   const [playing, setPlaying] = useState(false)
   const [loop, setLoop] = useState(true)
   const [time, setTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [creditsOpen, setCreditsOpen] = useState(false)
-  const [mobileOpen, setMobileOpen] = useState(false)
+  const [internalMobileOpen, setInternalMobileOpen] = useState(false)
+  const isControlled = controlledMobileOpen !== undefined
+  const mobileOpen = isControlled ? controlledMobileOpen : internalMobileOpen
+  const toggleMobile = useCallback(() => {
+    if (onToggleMobile) onToggleMobile()
+    else setInternalMobileOpen((v) => !v)
+    setCreditsOpen(false)
+  }, [onToggleMobile])
   const [pageVisible, setPageVisible] = useState(() => !document.hidden)
   const audioRef = useRef<HTMLAudioElement>(null)
   const playerRef = useRef<HTMLElement>(null)
@@ -49,13 +66,13 @@ export default function MusicPlayer() {
     if (!mobileOpen) return
     const keyboard = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape' && !creditsOpen && window.matchMedia('(max-width: 760px)').matches) {
-        setMobileOpen(false)
+        toggleMobile()
         toggleRef.current?.focus()
       }
     }
     document.addEventListener('keydown', keyboard)
     return () => document.removeEventListener('keydown', keyboard)
-  }, [mobileOpen, creditsOpen])
+  }, [mobileOpen, creditsOpen, toggleMobile])
 
   useEffect(() => {
     if (!creditsOpen) return
@@ -108,11 +125,13 @@ export default function MusicPlayer() {
 
   return (
     <>
-    <button ref={toggleRef} type="button" className="btn music-mobile-toggle"
-      aria-controls="music-player" aria-expanded={mobileOpen}
-      onClick={() => { setMobileOpen((value) => !value); setCreditsOpen(false) }}>
-      {mobileOpen ? 'Hide music' : 'Music'}
-    </button>
+    {showDefaultToggle && (
+      <button ref={toggleRef} type="button" className="btn music-mobile-toggle"
+        aria-controls="music-player" aria-expanded={mobileOpen}
+        onClick={toggleMobile}>
+        {mobileOpen ? 'Hide music' : 'Music'}
+      </button>
+    )}
     <aside id="music-player" ref={playerRef} className="music-player" data-mobile-open={mobileOpen} data-playing={playing} data-visible={pageVisible} aria-label="Music player">
       <audio
         ref={audioRef}

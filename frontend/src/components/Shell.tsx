@@ -59,6 +59,7 @@ function Shell() {
   const [clanActivation, setClanActivation] = useState(0)
   const [leaderboardsActivation, setLeaderboardsActivation] = useState(0)
   const [mobileAppsOpen, setMobileAppsOpen] = useState(false)
+  const [mobileMusicOpen, setMobileMusicOpen] = useState(false)
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
   const [territoryAlerts, setTerritoryAlerts] = useState<TerritoryAlert[]>([])
@@ -107,12 +108,13 @@ function Shell() {
   }
   function hidePlayer() {
     setPlayerOpen(false)
+    setAccountOpen(true)
     setActive('account')
     playerDock.current?.focus()
   }
 
   function openMarket() { setMarketOpen(true); setActive('market'); setMarketActivation((value) => value + 1) }
-  function hideMarket() { setMarketOpen(false); setActive('account'); marketDock.current?.focus() }
+  function hideMarket() { setMarketOpen(false); setAccountOpen(true); setActive('account'); marketDock.current?.focus() }
   function openInventory(uuid: string) { openPlayer(uuid); setInventoryLaunch((current) => ({ uuid, activation: (current?.activation ?? 0) + 1 })) }
 
   function openAccount() { setAccountOpen(true); setActive('account'); setAccountActivation((value) => value + 1) }
@@ -124,15 +126,24 @@ function Shell() {
   function openMap() { setMapOpen(true); setActive('map'); setMapActivation((value) => value + 1) }
   function openClan() { setClanOpen(true); setActive('clan'); setClanActivation((value) => value + 1) }
   function openLeaderboards() { setLeaderboardsOpen(true); setActive('leaderboards'); setLeaderboardsActivation((value) => value + 1) }
-  function hideAccount() { setAccountOpen(false); setActive('settings'); accountDock.current?.focus() }
-  function hideSettings() { setSettingsOpen(false); setActive('account'); settingsDock.current?.focus() }
-  function hideStats() { setStatsOpen(false); setActive('account'); statsDock.current?.focus() }
-  function hideCasino() { setCasinoOpen(false); setActive('account'); casinoDock.current?.focus() }
-  function hideAdmin() { setAdminOpen(false); setActive('account'); adminDock.current?.focus() }
-  function hideChat() { setChatOpen(false); setActive('account'); chatDock.current?.focus() }
-  function hideMap() { setMapOpen(false); setActive('account'); mapDock.current?.focus() }
-  function hideClan() { setClanOpen(false); setActive('account'); clanDock.current?.focus() }
-  function hideLeaderboards() { setLeaderboardsOpen(false); setActive('account'); leaderboardsDock.current?.focus() }
+  function hideAccount() {
+    if (typeof window !== 'undefined' && window.innerWidth <= 760) {
+      setAccountOpen(true)
+      setActive('account')
+    } else {
+      setAccountOpen(false)
+      setActive('settings')
+      accountDock.current?.focus()
+    }
+  }
+  function hideSettings() { setSettingsOpen(false); setAccountOpen(true); setActive('account'); settingsDock.current?.focus() }
+  function hideStats() { setStatsOpen(false); setAccountOpen(true); setActive('account'); statsDock.current?.focus() }
+  function hideCasino() { setCasinoOpen(false); setAccountOpen(true); setActive('account'); casinoDock.current?.focus() }
+  function hideAdmin() { setAdminOpen(false); setAccountOpen(true); setActive('account'); adminDock.current?.focus() }
+  function hideChat() { setChatOpen(false); setAccountOpen(true); setActive('account'); chatDock.current?.focus() }
+  function hideMap() { setMapOpen(false); setAccountOpen(true); setActive('account'); mapDock.current?.focus() }
+  function hideClan() { setClanOpen(false); setAccountOpen(true); setActive('account'); clanDock.current?.focus() }
+  function hideLeaderboards() { setLeaderboardsOpen(false); setAccountOpen(true); setActive('account'); leaderboardsDock.current?.focus() }
 
   async function handleSignOut() {
     setLeaving(true)
@@ -488,21 +499,41 @@ function Shell() {
         <button ref={settingsDock} className="dock-app" data-ui-sound={settingsOpen ? active === 'settings' ? 'close' : 'click' : 'open'} onClick={settingsOpen && active === 'settings' ? hideSettings : openSettings} aria-controls="settings-window" aria-expanded={settingsOpen} data-open={settingsOpen}><img src={personalizationIcon} alt="" /><span>Settings</span></button>
       </nav>
 
-      <button
-        type="button"
-        className="mobile-apps-btn"
-        data-ui-sound={mobileAppsOpen ? 'close' : 'open'}
-        onClick={() => setMobileAppsOpen((prev) => !prev)}
-        aria-label="Applications Menu"
-        aria-expanded={mobileAppsOpen}
-      >
-        <span className="mobile-hamburger" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </span>
-        <span className="mobile-apps-label">Apps</span>
-      </button>
+      <div className="mobile-bottom-bar">
+        <button
+          type="button"
+          className="mobile-apps-btn"
+          data-ui-sound={mobileAppsOpen ? 'close' : 'open'}
+          onClick={() => {
+            setMobileAppsOpen((prev) => !prev)
+            setMobileMusicOpen(false)
+          }}
+          aria-label="Applications Menu"
+          aria-expanded={mobileAppsOpen}
+        >
+          <span className="mobile-hamburger" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="mobile-apps-label">Apps</span>
+        </button>
+
+        <button
+          type="button"
+          className="mobile-music-btn"
+          data-ui-sound={mobileMusicOpen ? 'close' : 'open'}
+          onClick={() => {
+            setMobileMusicOpen((prev) => !prev)
+            setMobileAppsOpen(false)
+          }}
+          aria-label="Music player"
+          aria-expanded={mobileMusicOpen}
+        >
+          <span className="mobile-music-icon" aria-hidden="true">♫</span>
+          <span>{mobileMusicOpen ? 'Hide music' : 'Music'}</span>
+        </button>
+      </div>
 
       {mobileAppsOpen && (
         <div
@@ -544,8 +575,9 @@ function Shell() {
                   onClick={() => {
                     app.action()
                     setMobileAppsOpen(false)
+                    setMobileMusicOpen(false)
                     requestAnimationFrame(() => {
-                      document.getElementById(app.windowId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
                     })
                   }}
                 >
@@ -561,7 +593,11 @@ function Shell() {
         </div>
       )}
 
-      <MusicPlayer />
+      <MusicPlayer
+        mobileOpen={mobileMusicOpen}
+        onToggleMobile={() => setMobileMusicOpen((prev) => !prev)}
+        showDefaultToggle={false}
+      />
     </div>
   )
 }
