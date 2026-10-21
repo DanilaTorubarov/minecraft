@@ -12,6 +12,11 @@
         document.documentElement.dataset.theme = theme === 'system'
           ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
           : (theme === 'dark' ? 'dark' : 'light');
+        try {
+          if (localStorage.getItem('minecraft-low-performance') === 'on' || localStorage.getItem('minecraft-low-performance') === 'true') {
+            document.documentElement.dataset.lowPerformance = 'true';
+          }
+        } catch {}
       })();
     </script>
     <meta

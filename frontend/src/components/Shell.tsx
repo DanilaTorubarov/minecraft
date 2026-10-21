@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../lib/auth-context'
 import ThemeControl from './ThemeControl'
+import PerformanceControl from './PerformanceControl'
 import SoundControl from './SoundControl'
+import { useLowPerformanceSetting } from '../lib/performanceSetting'
 import MusicPlayer from './MusicPlayer'
 import DesktopWindow from './DesktopWindow'
 import LiveWallpaper from './LiveWallpaper'
@@ -60,6 +62,7 @@ function Shell() {
   const statsAccounts = stats?.accounts ?? []
   const [territoryAlerts, setTerritoryAlerts] = useState<TerritoryAlert[]>([])
   const [alertDismissed, setAlertDismissed] = useState<Record<string, boolean>>({})
+  const [lowPerf] = useLowPerformanceSetting()
 
   useEffect(() => {
     if (!user || statsAccounts.length === 0) return
@@ -74,9 +77,10 @@ function Shell() {
       }
     }
     void checkAlerts()
-    const timer = window.setInterval(() => { void checkAlerts() }, 6000)
+    const intervalMs = lowPerf ? 24000 : 6000
+    const timer = window.setInterval(() => { void checkAlerts() }, intervalMs)
     return () => { active = false; window.clearInterval(timer) }
-  }, [user, statsAccounts.length])
+  }, [user, statsAccounts.length, lowPerf])
 
   const activeAlerts = territoryAlerts.filter((a) => !alertDismissed[a.id])
   const [playerOpen, setPlayerOpen] = useState(false)
@@ -335,6 +339,7 @@ function Shell() {
           <div className="settings-content">
             <div className="settings-heading"><img src={personalizationIcon} alt="" /><div><h1>Settings</h1><p>Make this desktop yours.</p></div></div>
             <section className="settings-appearance" aria-labelledby="appearance-heading"><h2 id="appearance-heading">Appearance</h2><p>Choose a theme for the website. System follows your device’s appearance.</p><ThemeControl /></section>
+            <section className="settings-appearance" aria-labelledby="performance-heading"><h2 id="performance-heading">Performance</h2><p>Optimize for gaming while Minecraft is running by pausing live WebGL shaders and disabling heavy blurs.</p><PerformanceControl /></section>
             <section className="settings-appearance" aria-labelledby="sound-heading"><h2 id="sound-heading">Sound</h2><p>Small interface sounds for windows, buttons, and confirmations. The music player beside the dock keeps its own volume.</p><SoundControl /></section>
             <p className="settings-footnote">Your choices are saved automatically in this browser.</p>
           </div>

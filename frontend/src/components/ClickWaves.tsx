@@ -1,9 +1,12 @@
 import { useEffect, useRef } from 'react'
+import { useLowPerformanceSetting } from '../lib/performanceSetting'
 
 export default function ClickWaves() {
+  const [lowPerf] = useLowPerformanceSetting()
   const layerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (lowPerf) return
     const layer = layerRef.current
     if (layer === null) return
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -35,7 +38,8 @@ export default function ClickWaves() {
       motion.removeEventListener('change', clear)
       clear()
     }
-  }, [])
+  }, [lowPerf])
 
+  if (lowPerf) return null
   return <div ref={layerRef} className="cursor-click-waves" aria-hidden="true" />
 }

@@ -1314,3 +1314,90 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
   }
 }
 
+/* Low Performance Mode (Optimized for Gaming & Low CPU/GPU Footprint) */
+html[data-low-performance='true'] {
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+
+html[data-low-performance='true'] *,
+html[data-low-performance='true'] *::before,
+html[data-low-performance='true'] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-low-performance='true'] .desktop-window {
+  transition: none !important;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25) !important;
+}
+
+html[data-low-performance='true'] .desktop-window[data-open='true']:not([hidden]) {
+  animation: none !important;
+}
+
+html[data-low-performance='true'] .desktop-window::before {
+  background: var(--surface-soft) !important;
+  opacity: 0.98 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-low-performance='true'] .desktop-menubar {
+  background: var(--surface-soft) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
+}
+
+html[data-low-performance='true'] .desktop-dock {
+  background: var(--surface-soft) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22) !important;
+}
+
+html[data-low-performance='true'] .dock-app {
+  transition: background 120ms ease !important;
+}
+
+html[data-low-performance='true'] .dock-app:hover {
+  transform: none !important;
+}
+
+html[data-low-performance='true'] .window-footer {
+  background: var(--surface-soft) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-low-performance='true'] .territory-alert-toast {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: var(--surface-soft) !important;
+}
+
+html[data-low-performance='true'] .live-wallpaper-bubbles,
+html[data-low-performance='true'] .live-wallpaper-beams,
+html[data-low-performance='true'] .live-wallpaper-glints,
+html[data-low-performance='true'] .live-wallpaper-particles,
+html[data-low-performance='true'] .cursor-click-waves {
+  display: none !important;
+}
+
+html[data-low-performance='true'] .main > * {
+  animation: none !important;
+}
+
+html[data-low-performance='true'] .entry,
+html[data-low-performance='true'] .stat-card,
+html[data-low-performance='true'] .claim,
+html[data-low-performance='true'] .panel,
+html[data-low-performance='true'] .code {
+  transition: none !important;
+}
+
+html[data-low-performance='true'] .entry:hover {
+  transform: none !important;
+}
+
+

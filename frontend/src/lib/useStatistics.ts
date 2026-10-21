@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ApiError, getStats, sharedMessage, type StatsView } from './api'
 import { onServerDataInvalidated } from './serverData'
+import { lowPerformanceEnabled } from './performanceSetting'
 
 /** One server snapshot for every statistics app and its launcher. */
 export function useStatistics(userId: number | undefined) {
@@ -24,7 +25,8 @@ export function useStatistics(userId: number | undefined) {
     }
     void refresh()
     const refreshVisible = () => { if (document.visibilityState === 'visible') void refresh() }
-    const timer = window.setInterval(refreshVisible, 5000)
+    const intervalMs = lowPerformanceEnabled() ? 15000 : 5000
+    const timer = window.setInterval(refreshVisible, intervalMs)
     window.addEventListener('focus', refreshVisible)
     document.addEventListener('visibilitychange', refreshVisible)
     const unsubscribe = onServerDataInvalidated('stats', () => { void refresh() })

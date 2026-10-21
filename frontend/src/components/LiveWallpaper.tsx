@@ -1,6 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
 import lightWallpaperUrl from '../assets/asadal-stock-18.webp'
 import nightWallpaperUrl from '../assets/night-park.webp'
+import { lowPerformanceEnabled, subscribeLowPerformanceSetting, useLowPerformanceSetting } from '../lib/performanceSetting'
 
 const VERTEX_SHADER = `
   attribute vec2 a_position;
@@ -161,6 +162,7 @@ function compileShader(
 }
 
 export default function LiveWallpaper() {
+  const [lowPerf] = useLowPerformanceSetting()
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -265,7 +267,7 @@ export default function LiveWallpaper() {
     }
 
     function addRipple(event: globalThis.PointerEvent) {
-      if (motionPreference.matches || document.visibilityState !== 'visible') return
+      if (lowPerformanceEnabled() || motionPreference.matches || document.visibilityState !== 'visible') return
       const now = performance.now()
       pointerTarget.x = event.clientX / Math.max(1, window.innerWidth)
       pointerTarget.y = 1 - event.clientY / Math.max(1, window.innerHeight)
@@ -312,9 +314,31 @@ export default function LiveWallpaper() {
       frame = window.requestAnimationFrame(render)
     }
 
+    function renderStatic() {
+      resize()
+      syncTexture()
+      if (activeImage === null) return
+      gl.viewport(0, 0, canvas.width, canvas.height)
+      gl.uniform2f(resolution, canvas.width, canvas.height)
+      gl.uniform2f(imageResolution, activeImage.naturalWidth, activeImage.naturalHeight)
+      gl.uniform1f(timeUniform, 0)
+      gl.uniform1f(darkUniform, isNight() ? 1 : 0)
+      gl.uniform1f(nightUniform, activeImage === nightImage ? 1 : 0)
+      gl.uniform1f(sceneOffset, activeImage === nightImage ? 0 : 130 / Math.max(1, window.innerHeight))
+      gl.uniform2f(pointerUniform, 0.5, 0.5)
+      rippleData.fill(99)
+      gl.uniform3fv(ripplesUniform, rippleData)
+      gl.drawArrays(gl.TRIANGLES, 0, 6)
+      canvas.dataset.ready = 'true'
+    }
+
     function start() {
       if (running || motionPreference.matches || document.visibilityState !== 'visible') return
       if (!isLoaded(wantedImage())) return
+      if (lowPerformanceEnabled()) {
+        renderStatic()
+        return
+      }
       running = true
       frame = window.requestAnimationFrame(render)
     }
@@ -342,6 +366,8 @@ export default function LiveWallpaper() {
 
     const themeObserver = new MutationObserver(syncPlayback)
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    const unsubPerf = subscribeLowPerformanceSetting(syncPlayback)
+    window.addEventListener('resize', syncPlayback, { passive: true })
     window.addEventListener('pointermove', addRipple, { passive: true })
     window.addEventListener('pointerdown', addRipple, { passive: true })
     document.addEventListener('visibilitychange', syncPlayback)
@@ -350,6 +376,8 @@ export default function LiveWallpaper() {
     return () => {
       stop()
       themeObserver.disconnect()
+      unsubPerf()
+      window.removeEventListener('resize', syncPlayback)
       window.removeEventListener('pointermove', addRipple)
       window.removeEventListener('pointerdown', addRipple)
       document.removeEventListener('visibilitychange', syncPlayback)
@@ -365,20 +393,24 @@ export default function LiveWallpaper() {
   return (
     <div className="live-wallpaper" aria-hidden="true">
       <canvas ref={canvasRef} />
-      <span className="live-wallpaper-glow" />
-      <span className="live-wallpaper-beams">
-        <i />
-        <i />
-        <i />
-      </span>
-      <span className="live-wallpaper-particles">
-        {BUBBLES.map((style, index) => <i className="wallpaper-bubble" key={index} style={style} />)}
-      </span>
-      <span className="live-wallpaper-glints">
-        <i />
-        <i />
-        <i />
-      </span>
+      {!lowPerf && (
+        <>
+          <span className="live-wallpaper-glow" />
+          <span className="live-wallpaper-beams">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span className="live-wallpaper-particles">
+            {BUBBLES.map((style, index) => <i className="wallpaper-bubble" key={index} style={style} />)}
+          </span>
+          <span className="live-wallpaper-glints">
+            <i />
+            <i />
+            <i />
+          </span>
+        </>
+      )}
     </div>
   )
 }
