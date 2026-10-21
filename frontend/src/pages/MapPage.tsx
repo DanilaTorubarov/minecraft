@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-
-type CameraMode = 'perspective' | 'free' | 'flat'
+import { mapUrl, spawnView, type MapCamera as CameraMode, type MapViewMode as ViewMode } from '../lib/mapViews'
 
 interface BlueMapBridge {
   setPerspectiveView?: (animationDuration: number) => void
@@ -10,12 +9,14 @@ interface BlueMapBridge {
   loadPageAddress?: () => void
   updatePageAddress?: () => void
   mapViewer?: {
+    map?: unknown
     controlsManager?: {
       position?: { set: (x: number, y: number, z: number) => void }
       distance?: number
       rotation?: number
       angle?: number
       tilt?: number
+      ortho?: number
     }
     clearTileCache?: () => void
     updateLoadedMapArea?: () => void
@@ -32,45 +33,49 @@ type Props = {
 
 export default function MapPage({ visible }: Props) {
   const [iframeKey, setIframeKey] = useState(0)
+  const [src, setSrc] = useState(mapUrl('3d', 'perspective'))
   const [loading, setLoading] = useState(true)
-  const [cameraMode, setCameraMode] = useState<CameraMode>('perspective')
+  const [view, setView] = useState<ViewMode>('3d')
+  const [camera, setCamera] = useState<CameraMode>('perspective')
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
-  const getMapUrl = (mode: CameraMode) => {
-    switch (mode) {
-      case 'perspective':
-        return '/map/#world:0:70:0:450:0:0.45:0:0:perspective'
-      case 'free':
-        return '/map/#world:0:40:0:300:0:0:0:0:free'
-      case 'flat':
-        return '/map/#world:0:0:0:1200:0:0:0:0:flat'
-    }
-  }
-
-  const setView = (mode: CameraMode) => {
-    setCameraMode(mode)
+  const applyView = (nextView: ViewMode, nextCamera: CameraMode = camera) => {
+    const leaving2d = view === '2d'
+    setView(nextView)
+    setCamera(nextCamera)
     try {
       const win = iframeRef.current?.contentWindow as BlueMapWindow | null
-      if (win?.bluemap) {
-        if (mode === 'perspective' && typeof win.bluemap.setPerspectiveView === 'function') {
-          win.bluemap.setPerspectiveView(0)
+      const ready = Boolean(win?.bluemap?.mapViewer?.map)
+      if (ready && win?.bluemap) {
+        if (nextView === '2d' && typeof win.bluemap.setFlatView === 'function') {
+          win.bluemap.setFlatView(0)
           return
         }
-        if (mode === 'free' && typeof win.bluemap.setFreeFlight === 'function') {
+        if (nextView === '3d' && nextCamera === 'free' && typeof win.bluemap.setFreeFlight === 'function') {
           win.bluemap.setFreeFlight(0, 40)
           return
         }
-        if (mode === 'flat' && typeof win.bluemap.setFlatView === 'function') {
-          win.bluemap.setFlatView(0)
+        if (nextView === '3d' && nextCamera === 'perspective' && typeof win.bluemap.setPerspectiveView === 'function') {
+          win.bluemap.setPerspectiveView(0)
+          // BlueMap keeps the flat camera's zero angle, which would look top-down in 3D again.
+          if (leaving2d) {
+            const cm = win.bluemap.mapViewer?.controlsManager
+            if (cm) {
+              const spawn = spawnView('3d')
+              cm.angle = spawn.angle
+              cm.tilt = spawn.tilt
+              cm.ortho = spawn.ortho
+            }
+            win.bluemap.updatePageAddress?.()
+            win.bluemap.mapViewer?.updateLoadedMapArea?.()
+          }
           return
         }
       }
     } catch {
       /* cross-origin fallback */
     }
-    if (iframeRef.current) {
-      iframeRef.current.src = getMapUrl(mode)
-    }
+    setSrc(mapUrl(nextView, nextCamera))
   }
 
   const handleCenter = () => {
@@ -82,18 +87,20 @@ export default function MapPage({ visible }: Props) {
         }
         const cm = win.bluemap.mapViewer?.controlsManager
         if (cm && cm.position) {
+          const spawn = spawnView(view)
           cm.position.set(0, 70, 0)
-          cm.distance = 450
+          cm.distance = spawn.distance
           cm.rotation = 0
-          cm.angle = 0.45
-          cm.tilt = 0
+          cm.angle = spawn.angle
+          cm.tilt = spawn.tilt
+          cm.ortho = spawn.ortho
           win.bluemap.updatePageAddress?.()
           win.bluemap.mapViewer?.updateLoadedMapArea?.()
         }
         return
       }
       if (win?.location) {
-        win.location.hash = `#world:0:70:0:450:0:0.45:0:0:${cameraMode}`
+        win.location.hash = mapUrl(view, camera).replace('/map/', '')
         if (typeof win.bluemap?.loadPageAddress === 'function') {
           win.bluemap.loadPageAddress()
         }
@@ -103,7 +110,7 @@ export default function MapPage({ visible }: Props) {
       /* cross-origin fallback */
     }
     if (iframeRef.current) {
-      iframeRef.current.src = getMapUrl(cameraMode)
+      setSrc(mapUrl(view, camera))
     }
   }
 
@@ -123,11 +130,12 @@ export default function MapPage({ visible }: Props) {
       /* cross-origin fallback */
     }
     setLoading(true)
+    setSrc(mapUrl(view, camera))
     setIframeKey((k) => k + 1)
   }
 
   const handlePopout = () => {
-    window.open(getMapUrl(cameraMode), '_blank', 'noopener,noreferrer')
+    window.open(mapUrl(view, camera), '_blank', 'noopener,noreferrer')
   }
 
   useEffect(() => {
@@ -140,33 +148,54 @@ export default function MapPage({ visible }: Props) {
     <div className="map-page-shell">
       {/* Top Aero HUD Toolbar */}
       <div className="map-hud-bar">
-        <div className="map-hud-group">
-          <span className="map-hud-label">Camera:</span>
+        <div className="map-hud-group" role="group" aria-label="Map view">
+          <span className="map-hud-label">View:</span>
           <button
             type="button"
-            className={`map-hud-btn ${cameraMode === 'perspective' ? 'active' : ''}`}
-            onClick={() => setView('perspective')}
-            title="3D Perspective View (Standard 3D terrain with horizon)"
+            className={`map-hud-btn ${view === '3d' ? 'active' : ''}`}
+            aria-pressed={view === '3d'}
+            onClick={() => applyView('3d')}
+            title="3D map with terrain relief and a horizon"
           >
-            3D Perspective
+            3D
           </button>
           <button
             type="button"
-            className={`map-hud-btn ${cameraMode === 'free' ? 'active' : ''}`}
-            onClick={() => setView('free')}
-            title="Free-Flight 3D View (Fly camera around world)"
+            className={`map-hud-btn ${view === '2d' ? 'active' : ''}`}
+            aria-pressed={view === '2d'}
+            onClick={() => applyView('2d')}
+            title="2D map, a flat top-down plan of the same world"
           >
-            3D Free-Flight
-          </button>
-          <button
-            type="button"
-            className={`map-hud-btn ${cameraMode === 'flat' ? 'active' : ''}`}
-            onClick={() => setView('flat')}
-            title="Isometric Flat View (Top-down view)"
-          >
-            Flat
+            2D
           </button>
         </div>
+
+        {view === '3d' && (
+          <>
+            <div className="map-hud-divider" />
+            <div className="map-hud-group" role="group" aria-label="3D camera">
+              <span className="map-hud-label">Camera:</span>
+              <button
+                type="button"
+                className={`map-hud-btn ${camera === 'perspective' ? 'active' : ''}`}
+                aria-pressed={camera === 'perspective'}
+                onClick={() => applyView('3d', 'perspective')}
+                title="3D perspective view with a horizon"
+              >
+                Perspective
+              </button>
+              <button
+                type="button"
+                className={`map-hud-btn ${camera === 'free' ? 'active' : ''}`}
+                aria-pressed={camera === 'free'}
+                onClick={() => applyView('3d', 'free')}
+                title="Fly the camera freely around the world"
+              >
+                Free-Flight
+              </button>
+            </div>
+          </>
+        )}
 
         <div className="map-hud-divider" />
 
@@ -191,7 +220,7 @@ export default function MapPage({ visible }: Props) {
             type="button"
             className="map-hud-btn popout"
             onClick={handlePopout}
-            title="Open 3D map in full browser window"
+            title="Open the current map view in a full browser window"
           >
             Full Window
           </button>
@@ -199,7 +228,7 @@ export default function MapPage({ visible }: Props) {
 
         <div className="map-hud-badges">
           <span className="map-badge" title="BlueMap renders the central 2000x2000 blocks">
-            <span className="badge-dot" /> 3D Area: 2000×2000
+            <span className="badge-dot" /> {view === '2d' ? '2D' : '3D'} Area: 2000×2000
           </span>
           <span className="map-badge secondary" title="Server world border limit">
             World: 5000×5000
@@ -207,13 +236,13 @@ export default function MapPage({ visible }: Props) {
         </div>
       </div>
 
-      {/* Embedded 3D Map Iframe Container */}
+      {/* Embedded map iframe container */}
       <div className="map-frame-wrapper">
         {loading && (
           <div className="map-loading-overlay">
             <div className="map-spinner" />
             <div className="map-loading-text">
-              <h3>Connecting to Live 3D World…</h3>
+              <h3>Connecting to Live {view === '2d' ? '2D' : '3D'} World…</h3>
               <p>Streaming terrain chunks, block geometry, and territory markers.</p>
             </div>
           </div>
@@ -221,9 +250,9 @@ export default function MapPage({ visible }: Props) {
         <iframe
           ref={iframeRef}
           key={iframeKey}
-          src={getMapUrl(cameraMode)}
+          src={src}
           className="map-iframe"
-          title="Minecraft Live 3D World Map"
+          title={`Minecraft Live ${view === '2d' ? '2D' : '3D'} World Map`}
           allow="fullscreen; accelerometer; gyroscope; xr-spatial-tracking"
           onLoad={() => setLoading(false)}
         />
@@ -232,7 +261,11 @@ export default function MapPage({ visible }: Props) {
       {/* Bottom Aero Status Footnote */}
       <div className="map-hud-footer">
         <span>Active Private Territories are automatically outlined in cyan/blue on the map radar.</span>
-        <span>Drag left click to rotate · Right click to pan · Scroll to zoom</span>
+        <span>
+          {view === '2d'
+            ? 'Drag left click to pan · Scroll to zoom · Top-down orthographic plan'
+            : 'Drag left click to rotate · Right click to pan · Scroll to zoom'}
+        </span>
       </div>
     </div>
   )
