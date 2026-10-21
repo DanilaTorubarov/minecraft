@@ -1,5 +1,5 @@
 name: LinkBridge
-version: '1.12.1'
+version: '1.13.0'
 main: dev.mcpanel.linkbridge.LinkBridgePlugin
 description: Links a Minecraft account to a web panel account and reports per-player statistics and inventory snapshots to the panel.
 api-version: '1.21'
@@ -12,8 +12,8 @@ commands:
         usage: /services repair [confirm] or /services travel
         permission: linkbridge.services
     quests:
-        description: View or accept a personal mining, fishing, farming or hunting contract after login.
-        usage: /quests [start [hunting|fishing|farming]]
+        description: Open the interactive Quests GUI or accept personal contracts after login.
+        usage: /quests [start [hunting|fishing|farming|mining]]
         permission: linkbridge.quests
     balance:
         description: Show your Minecraft account's coin balance after login.

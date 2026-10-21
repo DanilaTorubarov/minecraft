@@ -75,6 +75,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/economy/session", post(economy_session))
         .route("/internal/economy/report", post(report_economy))
         .route("/internal/economy/contract", post(economy_contract))
+        .route("/internal/economy/quests/overview", post(economy_quests_overview))
         .route("/internal/economy/repair/quote", post(repair_quote))
         .route("/internal/economy/repair", post(buy_repair))
         .route("/internal/economy/travel", post(unavailable_private_block_travel))
@@ -4929,7 +4930,7 @@ async fn report_economy(
         if let Some(id) = &day.contract_id {
             // Reports can arrive late, but only kills measured during the accepted
             // contract's UTC day range can advance it. Plugin also checks exact expiry.
-            let row=sqlx::query("UPDATE economy_contracts SET progress=least(target,progress+CASE kind WHEN 'hunting' THEN $3 WHEN 'fishing' THEN $5 WHEN 'farming' THEN $6 ELSE $7 END),secondary_progress=least(target,secondary_progress+CASE WHEN kind='starter_iron' THEN $8 ELSE 0 END) WHERE id=$1 AND uuid=$2 AND status='active' AND $4::date BETWEEN created_at::date AND expires_at::date RETURNING kind,target,progress,secondary_progress,reward,budget_day::text AS budget_day,reward_iron,reward_bread,reward_xp")
+            let row=sqlx::query("UPDATE economy_contracts SET progress=least(target,progress+CASE kind WHEN 'hunting' THEN $3 WHEN 'fishing' THEN $5 WHEN 'farming' THEN $6 WHEN 'mining' THEN $7 ELSE $7 END),secondary_progress=least(target,secondary_progress+CASE WHEN kind='starter_iron' THEN $8 ELSE 0 END) WHERE id=$1 AND uuid=$2 AND status='active' AND $4::date BETWEEN created_at::date AND expires_at::date RETURNING kind,target,progress,secondary_progress,reward,budget_day::text AS budget_day,reward_iron,reward_bread,reward_xp")
                 .bind(id).bind(&body.uuid).bind(day.kills).bind(&day.day).bind(day.fish_caught).bind(day.crops_harvested).bind(day.iron_mined).bind(day.iron_smelted).fetch_optional(&mut *tx).await.map_err(market_db)?;
             if let Some(row) = row {
                 if row.get::<i32, _>("progress") == row.get::<i32, _>("target")
@@ -4987,6 +4988,7 @@ fn quest_target(kind: &str, hunting: i32) -> i32 {
         "starter_iron" => 10,
         "fishing" => (hunting + 1) / 2,
         "farming" => (hunting * 16 + 9) / 10,
+        "mining" => (hunting * 12 + 5) / 10,
         _ => hunting,
     }
 }
@@ -5019,7 +5021,7 @@ async fn economy_contract(
     if body
         .kind
         .as_deref()
-        .is_some_and(|kind| !matches!(kind, "hunting" | "fishing" | "farming"))
+        .is_some_and(|kind| !matches!(kind, "hunting" | "fishing" | "farming" | "mining"))
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -5074,6 +5076,79 @@ async fn economy_contract(
     let view = contract_view(&mut tx, &body.uuid).await?;
     tx.commit().await.map_err(market_db)?;
     Ok(Json(view))
+}
+#[derive(serde::Deserialize)]
+struct QuestsOverviewInput {
+    uuid: String,
+    username: String,
+}
+async fn economy_quests_overview(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<QuestsOverviewInput>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid) || !is_minecraft_username(&body.username) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    review_economy_tx(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+    expire_player_contracts(&mut tx, &body.uuid).await?;
+
+    let player = sqlx::query(
+        "SELECT quest_earned, contracts_completed, starter_completed FROM economy_players WHERE uuid=$1",
+    )
+    .bind(&body.uuid)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    let coins: i64 = sqlx::query_scalar("SELECT coalesce(coins, 0) FROM player_stats WHERE uuid=$1")
+        .bind(&body.uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(market_db)?
+        .unwrap_or(0);
+    let earned: i64 = player.get("quest_earned");
+    let starter_completed: bool = player.get("starter_completed");
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM economy_contracts WHERE uuid=$1 AND created_at>=date_trunc('day',now())",
+    )
+    .bind(&body.uuid)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    let level = economy_policy(&mut *tx).await?.level;
+    let (hunting_target, base_reward) = contract_terms(earned, level);
+    let remaining: Option<i64> = sqlx::query_scalar(
+        "SELECT allowance-reserved-paid FROM economy_allowances WHERE day=current_date AND uuid=$1",
+    )
+    .bind(&body.uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    let funded_reward = base_reward.min(remaining.unwrap_or(0));
+    let active_contract = contract_view(&mut tx, &body.uuid).await?;
+
+    tx.commit().await.map_err(market_db)?;
+
+    Ok(Json(serde_json::json!({
+        "starter_completed": starter_completed,
+        "daily_completed_today": count,
+        "daily_limit": ECONOMY_DAILY_CONTRACT_LIMIT,
+        "coins": coins,
+        "reward": funded_reward,
+        "base_reward": base_reward,
+        "hunting_target": hunting_target,
+        "fishing_target": quest_target("fishing", hunting_target),
+        "farming_target": quest_target("farming", hunting_target),
+        "mining_target": quest_target("mining", hunting_target),
+        "active_contract": active_contract,
+    })))
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 struct EconomyRepair {
@@ -16010,8 +16085,10 @@ mod test {
         assert_eq!(quest_target("starter_iron", 2000), 10);
         assert_eq!(quest_target("fishing", 10), 5);
         assert_eq!(quest_target("farming", 10), 16);
+        assert_eq!(quest_target("mining", 10), 12);
         assert_eq!(quest_target("fishing", 2000), 1000);
         assert_eq!(quest_target("farming", 2000), 3200);
+        assert_eq!(quest_target("mining", 2000), 2400);
     }
     #[tokio::test]
     async fn quest_objectives_are_isolated_starter_requires_both_and_rewards_are_coin_only()
@@ -16161,6 +16238,21 @@ mod test {
             );
         }
         assert_eq!(coins_of(&pool, &uuid).await?, 1100);
+        let overview_resp = post_internal(
+            &pool,
+            "/internal/economy/quests/overview",
+            Some(&token),
+            serde_json::json!({"uuid": uuid, "username": "BudgetHunter"}),
+            &ip,
+        )
+        .await?;
+        assert_eq!(overview_resp.status(), StatusCode::OK);
+        let overview = body_json(overview_resp).await?;
+        assert!(overview["starter_completed"].as_bool().unwrap());
+        assert_eq!(overview["daily_completed_today"], 4);
+        assert_eq!(overview["daily_limit"], 4);
+        assert_eq!(overview["coins"], 1100);
+        assert_eq!(overview["mining_target"], 12);
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT count(*) FROM economy_tasks")
                 .fetch_one(&pool)
@@ -16206,6 +16298,59 @@ mod test {
             .status(),
             StatusCode::BAD_REQUEST
         );
+        drop_budget_pool(admin, pool, schema).await
+    }
+    #[tokio::test]
+    async fn mining_contract_workflow_and_quota() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let uuid = test_uuid(&random_ip());
+        budget_identity(&pool, &uuid).await?;
+        sqlx::query("UPDATE economy_players SET starter_completed=true WHERE uuid=$1")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE economy_budgets SET budget=1000,eligible=1 WHERE day=current_date")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO economy_allowances(day,uuid,allowance,newcomer) VALUES(current_date,$1,1000,false)")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+        let token = test_service_token();
+        let ip = random_ip();
+        let day: String = sqlx::query_scalar("SELECT current_date::text")
+            .fetch_one(&pool)
+            .await?;
+        let accept_mining = serde_json::json!({"uuid": uuid, "username": "BudgetHunter", "start": true, "kind": "mining"});
+        let contract = body_json(
+            post_internal(&pool, "/internal/economy/contract", Some(&token), accept_mining, &ip).await?
+        ).await?;
+        assert_eq!(contract["kind"], "mining");
+        assert_eq!(contract["target"], 12);
+        let id = contract["id"].as_str().unwrap();
+        let report = serde_json::json!({
+            "id": test_uuid(&random_ip()),
+            "uuid": uuid,
+            "username": "BudgetHunter",
+            "days": [{
+                "day": day,
+                "active_seconds": 60,
+                "kills": 0,
+                "fish_caught": 0,
+                "crops_harvested": 0,
+                "iron_mined": 12,
+                "iron_smelted": 0,
+                "contract_id": id
+            }]
+        });
+        assert_eq!(
+            post_internal(&pool, "/internal/economy/report", Some(&token), report, &ip).await?.status(),
+            StatusCode::OK
+        );
+        let view = budget_contract(&pool, &uuid, false).await?;
+        assert_eq!(view["status"], "paid");
+        assert_eq!(view["progress"], 12);
+        assert_eq!(coins_of(&pool, &uuid).await?, 350);
         drop_budget_pool(admin, pool, schema).await
     }
     #[tokio::test]

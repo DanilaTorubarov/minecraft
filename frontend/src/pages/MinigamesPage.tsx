@@ -33,6 +33,6 @@ export default function MinigamesPage({ onGoToAccount }: { onGoToAccount?: () =>
       <section className="game-library-entry"><img src={chestIcon} alt="" /><div><h2>Lucky Chest</h2><p>Spin three floating treasures. Match a pair, land three alike, or find a lone diamond.</p><p className="muted">Expected return: {formatReturn(rules.chest.rtp_x10000)}</p><button className="btn btn-primary" onClick={() => setGame('chest')}>Play Lucky Chest</button></div></section>
       <section className="game-library-entry"><img src={minesIcon} alt="" /><div><h2>Minesweeper</h2><p>Explore a field of hidden ore and TNT. Cash out your finds before your luck runs out.</p><p className="muted">Four difficulties · Find {rules.mines.min_safe} ores to unlock cash-out</p><button className="btn btn-primary" onClick={() => setGame('mines')}>Play Minesweeper</button></div></section>
     </div>
-    <p className="game-rules">Stakes and payouts use your selected player’s Minecraft balance. Use /quests start in game to start quests and earn coins through hunting, fishing or farming. Economic adjustments apply equally to everyone; each round keeps the rules it starts with. These games do not use real money.</p>
+    <p className="game-rules">Stakes and payouts use your selected player’s Minecraft balance. Use /quests in game to open the visual contracts GUI and earn coins through hunting, fishing, farming, or mining. Economic adjustments apply equally to everyone; each round keeps the rules it starts with. These games do not use real money.</p>
   </div>
 }

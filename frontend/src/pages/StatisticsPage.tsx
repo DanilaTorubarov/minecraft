@@ -112,8 +112,8 @@ function StatisticsPage({ onGoToAccount, scope, onSelectAccount, stats, loadErro
               <span className="count">{account.coins.toLocaleString()} coins</span>
             </div>
             <p className="page-sub">
-              Earn coins through hunting contracts after logging in to
-              Minecraft. Use /quests start to accept a contract and /bal to check your balance.
+              Earn coins through hunting, fishing, farming, or mining contracts after logging in to
+              Minecraft. Use /quests in game to browse contracts and /bal to check your balance.
               You can earn coins before linking this account.
             </p>
           </section>
@@ -158,7 +158,7 @@ function StatisticsPage({ onGoToAccount, scope, onSelectAccount, stats, loadErro
           <span className="count">{summary.coins.toLocaleString()} coins</span>
         </div>
         <p className="page-sub">
-          Total across your linked Minecraft accounts. Use /quests start in game to earn coins.
+          Total across your linked Minecraft accounts. Use /quests in game to browse contracts and earn coins.
           Balances update automatically after the game server confirms earnings.
         </p>
       </section>
