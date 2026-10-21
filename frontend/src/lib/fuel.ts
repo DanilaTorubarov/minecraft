@@ -67,3 +67,15 @@ export const PRIVATE_BLOCK_PRICES: Record<number, number> = {
   2: 20000,
   3: 50000,
 }
+
+export function canWithdrawFuel(tierSeconds: number, tier: number, count = 1): boolean {
+  const crystal = FUEL_CRYSTAL_TYPES[tier]
+  if (!crystal || count <= 0) return false
+  return tierSeconds >= crystal.addedSeconds * count
+}
+
+export function crystalsAvailable(tierSeconds: number, tier: number): number {
+  const crystal = FUEL_CRYSTAL_TYPES[tier]
+  if (!crystal || tierSeconds <= 0) return 0
+  return Math.floor(tierSeconds / crystal.addedSeconds)
+}

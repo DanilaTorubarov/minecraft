@@ -254,6 +254,32 @@ public final class InventoryNbtTest {
         check(!LinkBridgePlugin.FuelRules.isNonFuelOre("EMERALD_ORE"), "Emerald ore is fuel");
         check(!LinkBridgePlugin.FuelRules.isNonFuelOre("STONE"), "Stone is not an ore");
 
+        // PlacedPrivateBlock fuel queue & withdrawal rules
+        var pbTest = new LinkBridgePlugin.PlacedPrivateBlock(
+            "test-id", owner, "OwnerUser", 1, "world", 100, 64, 200, true,
+            16, 0L, 1, 7200L, 10800L, 0L, 21600L, List.of()
+        );
+        check(pbTest.tier1Seconds == 7200L, "Tier 1 seconds initialized");
+        check(pbTest.tier2Seconds == 10800L, "Tier 2 seconds initialized");
+        check(pbTest.tier3Seconds == 0L, "Tier 3 seconds initialized to 0");
+        check(pbTest.tier4Seconds == 21600L, "Tier 4 seconds initialized");
+        check(pbTest.totalFuelSeconds() == 39600L, "Total fuel is sum of all tier seconds");
+        check(pbTest.activeTier() == 4, "Active tier is highest tier with time > 0 (Tier 4)");
+        check(pbTest.radius == 128, "Active radius is Tier 4 radius (128)");
+
+        // Withdrawal test
+        check(pbTest.withdrawFuel(1, 1), "Can withdraw 1 Tier 1 crystal (7200s)");
+        check(pbTest.tier1Seconds == 0L, "Tier 1 seconds is now 0");
+        check(!pbTest.withdrawFuel(1, 1), "Cannot withdraw when not enough fuel in tier");
+        check(pbTest.totalFuelSeconds() == 32400L, "Total fuel updated after withdrawal");
+
+        // Transition test: tick down Tier 4 until 0
+        pbTest.tier4Seconds = 1L;
+        pbTest.tickSecond();
+        check(pbTest.tier4Seconds == 0L, "Tier 4 seconds reached 0");
+        check(pbTest.activeTier() == 2, "Active tier transitioned to Tier 2 (since Tier 3 and 1 are 0)");
+        check(pbTest.radius == 40, "Radius updated to Tier 2 radius (40)");
+
         // Prospector pickaxe rules
         check(LinkBridgePlugin.PickaxeRules.pickaxePrice(1) == 150L, "Tier 1 pickaxe price is 150");
         check(LinkBridgePlugin.PickaxeRules.pickaxePrice(2) == 1000L, "Tier 2 pickaxe price is 1000");

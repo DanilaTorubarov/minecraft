@@ -99,6 +99,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/players/{uuid}/inventory", get(player_inventory))
         .route("/api/players/{uuid}/privates", get(get_player_privates))
         .route("/api/players/{uuid}/privates/{block_index}/fuel", post(deposit_player_private_fuel))
+        .route("/api/players/{uuid}/privates/{block_index}/withdraw", post(withdraw_player_private_fuel))
         .route("/api/admin/accounts", get(admin_get_accounts))
         .route("/api/admin/balance", post(admin_adjust_balance))
         .route("/api/chat/messages", get(get_chat_messages).post(send_chat_message))
@@ -5336,7 +5337,7 @@ async fn list_private_blocks(
             return Err(StatusCode::BAD_REQUEST);
         }
         sqlx::query(
-            "SELECT p.id::text AS id, p.uuid, coalesce(s.username, p.uuid) AS username, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.members FROM private_blocks p LEFT JOIN player_stats s ON s.uuid = p.uuid WHERE p.uuid=$1 ORDER BY p.block_index ASC",
+            "SELECT p.id::text AS id, p.uuid, coalesce(s.username, p.uuid) AS username, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.tier_1_seconds, p.tier_2_seconds, p.tier_3_seconds, p.tier_4_seconds, p.members FROM private_blocks p LEFT JOIN player_stats s ON s.uuid = p.uuid WHERE p.uuid=$1 ORDER BY p.block_index ASC",
         )
         .bind(target_uuid)
         .fetch_all(&pool)
@@ -5344,7 +5345,7 @@ async fn list_private_blocks(
         .map_err(market_db)?
     } else {
         sqlx::query(
-            "SELECT p.id::text AS id, p.uuid, coalesce(s.username, p.uuid) AS username, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.members FROM private_blocks p LEFT JOIN player_stats s ON s.uuid = p.uuid WHERE p.placed=true ORDER BY p.uuid, p.block_index ASC",
+            "SELECT p.id::text AS id, p.uuid, coalesce(s.username, p.uuid) AS username, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.tier_1_seconds, p.tier_2_seconds, p.tier_3_seconds, p.tier_4_seconds, p.members FROM private_blocks p LEFT JOIN player_stats s ON s.uuid = p.uuid WHERE p.placed=true ORDER BY p.uuid, p.block_index ASC",
         )
         .fetch_all(&pool)
         .await
@@ -5369,6 +5370,10 @@ async fn list_private_blocks(
             "size": size,
             "fuel_seconds": r.get::<i64, _>("fuel_seconds"),
             "fuel_tier": r.get::<i32, _>("fuel_tier"),
+            "tier_1_seconds": r.get::<i64, _>("tier_1_seconds"),
+            "tier_2_seconds": r.get::<i64, _>("tier_2_seconds"),
+            "tier_3_seconds": r.get::<i64, _>("tier_3_seconds"),
+            "tier_4_seconds": r.get::<i64, _>("tier_4_seconds"),
             "members": r.get::<serde_json::Value, _>("members")
         }));
     }
@@ -5387,6 +5392,14 @@ struct SyncPrivateBlockRequest {
     radius: i32,
     fuel_seconds: i64,
     fuel_tier: i32,
+    #[serde(default)]
+    tier_1_seconds: i64,
+    #[serde(default)]
+    tier_2_seconds: i64,
+    #[serde(default)]
+    tier_3_seconds: i64,
+    #[serde(default)]
+    tier_4_seconds: i64,
     members: serde_json::Value,
 }
 
@@ -5401,11 +5414,40 @@ async fn sync_private_block(
         || !matches!(body.radius, 16 | 40 | 80 | 128)
         || !(1..=4).contains(&body.fuel_tier)
         || body.fuel_seconds < 0
+        || body.tier_1_seconds < 0
+        || body.tier_2_seconds < 0
+        || body.tier_3_seconds < 0
+        || body.tier_4_seconds < 0
     {
         return Err(StatusCode::BAD_REQUEST);
     }
+
+    let (t1, t2, t3, t4) = if body.tier_1_seconds == 0
+        && body.tier_2_seconds == 0
+        && body.tier_3_seconds == 0
+        && body.tier_4_seconds == 0
+        && body.fuel_seconds > 0
+    {
+        match body.fuel_tier {
+            1 => (body.fuel_seconds, 0, 0, 0),
+            2 => (0, body.fuel_seconds, 0, 0),
+            3 => (0, 0, body.fuel_seconds, 0),
+            4 => (0, 0, 0, body.fuel_seconds),
+            _ => (body.fuel_seconds, 0, 0, 0),
+        }
+    } else {
+        (
+            body.tier_1_seconds,
+            body.tier_2_seconds,
+            body.tier_3_seconds,
+            body.tier_4_seconds,
+        )
+    };
+
+    let total_fuel = t1 + t2 + t3 + t4;
+
     let res = sqlx::query(
-        "UPDATE private_blocks SET world=$3, x=$4, y=$5, z=$6, placed=$7, radius=$8, fuel_seconds=$9, fuel_tier=$10, members=$11, updated_at=now() WHERE uuid=$1 AND block_index=$2",
+        "UPDATE private_blocks SET world=$3, x=$4, y=$5, z=$6, placed=$7, radius=$8, fuel_seconds=$9, fuel_tier=$10, tier_1_seconds=$11, tier_2_seconds=$12, tier_3_seconds=$13, tier_4_seconds=$14, members=$15, updated_at=now() WHERE uuid=$1 AND block_index=$2",
     )
     .bind(&body.uuid)
     .bind(body.block_index)
@@ -5415,8 +5457,12 @@ async fn sync_private_block(
     .bind(body.z)
     .bind(body.placed)
     .bind(body.radius)
-    .bind(body.fuel_seconds)
+    .bind(total_fuel)
     .bind(body.fuel_tier)
+    .bind(t1)
+    .bind(t2)
+    .bind(t3)
+    .bind(t4)
     .bind(&body.members)
     .execute(&pool)
     .await
@@ -5450,7 +5496,7 @@ async fn get_player_privates(
     }
 
     let rows = sqlx::query(
-        "SELECT p.id::text AS id, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.members, p.updated_at::text AS updated_at FROM private_blocks p WHERE p.uuid=$1 ORDER BY p.block_index ASC",
+        "SELECT p.id::text AS id, p.block_index, p.world, p.x, p.y, p.z, p.placed, p.radius, p.fuel_seconds, p.fuel_tier, p.tier_1_seconds, p.tier_2_seconds, p.tier_3_seconds, p.tier_4_seconds, p.members, p.updated_at::text AS updated_at FROM private_blocks p WHERE p.uuid=$1 ORDER BY p.block_index ASC",
     )
     .bind(&uuid)
     .fetch_all(&pool)
@@ -5473,6 +5519,10 @@ async fn get_player_privates(
             "size": size,
             "fuel_seconds": r.get::<i64, _>("fuel_seconds"),
             "fuel_tier": r.get::<i32, _>("fuel_tier"),
+            "tier_1_seconds": r.get::<i64, _>("tier_1_seconds"),
+            "tier_2_seconds": r.get::<i64, _>("tier_2_seconds"),
+            "tier_3_seconds": r.get::<i64, _>("tier_3_seconds"),
+            "tier_4_seconds": r.get::<i64, _>("tier_4_seconds"),
             "members": r.get::<serde_json::Value, _>("members"),
             "updated_at": r.get::<String, _>("updated_at")
         }));
@@ -5500,7 +5550,7 @@ fn detect_fuel_tier(item: &serde_json::Value) -> Option<i32> {
     }
 }
 
-const MAX_STORED_FUEL: i64 = 72 * 3600;
+const MAX_STORED_FUEL: i64 = 720 * 3600;
 
 fn fuel_duration(tier: i32) -> i64 {
     match tier {
@@ -5556,7 +5606,7 @@ async fn deposit_player_private_fuel(
     }
 
     let block_row = sqlx::query(
-        "SELECT placed, fuel_seconds, fuel_tier, radius FROM private_blocks WHERE uuid=$1 AND block_index=$2 FOR UPDATE",
+        "SELECT placed, fuel_seconds, fuel_tier, radius, tier_1_seconds, tier_2_seconds, tier_3_seconds, tier_4_seconds FROM private_blocks WHERE uuid=$1 AND block_index=$2 FOR UPDATE",
     )
     .bind(&uuid)
     .bind(block_index)
@@ -5593,21 +5643,46 @@ async fn deposit_player_private_fuel(
         None => return Err(StatusCode::BAD_REQUEST),
     };
 
-    let current_fuel_seconds: i64 = block_row.get("fuel_seconds");
-    let current_fuel_tier: i32 = block_row.get("fuel_tier");
+    let mut t1: i64 = block_row.get("tier_1_seconds");
+    let mut t2: i64 = block_row.get("tier_2_seconds");
+    let mut t3: i64 = block_row.get("tier_3_seconds");
+    let mut t4: i64 = block_row.get("tier_4_seconds");
+
     let added_seconds = fuel_duration(crystal_tier);
-    let new_fuel_seconds = (current_fuel_seconds + added_seconds).min(MAX_STORED_FUEL);
-    let new_fuel_tier = current_fuel_tier.max(crystal_tier);
+    match crystal_tier {
+        1 => t1 = (t1 + added_seconds).min(MAX_STORED_FUEL),
+        2 => t2 = (t2 + added_seconds).min(MAX_STORED_FUEL),
+        3 => t3 = (t3 + added_seconds).min(MAX_STORED_FUEL),
+        4 => t4 = (t4 + added_seconds).min(MAX_STORED_FUEL),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    }
+
+    let new_fuel_seconds = t1 + t2 + t3 + t4;
+    let new_fuel_tier = if t4 > 0 {
+        4
+    } else if t3 > 0 {
+        3
+    } else if t2 > 0 {
+        2
+    } else if t1 > 0 {
+        1
+    } else {
+        1
+    };
     let new_radius = fuel_radius(new_fuel_tier);
 
     sqlx::query(
-        "UPDATE private_blocks SET fuel_seconds=$3, fuel_tier=$4, radius=$5, updated_at=now() WHERE uuid=$1 AND block_index=$2",
+        "UPDATE private_blocks SET fuel_seconds=$3, fuel_tier=$4, radius=$5, tier_1_seconds=$6, tier_2_seconds=$7, tier_3_seconds=$8, tier_4_seconds=$9, updated_at=now() WHERE uuid=$1 AND block_index=$2",
     )
     .bind(&uuid)
     .bind(block_index)
     .bind(new_fuel_seconds)
     .bind(new_fuel_tier)
     .bind(new_radius)
+    .bind(t1)
+    .bind(t2)
+    .bind(t3)
+    .bind(t4)
     .execute(&mut *tx)
     .await
     .map_err(market_db)?;
@@ -5648,9 +5723,205 @@ async fn deposit_player_private_fuel(
     Ok(Json(serde_json::json!({
         "fuel_seconds": new_fuel_seconds,
         "fuel_tier": new_fuel_tier,
+        "tier_1_seconds": t1,
+        "tier_2_seconds": t2,
+        "tier_3_seconds": t3,
+        "tier_4_seconds": t4,
         "radius": new_radius,
         "size": radius_to_size(new_radius),
         "added_seconds": added_seconds
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct WithdrawFuelInput {
+    tier: i32,
+    #[serde(default = "default_amount_one")]
+    amount: i32,
+}
+
+fn default_amount_one() -> i32 {
+    1
+}
+
+async fn withdraw_player_private_fuel(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Path((uuid, block_index)): Path<(String, i32)>,
+    Json(body): Json<WithdrawFuelInput>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let uuid = uuid.to_lowercase();
+    if !is_uuid(&uuid)
+        || !(1..=3).contains(&block_index)
+        || !(1..=4).contains(&body.tier)
+        || !(1..=64).contains(&body.amount)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM minecraft_accounts WHERE uuid=$1 AND user_id=$2)",
+    )
+    .bind(&uuid)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    if !exists {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let block_row = sqlx::query(
+        "SELECT placed, fuel_seconds, fuel_tier, radius, tier_1_seconds, tier_2_seconds, tier_3_seconds, tier_4_seconds FROM private_blocks WHERE uuid=$1 AND block_index=$2 FOR UPDATE",
+    )
+    .bind(&uuid)
+    .bind(block_index)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    let block_row = match block_row {
+        Some(r) => r,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let mut t1: i64 = block_row.get("tier_1_seconds");
+    let mut t2: i64 = block_row.get("tier_2_seconds");
+    let mut t3: i64 = block_row.get("tier_3_seconds");
+    let mut t4: i64 = block_row.get("tier_4_seconds");
+
+    let duration = fuel_duration(body.tier);
+    let needed = duration * (body.amount as i64);
+
+    let current_tier_seconds = match body.tier {
+        1 => t1,
+        2 => t2,
+        3 => t3,
+        4 => t4,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    if current_tier_seconds < needed {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let inv_row: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT slots FROM player_inventory WHERE uuid=$1 FOR UPDATE",
+    )
+    .bind(&uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+    let mut slots = match inv_row {
+        Some(s) if s.is_array() => s,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let slots_arr = slots.as_array_mut().unwrap();
+
+    let (item_key, item_name) = match body.tier {
+        1 => ("minecraft:raw_copper", "[Tier 1 Fuel: Ember Shard]"),
+        2 => ("minecraft:prismarine_crystals", "[Tier 2 Fuel: Cobalt Crystal]"),
+        3 => ("minecraft:redstone", "[Tier 3 Fuel: Crimson Core]"),
+        4 => ("minecraft:echo_shard", "[Tier 4 Fuel: Astral Void Crystal]"),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let mut placed_slot = None;
+    for i in 0..36.min(slots_arr.len()) {
+        if let Some(slot_obj) = slots_arr[i].as_object_mut() {
+            if slot_obj.get("key").and_then(|k| k.as_str()) == Some(item_key)
+                && slot_obj.get("display_name").and_then(|d| d.as_str()) == Some(item_name)
+            {
+                let cur_amt = slot_obj.get("amount").and_then(|a| a.as_i64()).unwrap_or(0);
+                if cur_amt + (body.amount as i64) <= 64 {
+                    slot_obj.insert("amount".to_string(), serde_json::json!(cur_amt + (body.amount as i64)));
+                    placed_slot = Some(i);
+                    break;
+                }
+            }
+        }
+    }
+
+    if placed_slot.is_none() {
+        for i in 0..36.min(slots_arr.len()) {
+            if slots_arr[i].is_null() {
+                let token = new_session_token()?;
+                slots_arr[i] = serde_json::json!({
+                    "key": item_key,
+                    "amount": body.amount,
+                    "damage": null,
+                    "max_damage": null,
+                    "display_name": item_name,
+                    "enchantments": {},
+                    "fingerprint": token
+                });
+                placed_slot = Some(i);
+                break;
+            }
+        }
+    }
+
+    if placed_slot.is_none() {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    match body.tier {
+        1 => t1 -= needed,
+        2 => t2 -= needed,
+        3 => t3 -= needed,
+        4 => t4 -= needed,
+        _ => (),
+    }
+
+    let new_fuel_seconds = t1 + t2 + t3 + t4;
+    let new_fuel_tier = if t4 > 0 {
+        4
+    } else if t3 > 0 {
+        3
+    } else if t2 > 0 {
+        2
+    } else if t1 > 0 {
+        1
+    } else {
+        1
+    };
+    let new_radius = fuel_radius(new_fuel_tier);
+
+    sqlx::query(
+        "UPDATE private_blocks SET fuel_seconds=$3, fuel_tier=$4, radius=$5, tier_1_seconds=$6, tier_2_seconds=$7, tier_3_seconds=$8, tier_4_seconds=$9, updated_at=now() WHERE uuid=$1 AND block_index=$2",
+    )
+    .bind(&uuid)
+    .bind(block_index)
+    .bind(new_fuel_seconds)
+    .bind(new_fuel_tier)
+    .bind(new_radius)
+    .bind(t1)
+    .bind(t2)
+    .bind(t3)
+    .bind(t4)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    sqlx::query(
+        "UPDATE player_inventory SET slots=$2, updated_at=now() WHERE uuid=$1",
+    )
+    .bind(&uuid)
+    .bind(&slots)
+    .execute(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(serde_json::json!({
+        "fuel_seconds": new_fuel_seconds,
+        "fuel_tier": new_fuel_tier,
+        "tier_1_seconds": t1,
+        "tier_2_seconds": t2,
+        "tier_3_seconds": t3,
+        "tier_4_seconds": t4,
+        "radius": new_radius,
+        "size": radius_to_size(new_radius),
+        "withdrawn_crystals": body.amount
     })))
 }
 
@@ -13490,6 +13761,40 @@ mod test {
 
         let fuel_dep3 = send(&pool, "POST", &format!("/api/players/{uuid}/privates/1/fuel"), Some(&cookie), Some(serde_json::json!({"slot": 0}))).await?;
         assert_eq!(fuel_dep3.status(), StatusCode::BAD_REQUEST);
+
+        // Withdraw 1 Tier 2 crystal
+        let withdraw_res = send(
+            &pool,
+            "POST",
+            &format!("/api/players/{uuid}/privates/1/withdraw"),
+            Some(&cookie),
+            Some(serde_json::json!({"tier": 2, "amount": 1})),
+        )
+        .await?;
+        assert_eq!(withdraw_res.status(), StatusCode::OK);
+        let withdraw_json = body_json(withdraw_res).await?;
+        assert_eq!(withdraw_json["fuel_seconds"], 32400);
+        assert_eq!(withdraw_json["tier_2_seconds"], 10800);
+        assert_eq!(withdraw_json["withdrawn_crystals"], 1);
+
+        // Verify inventory has received the crystal back
+        let inv_withdrawn: serde_json::Value = sqlx::query_scalar("SELECT slots FROM player_inventory WHERE uuid=$1")
+            .bind(&uuid)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(inv_withdrawn[0]["key"], "minecraft:prismarine_crystals");
+        assert_eq!(inv_withdrawn[0]["amount"], 1);
+
+        // Trying to withdraw more crystals than available fails
+        let withdraw_fail = send(
+            &pool,
+            "POST",
+            &format!("/api/players/{uuid}/privates/1/withdraw"),
+            Some(&cookie),
+            Some(serde_json::json!({"tier": 2, "amount": 5})),
+        )
+        .await?;
+        assert_eq!(withdraw_fail.status(), StatusCode::BAD_REQUEST);
 
         delete_user(&pool, &email).await?;
 

@@ -369,6 +369,10 @@ export interface PrivateBlockView {
   size: number
   fuel_seconds: number
   fuel_tier: number
+  tier_1_seconds?: number
+  tier_2_seconds?: number
+  tier_3_seconds?: number
+  tier_4_seconds?: number
   members: string[]
   updated_at: string
 }
@@ -376,9 +380,25 @@ export interface PrivateBlockView {
 export interface DepositFuelResult {
   fuel_seconds: number
   fuel_tier: number
+  tier_1_seconds?: number
+  tier_2_seconds?: number
+  tier_3_seconds?: number
+  tier_4_seconds?: number
   radius: number
   size: number
   added_seconds: number
+}
+
+export interface WithdrawFuelResult {
+  fuel_seconds: number
+  fuel_tier: number
+  tier_1_seconds: number
+  tier_2_seconds: number
+  tier_3_seconds: number
+  tier_4_seconds: number
+  radius: number
+  size: number
+  withdrawn_crystals: number
 }
 
 export async function getPlayerPrivates(uuid: string): Promise<PrivateBlockView[]> {
@@ -391,6 +411,17 @@ export async function depositPrivateFuel(uuid: string, blockIndex: number, slot:
   const response = await send('POST', `/api/players/${encodeURIComponent(uuid)}/privates/${blockIndex}/fuel`, { slot })
   if (!response.ok) throw new ApiError(response.status)
   return await response.json() as DepositFuelResult
+}
+
+export async function withdrawPrivateFuel(
+  uuid: string,
+  blockIndex: number,
+  tier: number,
+  amount = 1
+): Promise<WithdrawFuelResult> {
+  const response = await send('POST', `/api/players/${encodeURIComponent(uuid)}/privates/${blockIndex}/withdraw`, { tier, amount })
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as WithdrawFuelResult
 }
 export async function getPlayerSkin(uuid: string): Promise<SkinView> {
   const response = await send('GET', `/api/players/${encodeURIComponent(uuid)}/skin`)

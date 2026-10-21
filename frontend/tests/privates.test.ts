@@ -5,6 +5,8 @@ import {
   formatFuelTime,
   radiusToSize,
   radiusToChunks,
+  canWithdrawFuel,
+  crystalsAvailable,
   PRIVATE_BLOCK_PRICES,
   FUEL_CRYSTAL_TYPES,
 } from '../src/lib/fuel.ts'
@@ -72,4 +74,23 @@ test('PRIVATE_BLOCK_PRICES matches the server prices for cores 1, 2, and 3', () 
   assert.equal(PRIVATE_BLOCK_PRICES[1], 500)
   assert.equal(PRIVATE_BLOCK_PRICES[2], 20000)
   assert.equal(PRIVATE_BLOCK_PRICES[3], 50000)
+})
+
+test('canWithdrawFuel checks if tier has enough seconds for crystal withdrawal', () => {
+  assert.equal(canWithdrawFuel(7200, 1), true)
+  assert.equal(canWithdrawFuel(7199, 1), false)
+  assert.equal(canWithdrawFuel(14400, 1, 2), true)
+  assert.equal(canWithdrawFuel(14399, 1, 2), false)
+  assert.equal(canWithdrawFuel(21600, 4), true)
+  assert.equal(canWithdrawFuel(21599, 4), false)
+  assert.equal(canWithdrawFuel(0, 2), false)
+})
+
+test('crystalsAvailable calculates whole crystals available for withdrawal', () => {
+  assert.equal(crystalsAvailable(7200, 1), 1)
+  assert.equal(crystalsAvailable(15000, 1), 2) // 7200 * 2 = 14400, remainder 600
+  assert.equal(crystalsAvailable(5000, 1), 0)
+  assert.equal(crystalsAvailable(21600, 4), 1)
+  assert.equal(crystalsAvailable(43200, 4), 2)
+  assert.equal(crystalsAvailable(0, 3), 0)
 })

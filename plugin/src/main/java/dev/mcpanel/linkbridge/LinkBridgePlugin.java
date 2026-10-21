@@ -971,11 +971,17 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         public int radius;
         public long fuelSeconds;
         public int fuelTier;
+        public long tier1Seconds;
+        public long tier2Seconds;
+        public long tier3Seconds;
+        public long tier4Seconds;
         public List<UUID> members = new CopyOnWriteArrayList<>();
 
         public PlacedPrivateBlock(String id, UUID ownerUuid, String ownerName, int blockIndex,
                                   String world, int x, int y, int z, boolean placed,
-                                  int radius, long fuelSeconds, int fuelTier, List<UUID> members) {
+                                  int radius, long fuelSeconds, int fuelTier,
+                                  long tier1Seconds, long tier2Seconds, long tier3Seconds, long tier4Seconds,
+                                  List<UUID> members) {
             this.id = id;
             this.ownerUuid = ownerUuid;
             this.ownerName = ownerName;
@@ -985,10 +991,101 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             this.y = y;
             this.z = z;
             this.placed = placed;
-            this.radius = radius;
-            this.fuelSeconds = fuelSeconds;
-            this.fuelTier = fuelTier;
+            this.tier1Seconds = Math.max(0L, tier1Seconds);
+            this.tier2Seconds = Math.max(0L, tier2Seconds);
+            this.tier3Seconds = Math.max(0L, tier3Seconds);
+            this.tier4Seconds = Math.max(0L, tier4Seconds);
+            if (this.tier1Seconds == 0 && this.tier2Seconds == 0 && this.tier3Seconds == 0 && this.tier4Seconds == 0 && fuelSeconds > 0) {
+                switch (fuelTier) {
+                    case 1 -> this.tier1Seconds = fuelSeconds;
+                    case 2 -> this.tier2Seconds = fuelSeconds;
+                    case 3 -> this.tier3Seconds = fuelSeconds;
+                    case 4 -> this.tier4Seconds = fuelSeconds;
+                    default -> this.tier1Seconds = fuelSeconds;
+                }
+            }
+            this.fuelTier = activeTier();
+            this.radius = FuelRules.fuelRadius(this.fuelTier);
+            this.fuelSeconds = totalFuelSeconds();
             if (members != null) this.members.addAll(members);
+        }
+
+        public PlacedPrivateBlock(String id, UUID ownerUuid, String ownerName, int blockIndex,
+                                  String world, int x, int y, int z, boolean placed,
+                                  int radius, long fuelSeconds, int fuelTier, List<UUID> members) {
+            this(id, ownerUuid, ownerName, blockIndex, world, x, y, z, placed, radius,
+                 fuelSeconds, fuelTier,
+                 fuelTier == 1 ? fuelSeconds : 0L,
+                 fuelTier == 2 ? fuelSeconds : 0L,
+                 fuelTier == 3 ? fuelSeconds : 0L,
+                 fuelTier == 4 ? fuelSeconds : 0L,
+                 members);
+        }
+
+        public long totalFuelSeconds() {
+            return tier1Seconds + tier2Seconds + tier3Seconds + tier4Seconds;
+        }
+
+        public int activeTier() {
+            if (tier4Seconds > 0) return 4;
+            if (tier3Seconds > 0) return 3;
+            if (tier2Seconds > 0) return 2;
+            if (tier1Seconds > 0) return 1;
+            return 1;
+        }
+
+        public long getTierSeconds(int tier) {
+            return switch (tier) {
+                case 1 -> tier1Seconds;
+                case 2 -> tier2Seconds;
+                case 3 -> tier3Seconds;
+                case 4 -> tier4Seconds;
+                default -> 0L;
+            };
+        }
+
+        public void tickSecond() {
+            if (tier4Seconds > 0) {
+                tier4Seconds--;
+            } else if (tier3Seconds > 0) {
+                tier3Seconds--;
+            } else if (tier2Seconds > 0) {
+                tier2Seconds--;
+            } else if (tier1Seconds > 0) {
+                tier1Seconds--;
+            }
+            this.fuelTier = activeTier();
+            this.radius = FuelRules.fuelRadius(this.fuelTier);
+            this.fuelSeconds = totalFuelSeconds();
+        }
+
+        public void addFuel(int tier, long seconds) {
+            switch (tier) {
+                case 1 -> tier1Seconds = Math.max(0L, tier1Seconds + seconds);
+                case 2 -> tier2Seconds = Math.max(0L, tier2Seconds + seconds);
+                case 3 -> tier3Seconds = Math.max(0L, tier3Seconds + seconds);
+                case 4 -> tier4Seconds = Math.max(0L, tier4Seconds + seconds);
+            }
+            this.fuelTier = activeTier();
+            this.radius = FuelRules.fuelRadius(this.fuelTier);
+            this.fuelSeconds = totalFuelSeconds();
+        }
+
+        public boolean withdrawFuel(int tier, int crystalCount) {
+            long duration = FuelRules.fuelDuration(tier);
+            long needed = duration * crystalCount;
+            long current = getTierSeconds(tier);
+            if (current < needed || needed <= 0) return false;
+            switch (tier) {
+                case 1 -> tier1Seconds -= needed;
+                case 2 -> tier2Seconds -= needed;
+                case 3 -> tier3Seconds -= needed;
+                case 4 -> tier4Seconds -= needed;
+            }
+            this.fuelTier = activeTier();
+            this.radius = FuelRules.fuelRadius(this.fuelTier);
+            this.fuelSeconds = totalFuelSeconds();
+            return true;
         }
     }
 
@@ -3124,10 +3221,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             default -> "§f[Fuel Crystal]";
         };
         List<Component> lore = switch (tier) {
-            case 1 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+2 Hours Fuel (3x3 footprint)"), Component.text("§8Exclusive Private Fuel"));
-            case 2 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+3 Hours Fuel (7x7 footprint)"), Component.text("§8Exclusive Private Fuel"));
-            case 3 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+4 Hours Fuel (11x11 footprint)"), Component.text("§8Exclusive Private Fuel"));
-            case 4 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+6 Hours Fuel (15x15 footprint - MAX)"), Component.text("§8Exclusive Private Fuel"));
+            case 1 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+2 Hours Fuel (2x2 chunks / 32x32)"), Component.text("§8Exclusive Private Fuel"));
+            case 2 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+3 Hours Fuel (5x5 chunks / 80x80)"), Component.text("§8Exclusive Private Fuel"));
+            case 3 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+4 Hours Fuel (10x10 chunks / 160x160)"), Component.text("§8Exclusive Private Fuel"));
+            case 4 -> List.of(Component.text("§7Deposit in Protection Core:"), Component.text("§a+6 Hours Fuel (16x16 chunks / 256x256 - MAX)"), Component.text("§8Exclusive Private Fuel"));
             default -> List.of(Component.text("§7Deposit in Protection Core for fuel"));
         };
         ItemStack item = new ItemStack(mat, 1);
@@ -3276,8 +3373,27 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
             // 3. Fuel burn
             for (var pb : placedPrivateBlocks.values()) {
-                if (pb.placed && pb.fuelSeconds > 0) {
-                    pb.fuelSeconds--;
+                if (pb.placed && pb.totalFuelSeconds() > 0) {
+                    int prevTier = pb.fuelTier;
+                    pb.tickSecond();
+                    if (pb.fuelTier != prevTier) {
+                        syncPrivateBlockAsync(pb);
+                        Player owner = getServer().getPlayer(pb.ownerUuid);
+                        if (owner != null && owner.isOnline()) {
+                            owner.sendMessage(String.format(Locale.ROOT,
+                                "§e[Private] Protection core #%d transitioned to Tier %d (%dx%d chunks)!",
+                                pb.blockIndex, pb.fuelTier, PrivateRules.radiusToChunks(pb.radius), PrivateRules.radiusToChunks(pb.radius)));
+                        }
+                    }
+                }
+            }
+
+            // Real-time update for open core GUIs
+            for (Map.Entry<UUID, PlacedPrivateBlock> entry : activeCoreGuis.entrySet()) {
+                Player p = getServer().getPlayer(entry.getKey());
+                if (p != null && p.isOnline()) {
+                    var top = p.getOpenInventory().getTopInventory();
+                    updateCoreGuiItems(top, entry.getValue());
                 }
             }
 
@@ -3358,6 +3474,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         body.addProperty("radius", pb.radius);
         body.addProperty("fuel_seconds", pb.fuelSeconds);
         body.addProperty("fuel_tier", pb.fuelTier);
+        body.addProperty("tier_1_seconds", pb.tier1Seconds);
+        body.addProperty("tier_2_seconds", pb.tier2Seconds);
+        body.addProperty("tier_3_seconds", pb.tier3Seconds);
+        body.addProperty("tier_4_seconds", pb.tier4Seconds);
         var arr = new com.google.gson.JsonArray();
         for (UUID u : pb.members) arr.add(u.toString());
         body.add("members", arr);
@@ -3424,6 +3544,19 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         int radius = obj.get("radius").getAsInt();
                         long fuelSeconds = obj.get("fuel_seconds").getAsLong();
                         int fuelTier = obj.get("fuel_tier").getAsInt();
+                        long t1 = obj.has("tier_1_seconds") ? obj.get("tier_1_seconds").getAsLong() : 0L;
+                        long t2 = obj.has("tier_2_seconds") ? obj.get("tier_2_seconds").getAsLong() : 0L;
+                        long t3 = obj.has("tier_3_seconds") ? obj.get("tier_3_seconds").getAsLong() : 0L;
+                        long t4 = obj.has("tier_4_seconds") ? obj.get("tier_4_seconds").getAsLong() : 0L;
+                        if (t1 == 0 && t2 == 0 && t3 == 0 && t4 == 0 && fuelSeconds > 0) {
+                            switch (fuelTier) {
+                                case 1 -> t1 = fuelSeconds;
+                                case 2 -> t2 = fuelSeconds;
+                                case 3 -> t3 = fuelSeconds;
+                                case 4 -> t4 = fuelSeconds;
+                                default -> t1 = fuelSeconds;
+                            }
+                        }
                         List<UUID> members = new ArrayList<>();
                         if (obj.has("members") && obj.get("members").isJsonArray()) {
                             for (var m : obj.get("members").getAsJsonArray()) {
@@ -3435,15 +3568,21 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         String key = world + ":" + x + ":" + y + ":" + z;
                         PlacedPrivateBlock existing = placedPrivateBlocks.get(key);
                         if (existing != null) {
-                            if (fuelSeconds > existing.fuelSeconds) {
-                                existing.fuelSeconds = fuelSeconds;
-                                existing.fuelTier = fuelTier;
-                                existing.radius = radius;
+                            long totalLoaded = t1 + t2 + t3 + t4;
+                            if (totalLoaded > existing.totalFuelSeconds()) {
+                                existing.tier1Seconds = t1;
+                                existing.tier2Seconds = t2;
+                                existing.tier3Seconds = t3;
+                                existing.tier4Seconds = t4;
+                                existing.fuelSeconds = existing.totalFuelSeconds();
+                                existing.fuelTier = existing.activeTier();
+                                existing.radius = FuelRules.fuelRadius(existing.fuelTier);
                             }
                             existing.members = members;
                         } else {
                             PlacedPrivateBlock pb = new PlacedPrivateBlock(
-                                id, ownerUuid, ownerName, blockIndex, world, x, y, z, true, radius, fuelSeconds, fuelTier, members
+                                id, ownerUuid, ownerName, blockIndex, world, x, y, z, true, radius,
+                                fuelSeconds, fuelTier, t1, t2, t3, t4, members
                             );
                             placedPrivateBlocks.put(key, pb);
                         }
@@ -3886,7 +4025,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             player.sendMessage("§6=== Protection Zone Info ===");
             player.sendMessage("§7Owner: §f" + pb.ownerName);
             player.sendMessage(String.format(Locale.ROOT, "§7Size: §e%dx%d blocks §7(%dx%d chunks, Full World Height)", size, size, chunks, chunks));
-            player.sendMessage("§7Fuel Time: " + (pb.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(pb.fuelSeconds) : "§c00:00 (Inactive)"));
+            player.sendMessage("§7Fuel Queue:");
+            player.sendMessage("  §d• Tier 4 (16x16): §f" + ExpeditionRules.formatDuration(pb.tier4Seconds) + (pb.tier4Seconds > 0 ? " §a[ACTIVE]" : ""));
+            player.sendMessage("  §c• Tier 3 (10x10): §f" + ExpeditionRules.formatDuration(pb.tier3Seconds) + (pb.tier4Seconds == 0 && pb.tier3Seconds > 0 ? " §a[ACTIVE]" : ""));
+            player.sendMessage("  §b• Tier 2 (5x5):   §f" + ExpeditionRules.formatDuration(pb.tier2Seconds) + (pb.tier4Seconds == 0 && pb.tier3Seconds == 0 && pb.tier2Seconds > 0 ? " §a[ACTIVE]" : ""));
+            player.sendMessage("  §6• Tier 1 (2x2):   §f" + ExpeditionRules.formatDuration(pb.tier1Seconds) + (pb.tier4Seconds == 0 && pb.tier3Seconds == 0 && pb.tier2Seconds == 0 && pb.tier1Seconds > 0 ? " §a[ACTIVE]" : ""));
+            player.sendMessage("§7Total Fuel: " + (pb.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(pb.fuelSeconds) : "§c00:00 (Inactive)"));
             player.sendMessage("§7Members: §f" + (pb.members.isEmpty() ? "None" : pb.members.size() + " players"));
             return;
         }
@@ -4390,27 +4534,95 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         im.lore(List.of(
             Component.text("§7Owner: §f" + core.ownerName),
             Component.text(String.format(Locale.ROOT, "§7Active Size: §e%dx%d blocks §7(%dx%d chunks, Full Height)", size, size, chunks, chunks)),
-            Component.text("§7Fuel Tier: §bTier " + core.fuelTier),
-            Component.text("§7Remaining Fuel: " + (core.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(core.fuelSeconds) : "§c00:00 (Inactive)")),
+            Component.text("§7Active Tier: §bTier " + core.fuelTier),
+            Component.text("§7Total Fuel: " + (core.fuelSeconds > 0 ? "§a" + ExpeditionRules.formatDuration(core.fuelSeconds) : "§c00:00 (Inactive)")),
+            Component.text("§7Fuel Queue:"),
+            Component.text("  §d• Tier 4: §f" + ExpeditionRules.formatDuration(core.tier4Seconds) + (core.tier4Seconds > 0 ? " §a[ACTIVE]" : "")),
+            Component.text("  §c• Tier 3: §f" + ExpeditionRules.formatDuration(core.tier3Seconds) + (core.tier4Seconds == 0 && core.tier3Seconds > 0 ? " §a[ACTIVE]" : "")),
+            Component.text("  §b• Tier 2: §f" + ExpeditionRules.formatDuration(core.tier2Seconds) + (core.tier4Seconds == 0 && core.tier3Seconds == 0 && core.tier2Seconds > 0 ? " §a[ACTIVE]" : "")),
+            Component.text("  §6• Tier 1: §f" + ExpeditionRules.formatDuration(core.tier1Seconds) + (core.tier4Seconds == 0 && core.tier3Seconds == 0 && core.tier2Seconds == 0 && core.tier1Seconds > 0 ? " §a[ACTIVE]" : "")),
             Component.text("§7Trusted Members: §f" + (core.members.isEmpty() ? "None" : core.members.size() + " players"))
         ));
         info.setItemMeta(im);
         inv.setItem(4, info);
 
+        // Tier 1: Ember Shard (Slot 10)
+        ItemStack t1 = new ItemStack(Material.RAW_COPPER);
+        ItemMeta t1m = t1.getItemMeta();
+        t1m.displayName(Component.text("§6§lTier 1: Ember Shard (2x2 Chunks)"));
+        boolean t1Active = core.tier4Seconds == 0 && core.tier3Seconds == 0 && core.tier2Seconds == 0 && core.tier1Seconds > 0;
+        t1m.lore(List.of(
+            Component.text("§7Queued Time: §f" + ExpeditionRules.formatDuration(core.tier1Seconds) + (t1Active ? " §a[ACTIVE]" : (core.tier1Seconds > 0 ? " §e[QUEUED]" : " §8[EMPTY]"))),
+            Component.text("§7Stored Crystals: §e" + (core.tier1Seconds / 7200) + " §7(+" + (core.tier1Seconds % 7200) + "s leftover)"),
+            Component.text(""),
+            Component.text("§e[Click] §7Withdraw 1 Crystal (-2h)"),
+            Component.text("§e[Shift-Click] §7Withdraw All Crystals")
+        ));
+        t1.setItemMeta(t1m);
+        inv.setItem(10, t1);
+
+        // Tier 2: Cobalt Crystal (Slot 11)
+        ItemStack t2 = new ItemStack(Material.PRISMARINE_CRYSTALS);
+        ItemMeta t2m = t2.getItemMeta();
+        t2m.displayName(Component.text("§b§lTier 2: Cobalt Crystal (5x5 Chunks)"));
+        boolean t2Active = core.tier4Seconds == 0 && core.tier3Seconds == 0 && core.tier2Seconds > 0;
+        t2m.lore(List.of(
+            Component.text("§7Queued Time: §f" + ExpeditionRules.formatDuration(core.tier2Seconds) + (t2Active ? " §a[ACTIVE]" : (core.tier2Seconds > 0 ? " §e[QUEUED]" : " §8[EMPTY]"))),
+            Component.text("§7Stored Crystals: §e" + (core.tier2Seconds / 10800) + " §7(+" + (core.tier2Seconds % 10800) + "s leftover)"),
+            Component.text(""),
+            Component.text("§e[Click] §7Withdraw 1 Crystal (-3h)"),
+            Component.text("§e[Shift-Click] §7Withdraw All Crystals")
+        ));
+        t2.setItemMeta(t2m);
+        inv.setItem(11, t2);
+
+        // Tier 3: Crimson Core (Slot 12)
+        ItemStack t3 = new ItemStack(Material.REDSTONE);
+        ItemMeta t3m = t3.getItemMeta();
+        t3m.displayName(Component.text("§c§lTier 3: Crimson Core (10x10 Chunks)"));
+        boolean t3Active = core.tier4Seconds == 0 && core.tier3Seconds > 0;
+        t3m.lore(List.of(
+            Component.text("§7Queued Time: §f" + ExpeditionRules.formatDuration(core.tier3Seconds) + (t3Active ? " §a[ACTIVE]" : (core.tier3Seconds > 0 ? " §e[QUEUED]" : " §8[EMPTY]"))),
+            Component.text("§7Stored Crystals: §e" + (core.tier3Seconds / 14400) + " §7(+" + (core.tier3Seconds % 14400) + "s leftover)"),
+            Component.text(""),
+            Component.text("§e[Click] §7Withdraw 1 Crystal (-4h)"),
+            Component.text("§e[Shift-Click] §7Withdraw All Crystals")
+        ));
+        t3.setItemMeta(t3m);
+        inv.setItem(12, t3);
+
+        // Tier 4: Astral Void Crystal (Slot 13)
+        ItemStack t4 = new ItemStack(Material.ECHO_SHARD);
+        ItemMeta t4m = t4.getItemMeta();
+        t4m.displayName(Component.text("§d§lTier 4: Astral Void Crystal (16x16 Chunks)"));
+        boolean t4Active = core.tier4Seconds > 0;
+        t4m.lore(List.of(
+            Component.text("§7Queued Time: §f" + ExpeditionRules.formatDuration(core.tier4Seconds) + (t4Active ? " §a[ACTIVE]" : (core.tier4Seconds > 0 ? " §e[QUEUED]" : " §8[EMPTY]"))),
+            Component.text("§7Stored Crystals: §e" + (core.tier4Seconds / 21600) + " §7(+" + (core.tier4Seconds % 21600) + "s leftover)"),
+            Component.text(""),
+            Component.text("§e[Click] §7Withdraw 1 Crystal (-6h)"),
+            Component.text("§e[Shift-Click] §7Withdraw All Crystals")
+        ));
+        t4.setItemMeta(t4m);
+        inv.setItem(13, t4);
+
+        // Deposit Hopper (Slot 15)
         ItemStack fuelSlot = new ItemStack(Material.HOPPER);
         ItemMeta fm = fuelSlot.getItemMeta();
-        fm.displayName(Component.text("§e§lDeposit Fuel Crystal"));
+        fm.displayName(Component.text("§e§lDeposit Fuel Crystals"));
         fm.lore(List.of(
             Component.text("§7• Click with a fuel crystal on your cursor"),
             Component.text("§7• Or click this hopper to use one from inventory"),
-            Component.text("§7• Or shift-click any fuel crystal below:"),
+            Component.text("§7• Or shift-click any fuel crystal in your inventory"),
+            Component.text(""),
+            Component.text("§7Available Tiers:"),
             Component.text("§6  - Ember Shard (T1): §7+2h (2x2 chunks / 32x32)"),
             Component.text("§b  - Cobalt Crystal (T2): §7+3h (5x5 chunks / 80x80)"),
             Component.text("§c  - Crimson Core (T3): §7+4h (10x10 chunks / 160x160)"),
             Component.text("§d  - Astral Void Crystal (T4): §7+6h (16x16 chunks / 256x256)")
         ));
         fuelSlot.setItemMeta(fm);
-        inv.setItem(13, fuelSlot);
+        inv.setItem(15, fuelSlot);
 
         ItemStack dismantle = new ItemStack(Material.BARRIER);
         ItemMeta dm = dismantle.getItemMeta();
@@ -4435,16 +4647,15 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     }
 
     private void applyFuelDeposit(Player player, PlacedPrivateBlock core, int fuelTier, org.bukkit.inventory.Inventory topInv) {
-        core.fuelTier = FuelRules.calculateNewTier(core.fuelTier, fuelTier);
-        core.radius = FuelRules.fuelRadius(core.fuelTier);
-        core.fuelSeconds = FuelRules.calculateNewFuel(core.fuelSeconds, fuelTier);
+        long addedSeconds = FuelRules.fuelDuration(fuelTier);
+        core.addFuel(fuelTier, addedSeconds);
         syncPrivateBlockAsync(core);
         player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_BEACON_POWER_SELECT, 1.0f, 1.0f);
         int size = PrivateRules.radiusToSize(core.radius);
         int chunks = PrivateRules.radiusToChunks(core.radius);
         player.sendMessage(String.format(Locale.ROOT,
-            "§a[Private] Deposited fuel! New size: %dx%d blocks (%dx%d chunks, Full Height) | Fuel remaining: %s",
-            size, size, chunks, chunks, ExpeditionRules.formatDuration(core.fuelSeconds)));
+            "§a[Private] Deposited Tier %d fuel (+%s)! Current active tier: Tier %d (%dx%d chunks) | Total remaining: %s",
+            fuelTier, ExpeditionRules.formatDuration(addedSeconds), core.fuelTier, chunks, chunks, ExpeditionRules.formatDuration(core.fuelSeconds)));
         if (topInv != null) {
             updateCoreGuiItems(topInv, core);
         }
@@ -4890,7 +5101,35 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             event.setCancelled(true);
             int slot = event.getSlot();
 
-            if (slot == 13) {
+            if (slot >= 10 && slot <= 13) {
+                int tier = slot - 9; // 10 -> 1, 11 -> 2, 12 -> 3, 13 -> 4
+                long duration = FuelRules.fuelDuration(tier);
+                long currentSeconds = core.getTierSeconds(tier);
+                if (currentSeconds < duration) {
+                    player.sendMessage("§c[Private] Not enough Tier " + tier + " fuel to withdraw a crystal (requires " + ExpeditionRules.formatDuration(duration) + ").");
+                    player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 0.5f);
+                    return;
+                }
+
+                int count = event.isShiftClick() ? (int)(currentSeconds / duration) : 1;
+                if (core.withdrawFuel(tier, count)) {
+                    syncPrivateBlockAsync(core);
+                    for (int i = 0; i < count; i++) {
+                        var leftovers = player.getInventory().addItem(createFuelCrystalItem(tier));
+                        for (ItemStack leftover : leftovers.values()) {
+                            player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+                        }
+                    }
+                    player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_ITEM_PICKUP, 1.0f, 1.2f);
+                    player.sendMessage(String.format(Locale.ROOT,
+                        "§a[Private] Withdrew %d Tier %d crystal%s! Remaining tier fuel: %s",
+                        count, tier, (count > 1 ? "s" : ""), ExpeditionRules.formatDuration(core.getTierSeconds(tier))));
+                    updateCoreGuiItems(topInv, core);
+                }
+                return;
+            }
+
+            if (slot == 15) {
                 ItemStack cursor = event.getCursor();
                 int fuelTier = getFuelCrystalTier(cursor);
                 if (fuelTier > 0) {

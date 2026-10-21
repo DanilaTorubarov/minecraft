@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   ApiError,
   depositPrivateFuel,
+  withdrawPrivateFuel,
   getPlayerInventory,
   getPlayerPrivates,
   getTerritoryAlerts,
@@ -14,6 +15,8 @@ import {
   detectFuelCrystal,
   formatFuelTime,
   radiusToChunks,
+  crystalsAvailable,
+  FUEL_CRYSTAL_TYPES,
   PRIVATE_BLOCK_PRICES,
   type FuelCrystalInfo,
 } from '../lib/fuel'
@@ -45,6 +48,7 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
   const [actionError, setActionError] = useState('')
   const [actionMessage, setActionMessage] = useState('')
   const [submittingSlot, setSubmittingSlot] = useState<number | null>(null)
+  const [withdrawingKey, setWithdrawingKey] = useState<string | null>(null)
 
   const refreshData = async () => {
     try {
@@ -127,6 +131,33 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
       }
     } finally {
       setSubmittingSlot(null)
+    }
+  }
+
+  const handleWithdraw = async (blockIndex: number, tier: number, crystalName: string, hours: number) => {
+    const key = `${blockIndex}-${tier}`
+    if (withdrawingKey !== null) return
+    setWithdrawingKey(key)
+    setActionError('')
+    setActionMessage('')
+    try {
+      await withdrawPrivateFuel(uuid, blockIndex, tier, 1)
+      playSound('done')
+      setActionMessage(
+        `Successfully withdrew 1 ${crystalName} (-${hours}h) back to your inventory!`
+      )
+      await refreshData()
+    } catch (err) {
+      playSound('click')
+      if (err instanceof ApiError && err.status === 409) {
+        setActionError('Inventory is full! Free up a slot in Minecraft or web inventory first.')
+      } else if (err instanceof ApiError && err.status === 400) {
+        setActionError(`Not enough Tier ${tier} fuel remaining to withdraw a crystal.`)
+      } else {
+        setActionError('Failed to withdraw fuel crystal. Please try again.')
+      }
+    } finally {
+      setWithdrawingKey(null)
     }
   }
 
@@ -307,14 +338,6 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                     <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(Full World Height)</span>
                   </dd>
 
-                  <dt style={{ color: 'var(--muted)' }}>Fuel Level:</dt>
-                  <dd style={{ margin: 0, fontWeight: 600, color: isActive ? 'var(--success)' : 'var(--danger)' }}>
-                    {formatFuelTime(block.fuel_seconds)}
-                  </dd>
-
-                  <dt style={{ color: 'var(--muted)' }}>Fuel Tier:</dt>
-                  <dd style={{ margin: 0, fontWeight: 600 }}>Tier {block.fuel_tier}</dd>
-
                   <dt style={{ color: 'var(--muted)' }}>Location:</dt>
                   <dd style={{ margin: 0, wordBreak: 'break-all' }}>
                     {isPlaced ? `${block.world} (${block.x}, ${block.y}, ${block.z})` : 'In Inventory or Unplaced'}
@@ -327,6 +350,80 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                       : 'None (Owner only)'}
                   </dd>
                 </dl>
+
+                {/* Fuel Queue Breakdown */}
+                {isPlaced && (
+                  <div style={{ background: 'var(--content-glass)', border: '1px solid var(--line)', borderRadius: '6px', padding: '10px', display: 'grid', gap: '8px', fontSize: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600, color: 'var(--text)' }}>
+                      <span>Fuel Queue (Sequential):</span>
+                      <span style={{ color: isActive ? 'var(--success)' : 'var(--danger)' }}>{formatFuelTime(block.fuel_seconds)}</span>
+                    </div>
+
+                    <div style={{ display: 'grid', gap: '5px' }}>
+                      {[4, 3, 2, 1].map((t) => {
+                        const info = FUEL_CRYSTAL_TYPES[t]
+                        const sec = t === 4 ? (block.tier_4_seconds ?? 0) : t === 3 ? (block.tier_3_seconds ?? 0) : t === 2 ? (block.tier_2_seconds ?? 0) : (block.tier_1_seconds ?? 0)
+                        const isTierActive = t === 4
+                          ? sec > 0
+                          : t === 3
+                          ? (block.tier_4_seconds ?? 0) === 0 && sec > 0
+                          : t === 2
+                          ? (block.tier_4_seconds ?? 0) === 0 && (block.tier_3_seconds ?? 0) === 0 && sec > 0
+                          : (block.tier_4_seconds ?? 0) === 0 && (block.tier_3_seconds ?? 0) === 0 && (block.tier_2_seconds ?? 0) === 0 && sec > 0
+
+                        const canWithdraw = crystalsAvailable(sec, t) > 0
+                        const isWithdrawingThis = withdrawingKey === `${block.block_index}-${t}`
+
+                        return (
+                          <div
+                            key={t}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              flexWrap: 'wrap',
+                              gap: '6px',
+                              padding: '5px 8px',
+                              borderRadius: '4px',
+                              background: isTierActive ? 'rgba(56, 189, 248, 0.12)' : 'var(--surface-soft)',
+                              border: isTierActive ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid transparent',
+                            }}
+                          >
+                            <div>
+                              <span style={{ fontWeight: 600, color: t === 4 ? '#c084fc' : t === 3 ? '#f87171' : t === 2 ? '#38bdf8' : '#fb923c' }}>
+                                Tier {t} ({t === 4 ? '16×16' : t === 3 ? '10×10' : t === 2 ? '5×5' : '2×2'}):
+                              </span>{' '}
+                              <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{formatFuelTime(sec)}</span>
+                              {isTierActive && (
+                                <span style={{ marginLeft: '6px', fontSize: '10px', color: 'var(--success)', fontWeight: 700, textTransform: 'uppercase' }}>
+                                  [Active]
+                                </span>
+                              )}
+                              {!isTierActive && sec > 0 && (
+                                <span style={{ marginLeft: '6px', fontSize: '10px', color: 'var(--muted)', fontWeight: 600 }}>
+                                  [Queued]
+                                </span>
+                              )}
+                            </div>
+
+                            {canWithdraw && (
+                              <button
+                                type="button"
+                                className="btn btn-quiet"
+                                disabled={withdrawingKey !== null}
+                                onClick={() => void handleWithdraw(block.block_index, t, info.name, info.hours)}
+                                style={{ minHeight: '24px', padding: '2px 8px', fontSize: '11px' }}
+                                title={`Withdraw 1 ${info.name} (-${info.hours}h) back to inventory`}
+                              >
+                                {isWithdrawingThis ? 'Withdrawing…' : `Withdraw 1 (${info.name})`}
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {isPlaced && isFuelCriticallyLow(block.fuel_seconds) && (
                   <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', borderRadius: '6px', padding: '6px 10px', fontSize: '12px', color: '#ef4444', fontWeight: 600 }}>
