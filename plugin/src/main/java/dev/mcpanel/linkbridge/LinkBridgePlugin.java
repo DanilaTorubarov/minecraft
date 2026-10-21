@@ -4759,51 +4759,62 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     }
 
     private Location getSafeCaveSpawn(World world) {
-        Location existing = world.getSpawnLocation();
-        if (isSafeCaveSpot(existing) && existing.getBlockY() < world.getHighestBlockYAt(existing.getBlockX(), existing.getBlockZ()) - 5) {
-            return existing.clone().add(0.5, 0.0, 0.5);
-        }
+        return getRandomCaveSpawn(world);
+    }
 
-        int[] offsets = {0, 16, -16, 32, -32, 48, -48, 64, -64, 80, -80};
-        for (int x : offsets) {
-            for (int z : offsets) {
-                for (int y = 40; y >= -40; y--) {
-                    Block feet = world.getBlockAt(x, y, z);
-                    Block head = world.getBlockAt(x, y + 1, z);
-                    Block ground = world.getBlockAt(x, y - 1, z);
+    private Location getRandomCaveSpawn(World world) {
+        java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current();
 
-                    if ((feet.getType().isAir() || feet.getType() == Material.CAVE_AIR)
-                        && (head.getType().isAir() || head.getType() == Material.CAVE_AIR)
-                        && ground.getType().isSolid()
-                        && ground.getType() != Material.LAVA
-                        && ground.getType() != Material.WATER
-                        && ground.getType() != Material.BEDROCK) {
-                        int surfaceY = world.getHighestBlockYAt(x, z);
-                        if (y < surfaceY - 5) {
-                            world.setSpawnLocation(x, y, z);
-                            return new Location(world, x + 0.5, y, z + 0.5);
-                        }
+        for (int attempt = 0; attempt < 12; attempt++) {
+            // Pick a random direction and distance (250 to 4000 blocks from origin)
+            double angle = rng.nextDouble() * 2.0 * Math.PI;
+            double distance = 250.0 + rng.nextDouble() * 3750.0;
+            int centerX = (int) (distance * Math.cos(angle));
+            int centerZ = (int) (distance * Math.sin(angle));
+
+            // Sample random positions in this area
+            for (int sample = 0; sample < 16; sample++) {
+                int testX = centerX + rng.nextInt(-48, 49);
+                int testZ = centerZ + rng.nextInt(-48, 49);
+
+                world.getChunkAt(testX >> 4, testZ >> 4);
+
+                int surfaceY = world.getHighestBlockYAt(testX, testZ);
+                int startY = Math.min(surfaceY - 14, 45);
+                int endY = Math.max(world.getMinHeight() + 8, -55);
+
+                for (int y = startY; y >= endY; y--) {
+                    Location candidate = new Location(world, testX + 0.5, y, testZ + 0.5);
+                    if (isSafeCaveSpot(candidate)) {
+                        return candidate;
                     }
                 }
             }
         }
 
-        int cx = 0, cy = 15, cz = 0;
+        // Fallback: If no open cavern was found after 12 attempts across the world,
+        // carve out a safe underground grotto at a new random location.
+        double angle = rng.nextDouble() * 2.0 * Math.PI;
+        double distance = 400.0 + rng.nextDouble() * 2600.0;
+        int cx = (int) (distance * Math.cos(angle));
+        int cz = (int) (distance * Math.sin(angle));
+        int cy = 12;
+
+        world.getChunkAt(cx >> 4, cz >> 4);
         for (int dx = -3; dx <= 3; dx++) {
             for (int dz = -3; dz <= 3; dz++) {
-                world.getBlockAt(cx + dx, cy - 1, cz + dz).setType(Material.COBBLESTONE);
+                world.getBlockAt(cx + dx, cy - 1, cz + dz).setType(Material.DEEPSLATE);
                 for (int dy = 0; dy <= 3; dy++) {
-                    world.getBlockAt(cx + dx, cy + dy, cz + dz).setType(Material.AIR);
+                    world.getBlockAt(cx + dx, cy + dy, cz + dz).setType(Material.CAVE_AIR);
                 }
                 world.getBlockAt(cx + dx, cy + 4, cz + dz).setType(Material.STONE);
             }
         }
-        world.getBlockAt(cx - 3, cy + 1, cz).setType(Material.TORCH);
-        world.getBlockAt(cx + 3, cy + 1, cz).setType(Material.TORCH);
-        world.getBlockAt(cx, cy + 1, cz - 3).setType(Material.TORCH);
-        world.getBlockAt(cx, cy + 1, cz + 3).setType(Material.TORCH);
+        world.getBlockAt(cx - 2, cy + 1, cz).setType(Material.TORCH);
+        world.getBlockAt(cx + 2, cy + 1, cz).setType(Material.TORCH);
+        world.getBlockAt(cx, cy + 1, cz - 2).setType(Material.TORCH);
+        world.getBlockAt(cx, cy + 1, cz + 2).setType(Material.TORCH);
 
-        world.setSpawnLocation(cx, cy, cz);
         return new Location(world, cx + 0.5, cy, cz + 0.5);
     }
 
@@ -4813,15 +4824,33 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         int x = loc.getBlockX();
         int y = loc.getBlockY();
         int z = loc.getBlockZ();
+        if (y <= w.getMinHeight() + 5 || y >= w.getMaxHeight() - 10) return false;
+
         Block feet = w.getBlockAt(x, y, z);
         Block head = w.getBlockAt(x, y + 1, z);
         Block ground = w.getBlockAt(x, y - 1, z);
-        return (feet.getType().isAir() || feet.getType() == Material.CAVE_AIR)
-            && (head.getType().isAir() || head.getType() == Material.CAVE_AIR)
-            && ground.getType().isSolid()
-            && ground.getType() != Material.LAVA
-            && ground.getType() != Material.WATER
-            && ground.getType() != Material.BEDROCK;
+
+        boolean feetAir = feet.getType().isAir() || feet.getType() == Material.CAVE_AIR;
+        boolean headAir = head.getType().isAir() || head.getType() == Material.CAVE_AIR;
+        if (!feetAir || !headAir) return false;
+
+        Material gType = ground.getType();
+        if (!gType.isSolid() || gType == Material.LAVA || gType == Material.WATER || gType == Material.BEDROCK || gType == Material.FIRE) {
+            return false;
+        }
+
+        // Check 1 block perimeter for lava or fire hazards
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                Material m = w.getBlockAt(x + dx, y, z + dz).getType();
+                Material below = w.getBlockAt(x + dx, y - 1, z + dz).getType();
+                if (m == Material.LAVA || below == Material.LAVA || m == Material.FIRE) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private void lightMineSpawnArea(World world, Location spawn) {
