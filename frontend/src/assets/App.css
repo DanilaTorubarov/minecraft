@@ -260,6 +260,22 @@
   .stat-row { grid-template-columns: minmax(0, 1fr) repeat(4, minmax(0, 1fr)); }
   .stat-cell { text-align: left; }
 }
+/* Mobile Apps 3-Lines Button & Sheet */
+.mobile-apps-btn,
+.mobile-apps-overlay {
+  display: none;
+}
+
+@keyframes fadeInOverlay {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUpSheet {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
 @media (max-width: 760px) {
   html, body {
     -webkit-overflow-scrolling: touch;
@@ -269,7 +285,7 @@
   .desktop-menubar .desktop-brand { font-size: 12px; gap: 4px; }
   .desktop-menu { margin-left: auto; gap: 0; }
   .desktop-menubar button { padding: 3px 6px; font-size: 11px; }
-  .desktop-stage { height: auto; min-height: calc(100dvh - 40px); padding: 16px 10px 220px; display: flex; flex-direction: column; gap: 18px; }
+  .desktop-stage { height: auto; min-height: calc(100dvh - 40px); padding: 16px 10px 140px; display: flex; flex-direction: column; gap: 18px; }
   .desktop-window { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; max-height: none; flex: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22) !important; }
   .desktop-window::before { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: var(--surface-soft) !important; opacity: 0.98 !important; }
   .window-body { overflow: visible; }
@@ -289,11 +305,212 @@
   .code-copy { padding: 5px 8px; }
   .settings-content { padding: 24px 20px; }
   .field input { font-size: 16px; }
-  .desktop-dock { bottom: 12px; padding: 6px 14px 9px; max-width: calc(100vw - 16px); overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; justify-content: flex-start; touch-action: pan-x; backdrop-filter: blur(10px) saturate(125%) !important; -webkit-backdrop-filter: blur(10px) saturate(125%) !important; }
-  .desktop-dock::-webkit-scrollbar { display: none; }
-  .dock-app:hover { transform: none !important; }
-  .dock-app img, .dock-app .player-head { width: 43px; height: 43px; }
-  .dock-app .player-head { width: 32px; height: 32px; margin: 5.5px 0; }
+
+  /* Replace heavy horizontal dock on mobile with the lightweight 3-lines Apps button */
+  .desktop-dock { display: none !important; }
+
+  .mobile-apps-btn {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    position: fixed;
+    z-index: 48;
+    bottom: 18px;
+    left: 20px;
+    height: 46px;
+    padding: 0 20px;
+    border: 1px solid var(--glass-edge);
+    border-radius: 23px;
+    background: linear-gradient(135deg, rgb(255 255 255 / 80%), rgb(255 255 255 / 40%)), var(--surface-soft);
+    backdrop-filter: blur(14px) saturate(135%);
+    -webkit-backdrop-filter: blur(14px) saturate(135%);
+    box-shadow: 0 8px 24px rgba(0, 25, 50, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  [data-theme='dark'] .mobile-apps-btn {
+    background: linear-gradient(135deg, rgb(255 255 255 / 16%), transparent), var(--surface-soft);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  }
+
+  .mobile-apps-btn:active {
+    transform: scale(0.96);
+  }
+
+  .mobile-hamburger {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    width: 17px;
+    height: 12px;
+  }
+
+  .mobile-hamburger span {
+    display: block;
+    width: 100%;
+    height: 2px;
+    background: currentColor;
+    border-radius: 2px;
+  }
+
+  .mobile-apps-label {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.2px;
+  }
+
+  .music-mobile-toggle {
+    display: block;
+    position: fixed;
+    z-index: 46;
+    right: 20px;
+    left: auto;
+    transform: none;
+    bottom: 18px;
+    min-height: 46px;
+    padding: 0 16px;
+    border-radius: 23px;
+  }
+
+  .music-player {
+    bottom: 76px;
+  }
+
+  /* Full mobile application sheet */
+  .mobile-apps-overlay {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    background: rgba(0, 0, 0, 0.45);
+    align-items: flex-end;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    animation: fadeInOverlay 180ms ease;
+  }
+
+  .mobile-apps-sheet {
+    width: 100%;
+    max-width: 440px;
+    max-height: 80dvh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--surface-soft);
+    border: 1px solid var(--glass-edge);
+    border-radius: 24px 24px 0 0;
+    box-shadow: 0 -8px 36px rgba(0, 0, 0, 0.4);
+    padding: 20px 18px calc(env(safe-area-inset-bottom, 18px) + 20px);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    animation: slideUpSheet 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .mobile-apps-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--text);
+  }
+
+  .mobile-apps-header-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  .mobile-apps-close {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--frame);
+    background: var(--field);
+    color: var(--muted);
+    font-size: 14px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+  }
+
+  .mobile-apps-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+
+  .mobile-app-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 6px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text);
+    text-align: center;
+    cursor: pointer;
+    position: relative;
+    touch-action: manipulation;
+  }
+
+  .mobile-app-item:active {
+    background: var(--reflection);
+  }
+
+  .mobile-app-item[data-active='true'] {
+    background: var(--surface);
+    border-color: var(--glass-edge);
+  }
+
+  .mobile-app-icon-wrap {
+    width: 46px;
+    height: 46px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  }
+
+  [data-theme='dark'] .mobile-app-icon-wrap {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .mobile-app-icon-wrap img,
+  .mobile-app-icon-wrap .player-head {
+    width: 34px;
+    height: 34px;
+    object-fit: contain;
+  }
+
+  .mobile-app-title {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--text);
+  }
+
+  .mobile-app-dot {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #0088ff;
+    box-shadow: 0 0 6px #0088ff;
+  }
+
   .live-wallpaper-bubbles, .live-wallpaper-beams, .live-wallpaper-glints, .live-wallpaper-particles, .cursor-click-waves { display: none !important; }
   /* Stacked windows sit in normal flow: no floating motion of their own. */
   .desktop-window { transition: none; }

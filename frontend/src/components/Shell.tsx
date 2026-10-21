@@ -58,6 +58,7 @@ function Shell() {
   const [mapActivation, setMapActivation] = useState(0)
   const [clanActivation, setClanActivation] = useState(0)
   const [leaderboardsActivation, setLeaderboardsActivation] = useState(0)
+  const [mobileAppsOpen, setMobileAppsOpen] = useState(false)
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
   const [territoryAlerts, setTerritoryAlerts] = useState<TerritoryAlert[]>([])
@@ -145,6 +146,114 @@ function Shell() {
       openAccount()
     } finally { setLeaving(false) }
   }
+
+  useEffect(() => {
+    if (!mobileAppsOpen) return
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileAppsOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [mobileAppsOpen])
+
+  const mobileApps = [
+    {
+      id: 'account',
+      title: 'Account',
+      icon: <img src={globeIcon} alt="" />,
+      isOpen: accountOpen,
+      windowId: 'account-window',
+      action: openAccount,
+    },
+    {
+      id: 'stats',
+      title: 'Global Statistics',
+      icon: <img src={perfCenterIcon} alt="" />,
+      isOpen: statsOpen,
+      windowId: 'stats-window',
+      action: openStats,
+    },
+    {
+      id: 'leaderboards',
+      title: 'Hall of Fame',
+      icon: <img src={perfCenterIcon} alt="" />,
+      isOpen: leaderboardsOpen,
+      windowId: 'leaderboards-window',
+      action: openLeaderboards,
+    },
+    {
+      id: 'casino',
+      title: 'Minigames',
+      icon: <img src={minigamesIcon} alt="" />,
+      isOpen: casinoOpen,
+      windowId: 'casino-window',
+      action: openCasino,
+    },
+    {
+      id: 'market',
+      title: 'Marketplace',
+      icon: <img src={globeIcon} alt="" />,
+      isOpen: marketOpen,
+      windowId: 'marketplace-window',
+      action: openMarket,
+    },
+    {
+      id: 'chat',
+      title: 'Server Chat',
+      icon: <img src={globeIcon} alt="" />,
+      isOpen: chatOpen,
+      windowId: 'chat-window',
+      action: openChat,
+    },
+    {
+      id: 'map',
+      title: 'Live Map',
+      icon: <img src={globeIcon} alt="" />,
+      isOpen: mapOpen,
+      windowId: 'map-window',
+      action: openMap,
+    },
+    {
+      id: 'clan',
+      title: 'Clans',
+      icon: <img src={firewallOnIcon} alt="" />,
+      isOpen: clanOpen,
+      windowId: 'clan-window',
+      action: openClan,
+    },
+    {
+      id: 'player',
+      title: 'Player Controls',
+      icon: selectedPlayer ? (
+        <PlayerHead username={selectedPlayer.username} textureHash={selectedPlayer.skin_hash} />
+      ) : (
+        <img src={perfCenterIcon} alt="" />
+      ),
+      isOpen: playerOpen,
+      windowId: 'player-controls-window',
+      action: () => openPlayer(),
+    },
+    {
+      id: 'settings',
+      title: 'Settings',
+      icon: <img src={personalizationIcon} alt="" />,
+      isOpen: settingsOpen,
+      windowId: 'settings-window',
+      action: openSettings,
+    },
+    ...(user?.is_admin
+      ? [
+          {
+            id: 'admin',
+            title: 'Admin Panel',
+            icon: <img src={firewallOnIcon} alt="" />,
+            isOpen: adminOpen,
+            windowId: 'admin-window',
+            action: openAdmin,
+          },
+        ]
+      : []),
+  ]
 
   return (
     <div className="shell desktop-shell">
@@ -378,6 +487,80 @@ function Shell() {
         <span className="dock-divider" />
         <button ref={settingsDock} className="dock-app" data-ui-sound={settingsOpen ? active === 'settings' ? 'close' : 'click' : 'open'} onClick={settingsOpen && active === 'settings' ? hideSettings : openSettings} aria-controls="settings-window" aria-expanded={settingsOpen} data-open={settingsOpen}><img src={personalizationIcon} alt="" /><span>Settings</span></button>
       </nav>
+
+      <button
+        type="button"
+        className="mobile-apps-btn"
+        data-ui-sound={mobileAppsOpen ? 'close' : 'open'}
+        onClick={() => setMobileAppsOpen((prev) => !prev)}
+        aria-label="Applications Menu"
+        aria-expanded={mobileAppsOpen}
+      >
+        <span className="mobile-hamburger" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+        <span className="mobile-apps-label">Apps</span>
+      </button>
+
+      {mobileAppsOpen && (
+        <div
+          className="mobile-apps-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Applications"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setMobileAppsOpen(false)
+          }}
+        >
+          <div className="mobile-apps-sheet">
+            <div className="mobile-apps-header">
+              <div className="mobile-apps-header-title">
+                <span className="mobile-hamburger" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <span>Applications</span>
+              </div>
+              <button
+                type="button"
+                className="mobile-apps-close"
+                onClick={() => setMobileAppsOpen(false)}
+                aria-label="Close applications menu"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mobile-apps-grid">
+              {mobileApps.map((app) => (
+                <button
+                  key={app.id}
+                  type="button"
+                  className="mobile-app-item"
+                  data-active={app.isOpen}
+                  onClick={() => {
+                    app.action()
+                    setMobileAppsOpen(false)
+                    requestAnimationFrame(() => {
+                      document.getElementById(app.windowId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    })
+                  }}
+                >
+                  <div className="mobile-app-icon-wrap">
+                    {app.icon}
+                  </div>
+                  <span className="mobile-app-title">{app.title}</span>
+                  {app.isOpen && <span className="mobile-app-dot" />}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <MusicPlayer />
     </div>
   )
