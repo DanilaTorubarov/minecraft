@@ -64,10 +64,21 @@ if name == 'docker' and 'build' in args and os.environ.get('FAIL_BUILD'):
         plugin = next(i for i, call in enumerate(calls) if call[0] == 'build-plugin.sh')
         build = next(i for i, call in enumerate(calls) if call[-2:] == ['build', 'app'])
         up = next(i for i, call in enumerate(calls) if 'up' in call)
+        proxy = next(i for i, call in enumerate(calls)
+                     if '--force-recreate' in call and call[-1] == 'proxy')
         restart = next(i for i, call in enumerate(calls) if call[-2:] == ['restart', 'purpur'])
         self.assertLess(build, up)
         self.assertLess(plugin, up)
-        self.assertLess(up, restart)
+        self.assertLess(up, proxy)
+        self.assertLess(proxy, restart)
+
+    def test_proxy_is_force_recreated_so_bind_mounted_caddyfile_changes_apply(self):
+        result, calls = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        proxy = next(call for call in calls if '--force-recreate' in call)
+        self.assertEqual(proxy[-3:], ['--no-deps', '--force-recreate', 'proxy'])
+        self.assertEqual(
+            [call for call in calls if '--force-recreate' in call], [proxy])
 
     def test_build_failure_leaves_running_services_alone(self):
         result, calls = self.deploy(FAIL_BUILD='1')

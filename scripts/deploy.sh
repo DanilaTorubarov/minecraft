@@ -61,7 +61,13 @@ docker builder prune -f --keep-storage 2GB || true
 # Build before replacing running services. Runtime data stays in mc/ and volumes.
 compose build app
 ./scripts/build-plugin.sh
-compose up -d db app proxy purpur velocity
+compose up -d db app purpur velocity
+# The Caddyfile is a single-file bind mount. Docker pins that mount to the
+# file's inode, so a checkout that replaces the file (git merge, editors that
+# write-then-rename) leaves the running proxy reading the old copy — and
+# `compose up -d proxy` sees no config change to recreate. Force-recreate it so
+# the committed routing table (e.g. /map/*) actually takes effect.
+compose up -d --no-deps --force-recreate proxy
 # Plugin jars are bind-mounted; Compose does not detect changes to their contents.
 compose restart purpur
 compose ps

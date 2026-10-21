@@ -1,4 +1,29 @@
-# Project checkpoint — 2026-10-20
+# Project checkpoint — 2026-10-21
+
+
+## Live 3D map restored (Caddy `map` route) — 2026-10-21
+
+- Symptom: the Live 3D Map window on `oasisaero.ru` did not load BlueMap. `/map/`
+  and every `/map/...` asset returned the website SPA (and 404s for real files)
+  instead of the map, so the iframe could not connect to the map server. The rest
+  of the site was unaffected.
+- Root cause: `./Caddyfile` is a single-file bind mount, which Docker pins to the
+  file's inode. The proxy container was created before the `/map/*` route was
+  added; the later checkout replaced the file, but the running Caddy kept reading
+  the old inode. `caddy reload` therefore reported "config is unchanged" and
+  `docker compose up -d proxy` saw no change to recreate. BlueMap itself was
+  healthy (bound to 8100, tiles rendering, SSE and websocket-free live endpoint
+  working).
+- Applied live: `docker compose --env-file .env.docker up -d --no-deps --force-recreate proxy`.
+  Verified `/map/`, `/map/settings.json`, `/map/maps/world/settings.json`, the
+  webapp JS/CSS, `custom.css`, a rendered tile (`maps/world/tiles/...`), and the
+  real SSE endpoint `/map/maps/world/live/sse` (200 `text/event-stream`).
+- Durable fix: `scripts/deploy.sh` now force-recreates only the proxy after
+  `compose up` so every deploy applies the committed Caddyfile. Added regression
+  coverage in `scripts/tests/test_deploy.py` and documented the inode trap in
+  `AGENTS.md`.
+- Verification: `bash -n scripts/deploy.sh`; all 9 deploy-script tests pass.
+  No backend, frontend, database, world or player data was changed.
 
 
 ## Private Block Protection & Mining Dimension System — 2026-10-20
