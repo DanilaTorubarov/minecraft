@@ -1660,54 +1660,85 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (event.getClickedInventory() != event.getInventory()) return;
 
         int slot = event.getSlot();
-        if (slot < 0 || slot >= 36) return;
+        if (slot < 0 || slot >= 45) return;
 
         var overview = holder.getOverview();
         if (overview == null) return;
 
         boolean starterCompleted = overview.has("starter_completed") && overview.get("starter_completed").getAsBoolean();
+        int starterStep = overview.has("starter_step") ? overview.get("starter_step").getAsInt() : (starterCompleted ? 5 : 1);
         int completedToday = overview.has("daily_completed_today") ? overview.get("daily_completed_today").getAsInt() : 0;
-        int dailyLimit = overview.has("daily_limit") ? overview.get("daily_limit").getAsInt() : 4;
+        int dailyLimit = overview.has("daily_limit") ? overview.get("daily_limit").getAsInt() : 2;
 
-        if (slot == 32) {
+        if (slot == 42) {
             player.closeInventory();
             player.playSound(player.getLocation(), Sound.BLOCK_CHEST_CLOSE, 0.8f, 1.0f);
             return;
         }
 
-        if (slot == 30) {
+        if (slot == 38) {
             player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.8f, 1.2f);
             openQuestsGui(player);
             return;
         }
 
-        if (slot == 13) {
-            if (!starterCompleted) {
-                player.closeInventory();
-                startContractFromGui(player, "starter_iron");
-            } else {
+        if (slot == 10 || slot == 12 || slot == 14 || slot == 16) {
+            int stageClicked = switch (slot) {
+                case 10 -> 1;
+                case 12 -> 2;
+                case 14 -> 3;
+                case 16 -> 4;
+                default -> 1;
+            };
+            String kind = switch (slot) {
+                case 10 -> "starter_wood";
+                case 12 -> "starter_bed";
+                case 14 -> "starter_iron";
+                case 16 -> "starter_private";
+                default -> "starter_wood";
+            };
+
+            if (starterCompleted || starterStep > stageClicked) {
                 player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_YES, 0.8f, 1.0f);
-                player.sendMessage("[Quests] You have already completed the Starter Trials!");
+                player.sendMessage("[Quests] You have already completed Stage " + stageClicked + "!");
+                return;
+            }
+            if (starterStep == stageClicked) {
+                var active = overview.has("active_contract") && !overview.get("active_contract").isJsonNull()
+                    ? overview.getAsJsonObject("active_contract") : null;
+                if (active != null && kind.equals(active.get("kind").getAsString()) && "active".equals(active.get("status").getAsString())) {
+                    player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.8f, 1.0f);
+                    player.sendMessage("[Quests] This quest is already active! Track it with the compass below.");
+                    return;
+                }
+                player.closeInventory();
+                startContractFromGui(player, kind);
+                return;
+            }
+            if (starterStep < stageClicked) {
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
+                player.sendMessage("[Quests] §cLocked! Complete Stage " + starterStep + " first.");
+                return;
             }
             return;
         }
 
-        if (slot == 10 || slot == 12 || slot == 14 || slot == 16) {
+        if (slot == 19 || slot == 21 || slot == 23 || slot == 25) {
             if (!starterCompleted) {
                 player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
-                player.sendMessage("[Quests] §cLocked! Complete the Starter Quest (The Iron Forge) to unlock Daily Contracts.");
+                player.sendMessage("[Quests] §cLocked! Complete all 4 Starter Stages to unlock Daily Contracts.");
                 return;
             }
             if (completedToday >= dailyLimit) {
                 player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
-                player.sendMessage("[Quests] §cDaily limit reached: four contracts per UTC day.");
+                player.sendMessage("[Quests] §cDaily limit reached: two contracts per UTC day.");
                 return;
             }
             String kind = switch (slot) {
-                case 10 -> "hunting";
-                case 12 -> "fishing";
-                case 14 -> "farming";
-                case 16 -> "mining";
+                case 19 -> "hunting";
+                case 21 -> "fishing";
+                case 23 -> "farming";
+                case 25 -> "mining";
                 default -> "hunting";
             };
             player.closeInventory();
@@ -1811,10 +1842,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     // --- Economy: independent durable outbox; never reuses statistics as money. ---
     private record EconomyKey(UUID uuid, String day, String contract) {}
     static final class EconomyCount {
-        long seconds,kills,fish,crops,mined,smelted;
-        long[] snapshot(){return new long[]{Math.min(86400,seconds),Math.min(10000,kills),Math.min(10000,fish),Math.min(10000,crops),Math.min(10000,mined),Math.min(10000,smelted)};}
-        void subtract(long[] accepted){seconds-=accepted[0];kills-=accepted[1];fish-=accepted[2];crops-=accepted[3];mined-=accepted[4];smelted-=accepted[5];}
-        boolean empty(){return seconds==0&&kills==0&&fish==0&&crops==0&&mined==0&&smelted==0;}
+        long seconds,kills,fish,crops,mined,smelted,wood,beds,privates;
+        long[] snapshot(){return new long[]{Math.min(86400,seconds),Math.min(10000,kills),Math.min(10000,fish),Math.min(10000,crops),Math.min(10000,mined),Math.min(10000,smelted),Math.min(10000,wood),Math.min(10000,beds),Math.min(10000,privates)};}
+        void subtract(long[] accepted){seconds-=accepted[0];kills-=accepted[1];fish-=accepted[2];crops-=accepted[3];mined-=accepted[4];smelted-=accepted[5];wood-=accepted[6];beds-=accepted[7];privates-=accepted[8];}
+        boolean empty(){return seconds==0&&kills==0&&fish==0&&crops==0&&mined==0&&smelted==0&&wood==0&&beds==0&&privates==0;}
     }
     static final class QuestRules {
         static boolean fish(String type){return List.of("COD","SALMON","TROPICAL_FISH","PUFFERFISH").contains(type);}
@@ -1938,7 +1969,16 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         UUID uuid=player.getUniqueId();var contract=contracts.get(uuid);
         synchronized(economyLock) {
             var count=economyCounts.computeIfAbsent(new EconomyKey(uuid,economyDay(),contract.get("id").getAsString()),k->new EconomyCount());
-            switch(counter) {case 2 -> count.fish+=amount;case 3 -> count.crops+=amount;case 4 -> count.mined+=amount;case 5 -> count.smelted+=amount;default -> throw new IllegalArgumentException("Unknown objective");}
+            switch(counter) {
+                case 2 -> count.fish+=amount;
+                case 3 -> count.crops+=amount;
+                case 4 -> count.mined+=amount;
+                case 5 -> count.smelted+=amount;
+                case 6 -> count.wood+=amount;
+                case 7 -> count.beds+=amount;
+                case 8 -> count.privates+=amount;
+                default -> throw new IllegalArgumentException("Unknown objective");
+            }
         }
     }
     private boolean ironOre(org.bukkit.block.Block block) {
@@ -1947,6 +1987,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private boolean isMiningOre(org.bukkit.block.Block block) {
         String name = block.getType().name();
         return name.endsWith("_ORE") || name.equals("ANCIENT_DEBRIS");
+    }
+    private boolean isLog(org.bukkit.block.Block block) {
+        String name = block.getType().name();
+        return name.endsWith("_LOG") || name.endsWith("_WOOD") || name.endsWith("_STEM") || name.endsWith("_HYPHAE");
     }
     private long orePosition(org.bukkit.block.Block block) {return ((long)block.getY()<<8)|((block.getZ()&15)<<4)|(block.getX()&15);}
     private boolean placedOre(org.bukkit.block.Block block,boolean add,boolean remove) {
@@ -1958,15 +2002,44 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if(add||remove) {if(positions.isEmpty())data.remove(key);else data.set(key,org.bukkit.persistence.PersistentDataType.LONG_ARRAY,positions.stream().mapToLong(Long::longValue).toArray());}
         return exists;
     }
+    private boolean placedLog(org.bukkit.block.Block block,boolean add,boolean remove) {
+        var key=new NamespacedKey(this,"quest_placed_log");var data=block.getChunk().getPersistentDataContainer();
+        long[] saved=data.getOrDefault(key,org.bukkit.persistence.PersistentDataType.LONG_ARRAY,new long[0]);
+        var positions=new java.util.HashSet<Long>();for(long position:saved)positions.add(position);
+        boolean exists=positions.contains(orePosition(block));
+        if(add)positions.add(orePosition(block));if(remove)positions.remove(orePosition(block));
+        if(add||remove) {if(positions.isEmpty())data.remove(key);else data.set(key,org.bukkit.persistence.PersistentDataType.LONG_ARRAY,positions.stream().mapToLong(Long::longValue).toArray());}
+        return exists;
+    }
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
-    public void onQuestOrePlace(BlockPlaceEvent event) {if(isMiningOre(event.getBlockPlaced()))placedOre(event.getBlockPlaced(),true,false);}
+    public void onQuestOrePlace(BlockPlaceEvent event) {
+        if(isMiningOre(event.getBlockPlaced()))placedOre(event.getBlockPlaced(),true,false);
+        if(isLog(event.getBlockPlaced()))placedLog(event.getBlockPlaced(),true,false);
+        if(event.getBlockPlaced().getType().name().endsWith("_BED"))questProgress(event.getPlayer(),"starter_bed",7,1);
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void onQuestBedEnter(org.bukkit.event.player.PlayerBedEnterEvent event) {
+        if(event.getBedEnterResult()==org.bukkit.event.player.PlayerBedEnterEvent.BedEnterResult.OK) {
+            Player player=event.getPlayer();
+            if(isAuthenticated(player)) {
+                lastActive.put(player.getUniqueId(),System.currentTimeMillis());
+                questProgress(player,"starter_bed",7,1);
+            }
+        }
+    }
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
     public void onQuestPiston(org.bukkit.event.block.BlockPistonExtendEvent event) {
-        for(var block:event.getBlocks())if(isMiningOre(block))placedOre(block.getRelative(event.getDirection()),true,false);
+        for(var block:event.getBlocks()) {
+            if(isMiningOre(block))placedOre(block.getRelative(event.getDirection()),true,false);
+            if(isLog(block))placedLog(block.getRelative(event.getDirection()),true,false);
+        }
     }
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
     public void onQuestPistonRetract(org.bukkit.event.block.BlockPistonRetractEvent event) {
-        for(var block:event.getBlocks())if(isMiningOre(block))placedOre(block.getRelative(event.getDirection()),true,false);
+        for(var block:event.getBlocks()) {
+            if(isMiningOre(block))placedOre(block.getRelative(event.getDirection()),true,false);
+            if(isLog(block))placedLog(block.getRelative(event.getDirection()),true,false);
+        }
     }
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
     public void onQuestHarvest(BlockBreakEvent event) {
@@ -1976,6 +2049,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if(!isAuthenticated(player)||player.getGameMode()!=org.bukkit.GameMode.SURVIVAL||!event.isDropItems())return;
         if(ironOre(block)&&!placed&&block.getDrops(player.getInventory().getItemInMainHand(),player).stream().anyMatch(item->item.getType()==org.bukkit.Material.RAW_IRON))questProgress(player,"starter_iron",4,1);
         if(ore && !placed) questProgress(player,"mining",4,1);
+        if(isLog(block)&&!placedLog(block,false,true)) questProgress(player,"starter_wood",6,1);
         if(block.getBlockData() instanceof org.bukkit.block.data.Ageable crop&&QuestRules.harvest(block.getType().name(),crop.getAge(),crop.getMaximumAge()))questProgress(player,"farming",3,1);
     }
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
@@ -2009,10 +2083,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         if (!entry.getKey().uuid().equals(uuid) || snapshot.size()>=1000) continue;
                         var key=entry.getKey(); var count=entry.getValue();
                         long[] captured=count.snapshot();
-                        long seconds=captured[0],kills=captured[1],fish=captured[2],crops=captured[3],mined=captured[4],smelted=captured[5];
+                        long seconds=captured[0],kills=captured[1],fish=captured[2],crops=captured[3],mined=captured[4],smelted=captured[5],wood=captured[6],beds=captured[7],privates=captured[8];
                         var day=new com.google.gson.JsonObject(); day.addProperty("day",key.day()); day.addProperty("active_seconds",seconds); day.addProperty("kills",kills);
                         if (!key.contract().isEmpty()) day.addProperty("contract_id",key.contract());
                         day.addProperty("fish_caught",fish);day.addProperty("crops_harvested",crops);day.addProperty("iron_mined",mined);day.addProperty("iron_smelted",smelted);
+                        if(wood>0) day.addProperty("wood_collected",wood);
+                        if(beds>0) day.addProperty("bed_used",beds);
+                        if(privates>0) day.addProperty("private_placed",privates);
                         days.add(day); snapshot.put(key,captured);
                     }
                     body.add("days",days);
@@ -2050,19 +2127,22 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 var body=new com.google.gson.JsonObject(); body.addProperty("uuid",uuid.toString()); body.addProperty("username",username);body.addProperty("start",start);body.addProperty("kind",kind);
                 var response=post(economyBase+"/contract",body.toString(),requestTimeout);
                 if(response==null) message="[Quests] The panel is unavailable. Try again.";
-                else if(response.statusCode()==429) message="[Quests] Daily limit reached: four contracts per UTC day.";
+                else if(response.statusCode()==429) message="[Quests] Daily limit reached: two contracts per UTC day.";
                 else if(response.statusCode()==402) message="[Quests] No funded coin reward is available. Coin shares renew at UTC midnight after observed activity; your existing coins are unchanged.";
                 else if(response.statusCode()!=200) message="[Quests] Cannot load your contract. Try again.";
                 else {
                     try {
                         var json=com.google.gson.JsonParser.parseString(response.body());
-                        if(json.isJsonNull()) {contracts.remove(uuid);message="[Quests] Use /quests start to begin the iron starter quest, then /quests start hunting, fishing or farming.";}
+                        if(json.isJsonNull()) {contracts.remove(uuid);message="[Quests] Use /quests to open the Quests Board and begin your Starter Journey.";}
                         else {
                             var contract=json.getAsJsonObject(); contracts.put(uuid,contract);
                             String objective=contract.has("kind")?contract.get("kind").getAsString():"hunting";
                             int progress=contract.get("progress").getAsInt(),target=contract.get("target").getAsInt();
                             String goal=switch(objective) {
+                                case "starter_wood" -> "Gather wood logs: "+progress+"/"+target;
+                                case "starter_bed" -> "Place or sleep in a bed: "+progress+"/"+target;
                                 case "starter_iron" -> "Mine iron ore: "+progress+"/"+target+"; smelt/extract iron ingots: "+contract.get("secondary_progress").getAsInt()+"/"+target;
+                                case "starter_private" -> "Place private territory protection core (/ps buy): "+progress+"/"+target;
                                 case "fishing" -> "Catch fish with a rod: "+progress+"/"+target;
                                 case "farming" -> "Harvest mature wheat, carrots, potatoes or beetroot: "+progress+"/"+target;
                                 case "mining" -> "Mine natural underground ores: "+progress+"/"+target;
@@ -2070,7 +2150,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                             };
                             String legacy="";
                             if(contract.has("iron") && (contract.get("iron").getAsInt()>0||contract.get("bread").getAsInt()>0||contract.get("xp").getAsInt()>0))legacy="; existing promised items: "+contract.get("iron")+" iron, "+contract.get("bread")+" bread, "+contract.get("xp")+" XP";
-                            message="[Quests] "+(contract.get("status").getAsString().equals("paid")?"completed":contract.get("status").getAsString())+": "+goal+". Reward: "+contract.get("reward").getAsLong()+" coins"+legacy+". "+(objective.equals("starter_iron")?"Complete both objectives to unlock repeatable quests. No free iron or bonus XP. ":"")+"Four contracts per UTC day; 24-hour expiry. Use /quests (visual GUI) or /quests start [hunting|fishing|farming|mining].";
+                            message="[Quests] "+(contract.get("status").getAsString().equals("paid")?"completed":contract.get("status").getAsString())+": "+goal+". Reward: "+contract.get("reward").getAsLong()+" coins"+legacy+". Two contracts per UTC day; 24-hour expiry. Use /quests (visual GUI) or /quests start [hunting|fishing|farming|mining].";
                         }
                     }catch(Exception error) {message="[Quests] Could not read the contract. Try again.";}
                 }
@@ -2156,7 +2236,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     player.sendMessage("[Quests] The panel is unavailable. Try again.");
                     player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
                 } else if (response.statusCode() == 429) {
-                    player.sendMessage("[Quests] Daily limit reached: four contracts per UTC day.");
+                    player.sendMessage("[Quests] Daily limit reached: two contracts per UTC day.");
                     player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
                 } else if (response.statusCode() == 402) {
                     player.sendMessage("[Quests] No funded coin reward is available. Coin shares renew at UTC midnight.");
@@ -2174,7 +2254,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.9f, 1.2f);
                         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.7f, 1.4f);
                         String kindName = switch (startedKind) {
+                            case "starter_wood" -> "Starter: Wood Gathering";
+                            case "starter_bed" -> "Starter: A Safe Night";
                             case "starter_iron" -> "Starter: The Iron Forge";
+                            case "starter_private" -> "Starter: Claim Territory";
                             case "hunting" -> "Hunting";
                             case "fishing" -> "Fishing";
                             case "farming" -> "Farming";
@@ -2192,12 +2275,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     }
 
     private void buildAndOpenQuestsInventory(Player player, com.google.gson.JsonObject overview) {
-        QuestHolder holder = new QuestHolder(36, "§8Quests & Contracts Board", overview);
+        QuestHolder holder = new QuestHolder(45, "§8Quests & Contracts Board", overview);
         org.bukkit.inventory.Inventory inv = holder.getInventory();
 
         boolean starterCompleted = overview.has("starter_completed") && overview.get("starter_completed").getAsBoolean();
+        int starterStep = overview.has("starter_step") ? overview.get("starter_step").getAsInt() : (starterCompleted ? 5 : 1);
         int completedToday = overview.has("daily_completed_today") ? overview.get("daily_completed_today").getAsInt() : 0;
-        int dailyLimit = overview.has("daily_limit") ? overview.get("daily_limit").getAsInt() : 4;
+        int dailyLimit = overview.has("daily_limit") ? overview.get("daily_limit").getAsInt() : 2;
         long coins = overview.has("coins") ? overview.get("coins").getAsLong() : 0;
         long reward = overview.has("reward") ? overview.get("reward").getAsLong() : 0;
         long baseReward = overview.has("base_reward") ? overview.get("base_reward").getAsLong() : reward;
@@ -2220,7 +2304,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             bm.displayName(net.kyori.adventure.text.Component.text("§7 "));
             border.setItemMeta(bm);
         }
-        for (int i = 0; i < 36; i++) {
+        for (int i = 0; i < 45; i++) {
             inv.setItem(i, border.clone());
         }
 
@@ -2232,12 +2316,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             List<net.kyori.adventure.text.Component> lore = new ArrayList<>();
             lore.add(net.kyori.adventure.text.Component.text("§7Player: §f" + player.getName()));
             lore.add(net.kyori.adventure.text.Component.text(String.format(Locale.ROOT, "§7Coin Balance: §6%,d coins", coins)));
-            lore.add(net.kyori.adventure.text.Component.text("§7Starter Journey: " + (starterCompleted ? "§a✔ Completed" : "§e⭐ In Progress")));
+            lore.add(net.kyori.adventure.text.Component.text("§7Starter Journey: " + (starterCompleted ? "§a✔ Completed" : "§e⭐ Stage " + starterStep + " of 4")));
             lore.add(net.kyori.adventure.text.Component.text("§7Daily Contracts Completed: §b" + completedToday + "/" + dailyLimit + " §7Today"));
-            lore.add(net.kyori.adventure.text.Component.text("§7Current Funded Reward: §6" + reward + " coins" + (reward < baseReward ? " §8(Base: " + baseReward + ")" : "")));
+            lore.add(net.kyori.adventure.text.Component.text("§7Funded Daily Reward: §6" + reward + " coins" + (reward < baseReward ? " §8(Base: " + baseReward + ")" : "")));
             lore.add(net.kyori.adventure.text.Component.text("§8--------------------------------"));
             if (active != null && "active".equals(active.get("status").getAsString())) {
-                lore.add(net.kyori.adventure.text.Component.text("§a▶ Active Quest: §e" + active.get("kind").getAsString()));
+                String activeKind = active.get("kind").getAsString();
+                lore.add(net.kyori.adventure.text.Component.text("§a▶ Active Quest: §e" + activeKind));
             } else {
                 lore.add(net.kyori.adventure.text.Component.text("§eClick an available contract to begin!"));
             }
@@ -2246,98 +2331,72 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         inv.setItem(4, stats);
 
+        // Row 1: The 4 Starter Stages
+        inv.setItem(10, createStarterStageItem(1, "starter_wood", "Wood Gathering", "Gather 16 wood logs from trees", 16, 50, Material.OAK_LOG, active, starterStep, starterCompleted));
+        inv.setItem(11, createStageArrowItem(2));
+        inv.setItem(12, createStarterStageItem(2, "starter_bed", "A Safe Night", "Craft and place or sleep in a bed", 1, 50, Material.RED_BED, active, starterStep, starterCompleted));
+        inv.setItem(13, createStageArrowItem(3));
+        inv.setItem(14, createStarterStageItem(3, "starter_iron", "The Iron Forge", "Mine 10 raw iron & smelt 10 iron ingots", 10, 100, Material.BLAST_FURNACE, active, starterStep, starterCompleted));
+        inv.setItem(15, createStageArrowItem(4));
+        inv.setItem(16, createStarterStageItem(4, "starter_private", "Claim Territory", "Place a private territory core (/ps buy)", 1, 150, Material.LODESTONE, active, starterStep, starterCompleted));
+
+        // Row 2: Daily Contracts Board (Slots 19, 21, 23, 25)
         if (!starterCompleted) {
-            // Starter Quest at Slot 13
-            ItemStack starterItem = new ItemStack(Material.BLAST_FURNACE);
-            ItemMeta stm = starterItem.getItemMeta();
-            if (stm != null) {
-                stm.displayName(net.kyori.adventure.text.Component.text("§6§l⭐ Starter Quest: The Iron Forge"));
-                List<net.kyori.adventure.text.Component> lore = new ArrayList<>();
-                lore.add(net.kyori.adventure.text.Component.text("§7Prove your mastery of raw materials to graduate"));
-                lore.add(net.kyori.adventure.text.Component.text("§7from the starter trials and unlock Daily Contracts."));
-                lore.add(net.kyori.adventure.text.Component.text("§8--------------------------------"));
-
-                boolean isActive = active != null && "starter_iron".equals(active.get("kind").getAsString()) && "active".equals(active.get("status").getAsString());
-                int mined = isActive ? active.get("progress").getAsInt() : 0;
-                int smelted = isActive ? active.get("secondary_progress").getAsInt() : 0;
-                int target = isActive ? active.get("target").getAsInt() : 10;
-                int totalProgress = mined + smelted;
-                int maxProgress = target * 2;
-                int pct = maxProgress > 0 ? (int) Math.round(((double) totalProgress / maxProgress) * 100) : 0;
-
-                lore.add(net.kyori.adventure.text.Component.text("§f • Mine Iron Ore: §e" + mined + "/" + target));
-                lore.add(net.kyori.adventure.text.Component.text("§f • Smelt Iron Ingots: §e" + smelted + "/" + target));
-                lore.add(net.kyori.adventure.text.Component.text("§8--------------------------------"));
-                lore.add(net.kyori.adventure.text.Component.text("§7Live Progress: " + formatQuestProgressBar(totalProgress, maxProgress, 12) + " §b" + pct + "%"));
-                lore.add(net.kyori.adventure.text.Component.text("§7Reward: §6350 coins"));
-                lore.add(net.kyori.adventure.text.Component.text("§8--------------------------------"));
-                if (isActive) {
-                    lore.add(net.kyori.adventure.text.Component.text("§a§l▶ ACTIVE ONBOARDING QUEST"));
-                    stm.addEnchant(Enchantment.LURE, 1, true);
-                    stm.addItemFlags(ItemFlag.HIDE_ENCHANTS);
-                } else {
-                    lore.add(net.kyori.adventure.text.Component.text("§e§lClick to Begin Starter Quest!"));
-                }
-                stm.lore(lore);
-                starterItem.setItemMeta(stm);
-            }
-            inv.setItem(13, starterItem);
-
-            // Locked Daily Contracts at 10, 12, 14, 16
-            inv.setItem(10, createLockedContractItem("Hunting", huntingTarget, reward, Material.DIAMOND_SWORD));
-            inv.setItem(12, createLockedContractItem("Fishing", fishingTarget, reward, Material.FISHING_ROD));
-            inv.setItem(14, createLockedContractItem("Farming", farmingTarget, reward, Material.GOLDEN_HOE));
-            inv.setItem(16, createLockedContractItem("Mining", miningTarget, reward, Material.DIAMOND_PICKAXE));
+            inv.setItem(19, createLockedContractItem("Hunting", huntingTarget, reward, Material.DIAMOND_SWORD));
+            inv.setItem(21, createLockedContractItem("Fishing", fishingTarget, reward, Material.FISHING_ROD));
+            inv.setItem(23, createLockedContractItem("Farming", farmingTarget, reward, Material.GOLDEN_HOE));
+            inv.setItem(25, createLockedContractItem("Mining", miningTarget, reward, Material.DIAMOND_PICKAXE));
         } else {
-            // Starter completed! Show active or selectable Daily Contracts
-            inv.setItem(10, createDailyContractItem("hunting", "🏹 Hunting Contract",
-                "Track down and slay natural hostile monsters.", huntingTarget, reward, Material.DIAMOND_SWORD, active, completedToday >= dailyLimit));
-            inv.setItem(12, createDailyContractItem("fishing", "🎣 Fishing Contract",
-                "Cast your line and catch fish from rivers and seas.", fishingTarget, reward, Material.FISHING_ROD, active, completedToday >= dailyLimit));
-            inv.setItem(14, createDailyContractItem("farming", "🌾 Farming Contract",
-                "Harvest mature wheat, carrots, potatoes, or beetroots.", farmingTarget, reward, Material.GOLDEN_HOE, active, completedToday >= dailyLimit));
-            inv.setItem(16, createDailyContractItem("mining", "⛏ Mining Contract",
-                "Delve deep underground and mine natural ores.", miningTarget, reward, Material.DIAMOND_PICKAXE, active, completedToday >= dailyLimit));
-
-            // Slot 13: Completed Starter Badge
-            ItemStack starterDone = new ItemStack(Material.EXPERIENCE_BOTTLE);
-            ItemMeta sdm = starterDone.getItemMeta();
-            if (sdm != null) {
-                sdm.displayName(net.kyori.adventure.text.Component.text("§6§l⭐ Starter Trials: Graduated"));
-                sdm.lore(List.of(
-                    net.kyori.adventure.text.Component.text("§7You have conquered the introductory trials!"),
-                    net.kyori.adventure.text.Component.text("§a✔ The Daily Contracts Board is permanently unlocked."),
-                    net.kyori.adventure.text.Component.text("§7Complete up to 4 contracts every UTC day.")
-                ));
-                starterDone.setItemMeta(sdm);
-            }
-            inv.setItem(13, starterDone);
+            inv.setItem(19, createDailyContractItem("hunting", "🏹 Hunting Contract", "Track down and slay natural hostile monsters.", huntingTarget, reward, Material.DIAMOND_SWORD, active, completedToday >= dailyLimit));
+            inv.setItem(21, createDailyContractItem("fishing", "🎣 Fishing Contract", "Cast your line and catch fish from rivers and seas.", fishingTarget, reward, Material.FISHING_ROD, active, completedToday >= dailyLimit));
+            inv.setItem(23, createDailyContractItem("farming", "🌾 Farming Contract", "Harvest mature wheat, carrots, potatoes, or beetroots.", farmingTarget, reward, Material.GOLDEN_HOE, active, completedToday >= dailyLimit));
+            inv.setItem(25, createDailyContractItem("mining", "⛏ Mining Contract", "Delve deep underground and mine natural ores.", miningTarget, reward, Material.DIAMOND_PICKAXE, active, completedToday >= dailyLimit));
         }
 
-        // Slot 22: Active Tracker Compass
-        if (active != null && "active".equals(active.get("status").getAsString())) {
-            ItemStack tracker = new ItemStack(Material.COMPASS);
-            ItemMeta tm = tracker.getItemMeta();
-            if (tm != null) {
+        // Slot 31: Active Tracker Compass
+        ItemStack tracker = new ItemStack(Material.COMPASS);
+        ItemMeta tm = tracker.getItemMeta();
+        if (tm != null) {
+            if (active != null && "active".equals(active.get("status").getAsString())) {
                 String activeKind = active.get("kind").getAsString();
                 int prog = active.get("progress").getAsInt();
                 int tgt = active.get("target").getAsInt();
-                int pct = tgt > 0 ? (int) Math.round(((double) prog / tgt) * 100) : 0;
                 tm.displayName(net.kyori.adventure.text.Component.text("§e§l🧭 Active Objective Tracker"));
                 List<net.kyori.adventure.text.Component> tlore = new ArrayList<>();
                 tlore.add(net.kyori.adventure.text.Component.text("§7Objective: §f" + activeKind.toUpperCase(Locale.ROOT)));
-                tlore.add(net.kyori.adventure.text.Component.text("§7Progress: §e" + prog + "/" + tgt + " (" + pct + "%)"));
-                tlore.add(net.kyori.adventure.text.Component.text("§7Bar: " + formatQuestProgressBar(prog, tgt, 14)));
+                if ("starter_iron".equals(activeKind)) {
+                    int mined = prog;
+                    int smelted = active.get("secondary_progress").getAsInt();
+                    tlore.add(net.kyori.adventure.text.Component.text("§f • Mine Iron Ore: §e" + mined + "/" + tgt));
+                    tlore.add(net.kyori.adventure.text.Component.text("§f • Smelt Iron Ingots: §e" + smelted + "/" + tgt));
+                    int total = mined + smelted;
+                    int max = tgt * 2;
+                    int pct = max > 0 ? (int) Math.round(((double) total / max) * 100) : 0;
+                    tlore.add(net.kyori.adventure.text.Component.text("§7Progress: §e" + total + "/" + max + " (" + pct + "%)"));
+                    tlore.add(net.kyori.adventure.text.Component.text("§7Bar: " + formatQuestProgressBar(total, max, 14)));
+                } else {
+                    int pct = tgt > 0 ? (int) Math.round(((double) prog / tgt) * 100) : 0;
+                    tlore.add(net.kyori.adventure.text.Component.text("§7Progress: §e" + prog + "/" + tgt + " (" + pct + "%)"));
+                    tlore.add(net.kyori.adventure.text.Component.text("§7Bar: " + formatQuestProgressBar(prog, tgt, 14)));
+                }
                 if (active.has("expires")) {
                     tlore.add(net.kyori.adventure.text.Component.text("§7Time Remaining: §e" + formatQuestExpiry(active.get("expires").getAsLong())));
                 }
                 tm.lore(tlore);
-                tracker.setItemMeta(tm);
+                tm.addEnchant(Enchantment.LURE, 1, true);
+                tm.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+            } else {
+                tm.displayName(net.kyori.adventure.text.Component.text("§7🧭 Objective Tracker"));
+                tm.lore(List.of(
+                    net.kyori.adventure.text.Component.text("§7No active quest selected."),
+                    net.kyori.adventure.text.Component.text("§eClick any available quest above to start.")
+                ));
             }
-            inv.setItem(22, tracker);
+            tracker.setItemMeta(tm);
         }
+        inv.setItem(31, tracker);
 
-        // Slot 30: Refresh
+        // Slot 38: Refresh
         ItemStack refresh = new ItemStack(Material.CLOCK);
         ItemMeta rm = refresh.getItemMeta();
         if (rm != null) {
@@ -2348,25 +2407,28 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             ));
             refresh.setItemMeta(rm);
         }
-        inv.setItem(30, refresh);
+        inv.setItem(38, refresh);
 
-        // Slot 31: Starter Journey Info
+        // Slot 40: Quest Guidelines
         ItemStack book = new ItemStack(Material.BOOK);
         ItemMeta bom = book.getItemMeta();
         if (bom != null) {
             bom.displayName(net.kyori.adventure.text.Component.text("§6§l⭐ Quest Guidelines"));
             bom.lore(List.of(
-                net.kyori.adventure.text.Component.text("§7• 4 Contracts allowed per UTC day."),
+                net.kyori.adventure.text.Component.text("§7• 2 Daily Contracts allowed per UTC day."),
+                net.kyori.adventure.text.Component.text("§7• Complete the 4 Starter Stages to unlock Daily Board."),
+                net.kyori.adventure.text.Component.text("§7• Stage 1: Gather 16 wood logs."),
+                net.kyori.adventure.text.Component.text("§7• Stage 2: Place or sleep in a bed."),
+                net.kyori.adventure.text.Component.text("§7• Stage 3: Mine 10 iron & smelt 10 ingots."),
+                net.kyori.adventure.text.Component.text("§7• Stage 4: Place territory core (/ps buy)."),
                 net.kyori.adventure.text.Component.text("§7• Contracts expire after 24 hours."),
-                net.kyori.adventure.text.Component.text("§7• Hostile monsters must be natural."),
-                net.kyori.adventure.text.Component.text("§7• Only natural unplaced ores qualify."),
-                net.kyori.adventure.text.Component.text("§7• Harvest only fully mature crops.")
+                net.kyori.adventure.text.Component.text("§7• Hostile monsters, ores, and logs must be natural.")
             ));
             book.setItemMeta(bom);
         }
-        inv.setItem(31, book);
+        inv.setItem(40, book);
 
-        // Slot 32: Close
+        // Slot 42: Close
         ItemStack close = new ItemStack(Material.BARRIER);
         ItemMeta cm = close.getItemMeta();
         if (cm != null) {
@@ -2374,10 +2436,74 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             cm.lore(List.of(net.kyori.adventure.text.Component.text("§7Click to exit the quest board.")));
             close.setItemMeta(cm);
         }
-        inv.setItem(32, close);
+        inv.setItem(42, close);
 
         player.openInventory(inv);
         player.playSound(player.getLocation(), Sound.BLOCK_CHEST_OPEN, 0.8f, 1.2f);
+    }
+
+    private ItemStack createStageArrowItem(int nextStage) {
+        ItemStack item = new ItemStack(Material.ORANGE_STAINED_GLASS_PANE);
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            meta.displayName(net.kyori.adventure.text.Component.text("§6➔ §eStage " + nextStage));
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
+    private ItemStack createStarterStageItem(int stage, String kind, String title, String desc, int target, long stageReward, Material icon, com.google.gson.JsonObject active, int currentStep, boolean allCompleted) {
+        boolean isDone = allCompleted || currentStep > stage;
+        boolean isCurrent = !allCompleted && currentStep == stage;
+        boolean isActive = active != null && kind.equals(active.get("kind").getAsString()) && "active".equals(active.get("status").getAsString());
+
+        ItemStack item = new ItemStack(icon);
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return item;
+
+        List<net.kyori.adventure.text.Component> lore = new ArrayList<>();
+        lore.add(net.kyori.adventure.text.Component.text("§7Stage " + stage + ": " + desc));
+        lore.add(net.kyori.adventure.text.Component.text("§8--------------------------------"));
+
+        if (isDone) {
+            meta.displayName(net.kyori.adventure.text.Component.text("§a§l✔ Stage " + stage + ": " + title + " §2[DONE]"));
+            lore.add(net.kyori.adventure.text.Component.text("§a✔ Completed! Reward: §6" + stageReward + " coins"));
+            meta.addEnchant(Enchantment.LURE, 1, true);
+            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+        } else if (isCurrent) {
+            meta.displayName(net.kyori.adventure.text.Component.text("§e§l⭐ Stage " + stage + ": " + title + (isActive ? " §a[ACTIVE]" : " §e[CURRENT]")));
+            if ("starter_iron".equals(kind)) {
+                int mined = isActive ? active.get("progress").getAsInt() : 0;
+                int smelted = isActive ? active.get("secondary_progress").getAsInt() : 0;
+                int total = mined + smelted;
+                int max = target * 2;
+                int pct = max > 0 ? (int) Math.round(((double) total / max) * 100) : 0;
+                lore.add(net.kyori.adventure.text.Component.text("§f • Mine Iron Ore: §e" + mined + "/" + target));
+                lore.add(net.kyori.adventure.text.Component.text("§f • Smelt Iron Ingots: §e" + smelted + "/" + target));
+                lore.add(net.kyori.adventure.text.Component.text("§7Live Progress: " + formatQuestProgressBar(total, max, 12) + " §b" + pct + "%"));
+            } else {
+                int prog = isActive ? active.get("progress").getAsInt() : 0;
+                int pct = target > 0 ? (int) Math.round(((double) prog / target) * 100) : 0;
+                lore.add(net.kyori.adventure.text.Component.text("§f • Objective: §e" + prog + "/" + target));
+                lore.add(net.kyori.adventure.text.Component.text("§7Live Progress: " + formatQuestProgressBar(prog, target, 12) + " §b" + pct + "%"));
+            }
+            lore.add(net.kyori.adventure.text.Component.text("§7Stage Reward: §6" + stageReward + " coins"));
+            lore.add(net.kyori.adventure.text.Component.text("§8--------------------------------"));
+            if (isActive) {
+                lore.add(net.kyori.adventure.text.Component.text("§a§l▶ Currently tracking progress"));
+                meta.addEnchant(Enchantment.LURE, 1, true);
+                meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+            } else {
+                lore.add(net.kyori.adventure.text.Component.text("§e§lClick to Begin Stage " + stage + "!"));
+            }
+        } else {
+            meta.displayName(net.kyori.adventure.text.Component.text("§c§l🔒 Stage " + stage + ": " + title));
+            lore.add(net.kyori.adventure.text.Component.text("§cLocked! Complete Stage " + (stage - 1) + " first."));
+            lore.add(net.kyori.adventure.text.Component.text("§7Target: §e" + target + " §7| Reward: §6" + stageReward + " coins"));
+        }
+        meta.lore(lore);
+        item.setItemMeta(meta);
+        return item;
     }
 
     private ItemStack createLockedContractItem(String kindName, int target, long reward, Material icon) {
@@ -2386,10 +2512,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (meta != null) {
             meta.displayName(net.kyori.adventure.text.Component.text("§c§l🔒 " + kindName + " Contract"));
             meta.lore(List.of(
-                net.kyori.adventure.text.Component.text("§7Requirement: §eComplete Starter Quest (The Iron Forge)"),
-                net.kyori.adventure.text.Component.text("§7Standard Target: §e" + target + " §7| Reward: §6" + reward + " coins"),
+                net.kyori.adventure.text.Component.text("§7Requirement: §eComplete all 4 Starter Stages"),
+                net.kyori.adventure.text.Component.text("§7Target: §e" + target + " §7| Daily Limit: §b2 contracts/day"),
                 net.kyori.adventure.text.Component.text(""),
-                net.kyori.adventure.text.Component.text("§8Prove your mastery of metallurgy to unlock.")
+                net.kyori.adventure.text.Component.text("§8Graduate from the Starter Trials to unlock.")
             ));
             item.setItemMeta(meta);
         }
@@ -2434,7 +2560,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             if (otherActive) {
                 lore.add(net.kyori.adventure.text.Component.text("§eAnother contract is currently in progress."));
             } else if (limitReached) {
-                lore.add(net.kyori.adventure.text.Component.text("§cDaily limit of 4 contracts reached."));
+                lore.add(net.kyori.adventure.text.Component.text("§cDaily limit of 2 contracts reached today."));
             } else {
                 lore.add(net.kyori.adventure.text.Component.text("§a§lClick to Accept Contract!"));
             }
@@ -5706,6 +5832,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 );
                 placedPrivateBlocks.put(blockKey(loc), pb);
                 syncPrivateBlockAsync(pb);
+                questProgress(player, "starter_private", 8, 1);
                 block.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, loc.clone().add(0.5, 0.5, 0.5), 25);
                 player.playSound(loc, org.bukkit.Sound.BLOCK_BEACON_ACTIVATE, 1.0f, 1.0f);
                 player.sendMessage("§6[Private] Protection core placed!");

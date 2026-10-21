@@ -15,7 +15,7 @@ use sqlx::Row;
 const SESSION_TTL_HOURS: i32 = 24;
 const MAX_LINKED_ACCOUNTS: i64 = 4;
 const ECONOMY_STARTER_GRANT: i64 = 100;
-const ECONOMY_DAILY_CONTRACT_LIMIT: i64 = 4;
+const ECONOMY_DAILY_CONTRACT_LIMIT: i64 = 2;
 const MARKET_MAX_PENDING_DELIVERIES: i64 = 5;
 
 #[tokio::main]
@@ -4846,6 +4846,12 @@ struct EconomyDay {
     iron_mined: i32,
     #[serde(default, skip_serializing_if = "zero_quest_counter")]
     iron_smelted: i32,
+    #[serde(default, skip_serializing_if = "zero_quest_counter")]
+    wood_collected: i32,
+    #[serde(default, skip_serializing_if = "zero_quest_counter")]
+    bed_used: i32,
+    #[serde(default, skip_serializing_if = "zero_quest_counter")]
+    private_placed: i32,
     contract_id: Option<String>,
 }
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -4874,6 +4880,9 @@ async fn report_economy(
                     d.crops_harvested,
                     d.iron_mined,
                     d.iron_smelted,
+                    d.wood_collected,
+                    d.bed_used,
+                    d.private_placed,
                 ]
                 .iter()
                 .any(|v| !(0..=10000).contains(v))
@@ -4930,21 +4939,53 @@ async fn report_economy(
         if let Some(id) = &day.contract_id {
             // Reports can arrive late, but only kills measured during the accepted
             // contract's UTC day range can advance it. Plugin also checks exact expiry.
-            let row=sqlx::query("UPDATE economy_contracts SET progress=least(target,progress+CASE kind WHEN 'hunting' THEN $3 WHEN 'fishing' THEN $5 WHEN 'farming' THEN $6 WHEN 'mining' THEN $7 ELSE $7 END),secondary_progress=least(target,secondary_progress+CASE WHEN kind='starter_iron' THEN $8 ELSE 0 END) WHERE id=$1 AND uuid=$2 AND status='active' AND $4::date BETWEEN created_at::date AND expires_at::date RETURNING kind,target,progress,secondary_progress,reward,budget_day::text AS budget_day,reward_iron,reward_bread,reward_xp")
-                .bind(id).bind(&body.uuid).bind(day.kills).bind(&day.day).bind(day.fish_caught).bind(day.crops_harvested).bind(day.iron_mined).bind(day.iron_smelted).fetch_optional(&mut *tx).await.map_err(market_db)?;
+            let row = sqlx::query(
+                "UPDATE economy_contracts SET
+                    progress = least(target, progress + CASE kind
+                        WHEN 'hunting' THEN $3
+                        WHEN 'fishing' THEN $5
+                        WHEN 'farming' THEN $6
+                        WHEN 'mining' THEN $7
+                        WHEN 'starter_wood' THEN $9
+                        WHEN 'starter_bed' THEN $10
+                        WHEN 'starter_private' THEN $11
+                        ELSE $7
+                    END),
+                    secondary_progress = least(target, secondary_progress + CASE WHEN kind='starter_iron' THEN $8 ELSE 0 END)
+                WHERE id=$1 AND uuid=$2 AND status='active' AND $4::date BETWEEN created_at::date AND expires_at::date
+                RETURNING kind,target,progress,secondary_progress,reward,budget_day::text AS budget_day,reward_iron,reward_bread,reward_xp"
+            )
+            .bind(id)
+            .bind(&body.uuid)
+            .bind(day.kills)
+            .bind(&day.day)
+            .bind(day.fish_caught)
+            .bind(day.crops_harvested)
+            .bind(day.iron_mined)
+            .bind(day.iron_smelted)
+            .bind(day.wood_collected)
+            .bind(day.bed_used)
+            .bind(day.private_placed)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(market_db)?;
             if let Some(row) = row {
-                if row.get::<i32, _>("progress") == row.get::<i32, _>("target")
-                    && (row.get::<String, _>("kind") != "starter_iron"
-                        || row.get::<i32, _>("secondary_progress") == row.get::<i32, _>("target"))
-                {
+                let kind = row.get::<String, _>("kind");
+                let target = row.get::<i32, _>("target");
+                let progress = row.get::<i32, _>("progress");
+                let secondary = row.get::<i32, _>("secondary_progress");
+                let completed = progress == target && (kind != "starter_iron" || secondary == target);
+                if completed {
                     let reward: i64 = row.get("reward");
                     coin_reason(&mut tx, "quest_reward", id).await?;
                     if reward > 0 {
                         credit_coins(&mut tx, &body.uuid, reward).await?;
                     }
                     if let Some(day) = row.get::<Option<String>, _>("budget_day") {
-                        sqlx::query("UPDATE economy_allowances SET reserved=reserved-$3,paid=paid+$3 WHERE day=$1::date AND uuid=$2").bind(&day).bind(&body.uuid).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
-                        sqlx::query("UPDATE economy_budgets SET reserved=reserved-$2,issued=issued+$2 WHERE day=$1::date").bind(&day).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
+                        if reward > 0 {
+                            sqlx::query("UPDATE economy_allowances SET reserved=reserved-$3,paid=paid+$3 WHERE day=$1::date AND uuid=$2").bind(&day).bind(&body.uuid).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
+                            sqlx::query("UPDATE economy_budgets SET reserved=reserved-$2,issued=issued+$2 WHERE day=$1::date").bind(&day).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
+                        }
                     }
                     let iron: i32 = row.get("reward_iron");
                     let bread: i32 = row.get("reward_bread");
@@ -4952,12 +4993,26 @@ async fn report_economy(
                     if iron + bread + xp > 0 {
                         sqlx::query("INSERT INTO economy_tasks(id,uuid,kind,contract_id,iron,bread,xp) VALUES($1,$2,'reward',$1,$3,$4,$5)").bind(id).bind(&body.uuid).bind(iron).bind(bread).bind(xp).execute(&mut *tx).await.map_err(market_db)?;
                     }
+                    let (is_starter, next_step, starter_done) = match kind.as_str() {
+                        "starter_wood" => (true, 2, false),
+                        "starter_bed" => (true, 3, false),
+                        "starter_iron" => (true, 4, false),
+                        "starter_private" => (true, 5, true),
+                        _ => (false, 1, false),
+                    };
                     sqlx::query(
-                        "UPDATE economy_players SET quest_earned=quest_earned+$2,contracts_completed=contracts_completed+1,starter_completed=starter_completed OR $3 WHERE uuid=$1",
+                        "UPDATE economy_players SET
+                            quest_earned = quest_earned + $2,
+                            contracts_completed = contracts_completed + 1,
+                            starter_step = CASE WHEN $3 THEN greatest(starter_step, $4) ELSE starter_step END,
+                            starter_completed = starter_completed OR $5
+                         WHERE uuid = $1",
                     )
                     .bind(&body.uuid)
                     .bind(reward)
-                    .bind(row.get::<String,_>("kind")=="starter_iron")
+                    .bind(is_starter)
+                    .bind(next_step)
+                    .bind(starter_done)
                     .execute(&mut *tx)
                     .await
                     .map_err(market_db)?;
@@ -4985,7 +5040,10 @@ fn contract_terms(earned: i64, level: i32) -> (i32, i64) {
 }
 fn quest_target(kind: &str, hunting: i32) -> i32 {
     match kind {
+        "starter_wood" => 16,
+        "starter_bed" => 1,
         "starter_iron" => 10,
+        "starter_private" => 1,
         "fishing" => (hunting + 1) / 2,
         "farming" => (hunting * 16 + 9) / 10,
         "mining" => (hunting * 12 + 5) / 10,
@@ -5021,7 +5079,7 @@ async fn economy_contract(
     if body
         .kind
         .as_deref()
-        .is_some_and(|kind| !matches!(kind, "hunting" | "fishing" | "farming" | "mining"))
+        .is_some_and(|kind| !matches!(kind, "hunting" | "fishing" | "farming" | "mining" | "starter_wood" | "starter_bed" | "starter_iron" | "starter_private"))
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -5037,32 +5095,67 @@ async fn economy_contract(
     .await
     .map_err(market_db)?;
     if body.start && !active {
-        let count: i64=sqlx::query_scalar("SELECT count(*) FROM economy_contracts WHERE uuid=$1 AND created_at>=date_trunc('day',now())")
-            .bind(&body.uuid).fetch_one(&mut *tx).await.map_err(market_db)?;
-        if count >= ECONOMY_DAILY_CONTRACT_LIMIT {
-            return Err(StatusCode::TOO_MANY_REQUESTS);
-        }
         let player = sqlx::query(
-            "SELECT quest_earned,contracts_completed,starter_completed FROM economy_players WHERE uuid=$1",
+            "SELECT quest_earned,contracts_completed,starter_completed,starter_step FROM economy_players WHERE uuid=$1",
         )
         .bind(&body.uuid)
         .fetch_one(&mut *tx)
         .await
         .map_err(market_db)?;
+        let starter_completed: bool = player.get("starter_completed");
+        if starter_completed {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM economy_contracts WHERE uuid=$1 AND created_at>=date_trunc('day',now()) AND kind NOT LIKE 'starter_%'",
+            )
+            .bind(&body.uuid)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(market_db)?;
+            if count >= ECONOMY_DAILY_CONTRACT_LIMIT {
+                return Err(StatusCode::TOO_MANY_REQUESTS);
+            }
+        }
         let level = economy_policy(&mut *tx).await?.level;
         let (hunting_target, base_reward) = contract_terms(player.get("quest_earned"), level);
-        let kind = if player.get::<bool, _>("starter_completed") {
+        let kind = if starter_completed {
             body.kind.as_deref().unwrap_or("hunting")
         } else {
-            "starter_iron"
+            match player.get::<i32, _>("starter_step") {
+                1 => "starter_wood",
+                2 => "starter_bed",
+                3 => "starter_iron",
+                4 => "starter_private",
+                _ => "starter_wood",
+            }
         };
         let target = quest_target(kind, hunting_target);
-        let remaining:Option<i64>=sqlx::query_scalar("SELECT allowance-reserved-paid FROM economy_allowances WHERE day=current_date AND uuid=$1").bind(&body.uuid).fetch_optional(&mut *tx).await.map_err(market_db)?;
-        let reward = base_reward.min(remaining.unwrap_or(0));
-        if reward == 0 && kind != "starter_iron" {
+        let remaining: Option<i64> = sqlx::query_scalar(
+            "SELECT allowance-reserved-paid FROM economy_allowances WHERE day=current_date AND uuid=$1",
+        )
+        .bind(&body.uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(market_db)?;
+        let reward = if kind.starts_with("starter_") {
+            let starter_coin_reward = match kind {
+                "starter_wood" => 50,
+                "starter_bed" => 50,
+                "starter_iron" => 100,
+                "starter_private" => 150,
+                _ => 50,
+            };
+            if remaining.is_some() {
+                starter_coin_reward.min(remaining.unwrap_or(0))
+            } else {
+                0
+            }
+        } else {
+            base_reward.min(remaining.unwrap_or(0))
+        };
+        if reward == 0 && !kind.starts_with("starter_") {
             return Err(StatusCode::PAYMENT_REQUIRED);
         }
-        if remaining.is_some() {
+        if remaining.is_some() && reward > 0 {
             sqlx::query("UPDATE economy_allowances SET reserved=reserved+$2 WHERE day=current_date AND uuid=$1").bind(&body.uuid).bind(reward).execute(&mut *tx).await.map_err(market_db)?;
             sqlx::query("UPDATE economy_budgets SET reserved=reserved+$1 WHERE day=current_date")
                 .bind(reward)
@@ -5097,7 +5190,7 @@ async fn economy_quests_overview(
     expire_player_contracts(&mut tx, &body.uuid).await?;
 
     let player = sqlx::query(
-        "SELECT quest_earned, contracts_completed, starter_completed FROM economy_players WHERE uuid=$1",
+        "SELECT quest_earned, contracts_completed, starter_completed, starter_step FROM economy_players WHERE uuid=$1",
     )
     .bind(&body.uuid)
     .fetch_one(&mut *tx)
@@ -5112,9 +5205,10 @@ async fn economy_quests_overview(
         .unwrap_or(0);
     let earned: i64 = player.get("quest_earned");
     let starter_completed: bool = player.get("starter_completed");
+    let starter_step: i32 = player.get("starter_step");
 
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM economy_contracts WHERE uuid=$1 AND created_at>=date_trunc('day',now())",
+        "SELECT count(*) FROM economy_contracts WHERE uuid=$1 AND created_at>=date_trunc('day',now()) AND kind NOT LIKE 'starter_%'",
     )
     .bind(&body.uuid)
     .fetch_one(&mut *tx)
@@ -5138,6 +5232,7 @@ async fn economy_quests_overview(
 
     Ok(Json(serde_json::json!({
         "starter_completed": starter_completed,
+        "starter_step": starter_step,
         "daily_completed_today": count,
         "daily_limit": ECONOMY_DAILY_CONTRACT_LIMIT,
         "coins": coins,
@@ -15549,12 +15644,12 @@ mod test {
         let b = body_json(b?).await?;
         assert_eq!(a, b);
         assert_eq!(a["reward"], 0);
-        assert_eq!(a["xp"], 0);assert_eq!(a["kind"],"starter_iron");
+        assert_eq!(a["xp"], 0);assert_eq!(a["kind"],"starter_wood");
         let day: String = sqlx::query_scalar("SELECT current_date::text")
             .fetch_one(&pool)
             .await?;
         let id = test_uuid(&random_ip());
-        let report = serde_json::json!({"id":id,"uuid":uuid,"username":"Hunter","days":[{"day":day,"active_seconds":300,"kills":0,"iron_mined":10,"iron_smelted":10,"contract_id":a["id"]}]});
+        let report = serde_json::json!({"id":id,"uuid":uuid,"username":"Hunter","days":[{"day":day,"active_seconds":300,"kills":0,"wood_collected":16,"contract_id":a["id"]}]});
         let (one, two) = tokio::join!(
             post_internal(
                 &pool,
@@ -15649,8 +15744,10 @@ mod test {
             StatusCode::OK
         );
         assert_eq!(coins_of(&pool, &uuid).await?, 100);
-        sqlx::query("UPDATE economy_players SET starter_completed=false WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
-        for _ in 0..3 {
+        sqlx::query("UPDATE economy_budgets SET budget=1000,eligible=1 WHERE day=current_date").execute(&pool).await?;
+        sqlx::query("INSERT INTO economy_allowances(day,uuid,allowance,newcomer) VALUES(current_date,$1,1000,false)").bind(&uuid).execute(&pool).await?;
+        sqlx::query("UPDATE economy_players SET starter_completed=true WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
+        for _ in 0..2 {
             let contract = body_json(
                 post_internal(
                     &pool,
@@ -15679,6 +15776,7 @@ mod test {
             .status(),
             StatusCode::TOO_MANY_REQUESTS
         );
+        sqlx::query("DELETE FROM economy_allowances WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
         sqlx::query("DELETE FROM economy_tasks WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
         sqlx::query("DELETE FROM economy_contracts WHERE uuid=$1")
             .bind(&uuid)
@@ -16082,7 +16180,10 @@ mod test {
             raw,
             "new zero counters must not invalidate a saved pre-upgrade receipt"
         );
+        assert_eq!(quest_target("starter_wood", 2000), 16);
+        assert_eq!(quest_target("starter_bed", 2000), 1);
         assert_eq!(quest_target("starter_iron", 2000), 10);
+        assert_eq!(quest_target("starter_private", 2000), 1);
         assert_eq!(quest_target("fishing", 10), 5);
         assert_eq!(quest_target("farming", 10), 16);
         assert_eq!(quest_target("mining", 10), 12);
@@ -16110,7 +16211,69 @@ mod test {
             .fetch_one(&pool)
             .await?;
         let accept = |kind: &str| serde_json::json!({"uuid":uuid,"username":"BudgetHunter","start":true,"kind":kind});
-        let send = |id: &str, kills: i32, fish: i32, crops: i32, mined: i32, smelted: i32| serde_json::json!({"id":test_uuid(&random_ip()),"uuid":uuid,"username":"BudgetHunter","days":[{"day":day,"active_seconds":0,"kills":kills,"fish_caught":fish,"crops_harvested":crops,"iron_mined":mined,"iron_smelted":smelted,"contract_id":id}]});
+        let send = |id: &str, kills: i32, fish: i32, crops: i32, mined: i32, smelted: i32, wood: i32, bed: i32, private: i32| serde_json::json!({"id":test_uuid(&random_ip()),"uuid":uuid,"username":"BudgetHunter","days":[{"day":day,"active_seconds":0,"kills":kills,"fish_caught":fish,"crops_harvested":crops,"iron_mined":mined,"iron_smelted":smelted,"wood_collected":wood,"bed_used":bed,"private_placed":private,"contract_id":id}]});
+
+        // Stage 1: Wood Gathering
+        let stage1 = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept("fishing"),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(stage1["kind"], "starter_wood");
+        assert_eq!(stage1["target"], 16);
+        assert_eq!(stage1["reward"], 50);
+        let id1 = stage1["id"].as_str().unwrap();
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                send(id1, 0, 0, 0, 0, 0, 16, 0, 0),
+                &ip,
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(coins_of(&pool, &uuid).await?, 150);
+
+        // Stage 2: Safe Night
+        let stage2 = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept("farming"),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(stage2["kind"], "starter_bed");
+        assert_eq!(stage2["target"], 1);
+        assert_eq!(stage2["reward"], 50);
+        let id2 = stage2["id"].as_str().unwrap();
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                send(id2, 0, 0, 0, 0, 0, 0, 1, 0),
+                &ip,
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(coins_of(&pool, &uuid).await?, 200);
+
+        // Stage 3: The Iron Forge
         let starter = body_json(
             post_internal(
                 &pool,
@@ -16124,6 +16287,7 @@ mod test {
         .await?;
         assert_eq!(starter["kind"], "starter_iron");
         assert_eq!(starter["target"], 10);
+        assert_eq!(starter["reward"], 100);
         assert_eq!(starter["iron"], 0);
         assert_eq!(starter["bread"], 0);
         assert_eq!(starter["xp"], 0);
@@ -16133,7 +16297,7 @@ mod test {
                 &pool,
                 "/internal/economy/report",
                 Some(&token),
-                send(id, 100, 100, 100, 0, 10),
+                send(id, 100, 100, 100, 0, 10, 0, 0, 0),
                 &ip
             )
             .await?
@@ -16144,8 +16308,8 @@ mod test {
         assert_eq!(partial["progress"], 0);
         assert_eq!(partial["secondary_progress"], 10);
         assert_eq!(partial["status"], "active");
-        assert_eq!(coins_of(&pool, &uuid).await?, 100);
-        let report = send(id, 0, 0, 0, 10, 0);
+        assert_eq!(coins_of(&pool, &uuid).await?, 200);
+        let report = send(id, 0, 0, 0, 10, 0, 0, 0, 0);
         let (a, b) = tokio::join!(
             post_internal(
                 &pool,
@@ -16164,7 +16328,37 @@ mod test {
         );
         assert_eq!(a?.status(), StatusCode::OK);
         assert_eq!(b?.status(), StatusCode::OK);
-        assert_eq!(coins_of(&pool, &uuid).await?, 350);
+        assert_eq!(coins_of(&pool, &uuid).await?, 300);
+
+        // Stage 4: Claim Territory
+        let stage4 = body_json(
+            post_internal(
+                &pool,
+                "/internal/economy/contract",
+                Some(&token),
+                accept("mining"),
+                &ip,
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(stage4["kind"], "starter_private");
+        assert_eq!(stage4["target"], 1);
+        assert_eq!(stage4["reward"], 150);
+        let id4 = stage4["id"].as_str().unwrap();
+        assert_eq!(
+            post_internal(
+                &pool,
+                "/internal/economy/report",
+                Some(&token),
+                send(id4, 0, 0, 0, 0, 0, 0, 0, 1),
+                &ip,
+            )
+            .await?
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(coins_of(&pool, &uuid).await?, 450);
         assert!(
             sqlx::query_scalar::<_, bool>(
                 "SELECT starter_completed FROM economy_players WHERE uuid=$1"
@@ -16173,7 +16367,9 @@ mod test {
             .fetch_one(&pool)
             .await?
         );
-        for (kind, target) in [("fishing", 5), ("farming", 16), ("hunting", 10)] {
+
+        // Daily Contracts Board unlocked! Test 2 daily contracts quota
+        for (kind, target) in [("fishing", 5), ("farming", 16)] {
             let contract = body_json(
                 post_internal(
                     &pool,
@@ -16204,9 +16400,9 @@ mod test {
             );
             let id = contract["id"].as_str().unwrap();
             let wrong = match kind {
-                "fishing" => send(id, 100, 0, 100, 100, 100),
-                "farming" => send(id, 100, 100, 0, 100, 100),
-                _ => send(id, 0, 100, 100, 100, 100),
+                "fishing" => send(id, 100, 0, 100, 100, 100, 0, 0, 0),
+                "farming" => send(id, 100, 100, 0, 100, 100, 0, 0, 0),
+                _ => send(id, 0, 100, 100, 100, 100, 0, 0, 0),
             };
             assert_eq!(
                 post_internal(&pool, "/internal/economy/report", Some(&token), wrong, &ip)
@@ -16216,9 +16412,9 @@ mod test {
             );
             assert_eq!(budget_contract(&pool, &uuid, false).await?["progress"], 0);
             let correct = match kind {
-                "fishing" => send(id, 0, target, 0, 0, 0),
-                "farming" => send(id, 0, 0, target, 0, 0),
-                _ => send(id, target, 0, 0, 0, 0),
+                "fishing" => send(id, 0, target, 0, 0, 0, 0, 0, 0),
+                "farming" => send(id, 0, 0, target, 0, 0, 0, 0, 0),
+                _ => send(id, target, 0, 0, 0, 0, 0, 0, 0),
             };
             assert_eq!(
                 post_internal(
@@ -16237,7 +16433,7 @@ mod test {
                 "paid"
             );
         }
-        assert_eq!(coins_of(&pool, &uuid).await?, 1100);
+        assert_eq!(coins_of(&pool, &uuid).await?, 950);
         let overview_resp = post_internal(
             &pool,
             "/internal/economy/quests/overview",
@@ -16249,9 +16445,10 @@ mod test {
         assert_eq!(overview_resp.status(), StatusCode::OK);
         let overview = body_json(overview_resp).await?;
         assert!(overview["starter_completed"].as_bool().unwrap());
-        assert_eq!(overview["daily_completed_today"], 4);
-        assert_eq!(overview["daily_limit"], 4);
-        assert_eq!(overview["coins"], 1100);
+        assert_eq!(overview["starter_step"], 5);
+        assert_eq!(overview["daily_completed_today"], 2);
+        assert_eq!(overview["daily_limit"], 2);
+        assert_eq!(overview["coins"], 950);
         assert_eq!(overview["mining_target"], 12);
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT count(*) FROM economy_tasks")
@@ -16284,7 +16481,7 @@ mod test {
             .status(),
             StatusCode::BAD_REQUEST
         );
-        let mut invalid = send(id, 0, 0, 0, 0, 0);
+        let mut invalid = send(id, 0, 0, 0, 0, 0, 0, 0, 0);
         invalid["days"][0]["iron_mined"] = serde_json::json!(-1);
         assert_eq!(
             post_internal(
@@ -16604,7 +16801,7 @@ mod test {
         let newcomer = budget_contract(&pool, &arrival, true).await?;
         assert_eq!(newcomer["reward"], 0);
         assert_eq!(newcomer["iron"], 0);
-        assert_eq!(newcomer["kind"], "starter_iron");
+        assert_eq!(newcomer["kind"], "starter_wood");
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT count(*) FROM economy_allowances")
                 .fetch_one(&pool)

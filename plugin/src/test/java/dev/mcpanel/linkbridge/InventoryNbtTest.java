@@ -100,7 +100,7 @@ public final class InventoryNbtTest {
         counters.fish=10001;counters.crops=3;counters.mined=10;counters.smelted=9;
         long[] accepted=counters.snapshot();counters.crops+=2;counters.smelted++;
         counters.subtract(accepted);
-        check(Arrays.equals(counters.snapshot(),new long[]{0,0,1,2,0,1}),"Quest report acceptance preserves events arriving during the request and capped remainders");
+        check(Arrays.equals(counters.snapshot(),new long[]{0,0,1,2,0,1,0,0,0}),"Quest report acceptance preserves events arriving during the request and capped remainders");
         check(!counters.empty(),"Non-hunting progress must not be discarded as idle");
         counters.subtract(counters.snapshot());check(counters.empty(),"All objective counters drain after acceptance");
         check(LinkBridgePlugin.QuestRules.fish("COD")&&LinkBridgePlugin.QuestRules.fish("PUFFERFISH"),"Real fish qualify");
