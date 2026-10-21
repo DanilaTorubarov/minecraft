@@ -274,6 +274,38 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.RaidRules.BREACH_RADIUS == 3, "Breach radius is 3 blocks");
         check(LinkBridgePlugin.RaidRules.FUSE_SECONDS == 10, "Fuse is 10 seconds");
         check(LinkBridgePlugin.RaidRules.CHARGE_PRICE == 2500L, "Breach charge costs 2500 coins");
+        check(LinkBridgePlugin.RaidRules.TNT_PRICE == 50L, "Raid TNT costs 50 coins");
+
+        // Raid interactable and TNT damage permissions
+        // In raid: only chests/barrels/shulkers can be opened, NOT doors or trapdoors
+        check(LinkBridgePlugin.PrivateRules.canOpenInRaid("CHEST"), "Chest can be opened in raid");
+        check(LinkBridgePlugin.PrivateRules.canOpenInRaid("TRAPPED_CHEST"), "Trapped chest can be opened in raid");
+        check(LinkBridgePlugin.PrivateRules.canOpenInRaid("BARREL"), "Barrel can be opened in raid");
+        check(LinkBridgePlugin.PrivateRules.canOpenInRaid("PURPLE_SHULKER_BOX"), "Shulker box can be opened in raid");
+        check(!LinkBridgePlugin.PrivateRules.canOpenInRaid("OAK_DOOR"), "Doors CANNOT be opened in raid");
+        check(!LinkBridgePlugin.PrivateRules.canOpenInRaid("IRON_DOOR"), "Iron doors CANNOT be opened in raid");
+        check(!LinkBridgePlugin.PrivateRules.canOpenInRaid("OAK_TRAPDOOR"), "Trapdoors CANNOT be opened in raid");
+        check(!LinkBridgePlugin.PrivateRules.canOpenInRaid("LEVER"), "Levers CANNOT be opened in raid");
+        check(!LinkBridgePlugin.PrivateRules.canOpenInRaid("STONE_BUTTON"), "Buttons CANNOT be opened in raid");
+
+        // Doors and switches classification
+        check(LinkBridgePlugin.PrivateRules.isDoorOrSwitch("OAK_DOOR"), "Oak door is door");
+        check(LinkBridgePlugin.PrivateRules.isDoorOrSwitch("OAK_TRAPDOOR"), "Trapdoor is door/switch");
+        check(LinkBridgePlugin.PrivateRules.isDoorOrSwitch("OAK_FENCE_GATE"), "Fence gate is door/switch");
+        check(LinkBridgePlugin.PrivateRules.isDoorOrSwitch("LEVER"), "Lever is switch");
+        check(LinkBridgePlugin.PrivateRules.isDoorOrSwitch("STONE_BUTTON"), "Button is switch");
+        check(!LinkBridgePlugin.PrivateRules.isDoorOrSwitch("CHEST"), "Chest is not a door/switch");
+
+        // TNT base breaching vs container protection
+        check(LinkBridgePlugin.PrivateRules.canTntDamageBlock("OAK_DOOR", false), "Stranger TNT destroys doors");
+        check(LinkBridgePlugin.PrivateRules.canTntDamageBlock("OAK_TRAPDOOR", false), "Stranger TNT destroys trapdoors");
+        check(LinkBridgePlugin.PrivateRules.canTntDamageBlock("OAK_PLANKS", false), "Stranger TNT destroys walls/planks");
+        check(LinkBridgePlugin.PrivateRules.canTntDamageBlock("COBBLESTONE", false), "Stranger TNT destroys stone");
+        check(LinkBridgePlugin.PrivateRules.canTntDamageBlock("GLASS", false), "Stranger TNT destroys windows");
+        check(!LinkBridgePlugin.PrivateRules.canTntDamageBlock("CHEST", false), "Stranger TNT does NOT destroy chests (must be raided)");
+        check(!LinkBridgePlugin.PrivateRules.canTntDamageBlock("BARREL", false), "Stranger TNT does NOT destroy barrels");
+        check(!LinkBridgePlugin.PrivateRules.canTntDamageBlock("SHULKER_BOX", false), "Stranger TNT does NOT destroy shulkers");
+        check(LinkBridgePlugin.PrivateRules.canTntDamageBlock("CHEST", true), "Member TNT can destroy own chests");
 
         // Private zone creeper and explosion defense rules
         var ownerUuid = UUID.randomUUID();

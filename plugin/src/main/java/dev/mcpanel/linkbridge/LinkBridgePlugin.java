@@ -757,6 +757,36 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         public static boolean canExplosionDamageZone(UUID triggerPlayer, UUID owner, List<UUID> members) {
             return canAccess(triggerPlayer, owner, members);
         }
+
+        public static boolean canOpenInRaid(String materialName) {
+            if (materialName == null) return false;
+            return materialName.contains("CHEST")
+                || materialName.contains("BARREL")
+                || materialName.contains("SHULKER_BOX");
+        }
+
+        public static boolean isDoorOrSwitch(String materialName) {
+            if (materialName == null) return false;
+            return materialName.contains("DOOR")
+                || materialName.contains("TRAPDOOR")
+                || materialName.contains("GATE")
+                || materialName.contains("BUTTON")
+                || materialName.contains("LEVER");
+        }
+
+        public static boolean isProtectedInteractable(String materialName) {
+            if (materialName == null) return false;
+            return canOpenInRaid(materialName)
+                || isDoorOrSwitch(materialName)
+                || materialName.contains("FURNACE")
+                || materialName.contains("SMOKER")
+                || materialName.contains("HOPPER");
+        }
+
+        public static boolean canTntDamageBlock(String materialName, boolean isMember) {
+            if (isMember) return true;
+            return !canOpenInRaid(materialName);
+        }
     }
 
     public static final class FuelRules {
@@ -865,6 +895,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         public static final int BREACH_RADIUS = 3; // 3 blocks
         public static final int FUSE_SECONDS = 10; // 10 seconds
         public static final long CHARGE_PRICE = 2500L;
+        public static final long TNT_PRICE = 50L;
     }
 
     public static final class BreachedBlock {
@@ -3121,8 +3152,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             getCommand("raid").setExecutor(this);
             getCommand("raid").setTabCompleter((sender, cmd, alias, args) -> {
                 if (args.length == 1) {
-                    return List.of("buy", "help").stream()
+                    return List.of("buy", "tnt", "help").stream()
                         .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                }
+                if (args.length == 2 && args[0].equalsIgnoreCase("buy")) {
+                    return List.of("tnt").stream()
+                        .filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
                 }
                 return List.of();
             });
@@ -4019,13 +4054,71 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     private void raidCommand(Player player, String[] args) {
         if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
-            player.sendMessage("§6=== Base Raiding & Breach Charges ===");
+            player.sendMessage("§6=== Base Raiding & Explosives ===");
             player.sendMessage(String.format(Locale.ROOT, "§e/raid buy §7— Buy a Breach Charge (%,d coins)", RaidRules.CHARGE_PRICE));
-            player.sendMessage("§eHow it works:");
-            player.sendMessage("§7• Right-click Breach Charge onto an enemy private zone to arm.");
-            player.sendMessage("§7• 10-second countdown alert is sent to you and the base owner.");
-            player.sendMessage("§7• Blasts a 3-block breach hole and unlocks containers for 5 minutes.");
-            player.sendMessage("§a• 100% Auto-Regeneration: When 5m expires, all blasted blocks restore automatically!");
+            player.sendMessage(String.format(Locale.ROOT, "§e/raid tnt [amount] §7— Buy TNT for breaching walls (%,d coins each)", RaidRules.TNT_PRICE));
+            player.sendMessage("§eHow raiding works:");
+            player.sendMessage("§7• Place TNT against enemy bases to blast open doors, trapdoors, and walls!");
+            player.sendMessage("§7• Arm a Breach Charge to unlock enemy chests for 5 minutes.");
+            player.sendMessage("§7• Without a raid you cannot open doors or chests. In a raid you can open only chests.");
+            player.sendMessage("§a• 100% Auto-Regeneration: When 5m breach expires, blasted breach restores automatically!");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("tnt") || (args[0].equalsIgnoreCase("buy") && args.length >= 2 && args[1].equalsIgnoreCase("tnt"))) {
+            int amount = 10;
+            if (args[0].equalsIgnoreCase("tnt") && args.length >= 2) {
+                try {
+                    amount = Integer.parseInt(args[1].trim());
+                } catch (Exception e) {
+                    player.sendMessage("[Raid] Usage: /raid tnt <1-64>");
+                    return;
+                }
+            } else if (args[0].equalsIgnoreCase("buy") && args.length >= 3) {
+                try {
+                    amount = Integer.parseInt(args[2].trim());
+                } catch (Exception e) {
+                    player.sendMessage("[Raid] Usage: /raid buy tnt <1-64>");
+                    return;
+                }
+            }
+            if (amount < 1 || amount > 64) {
+                player.sendMessage("[Raid] Amount must be between 1 and 64.");
+                return;
+            }
+            int finalAmount = amount;
+            long expectedPrice = finalAmount * RaidRules.TNT_PRICE;
+            UUID uuid = player.getUniqueId();
+            String username = player.getName();
+            player.sendMessage(String.format(Locale.ROOT, "[Raid] Purchasing %dx TNT for %,d coins...", finalAmount, expectedPrice));
+            getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                var response = post(internalBase + "/raid/tnt",
+                    "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\",\"amount\":" + finalAmount + "}", requestTimeout);
+                getServer().getScheduler().runTask(this, () -> {
+                    if (response == null) {
+                        player.sendMessage("[Raid] Server did not respond. No coins charged.");
+                        return;
+                    }
+                    if (response.statusCode() == 200) {
+                        ItemStack tnt = new ItemStack(Material.TNT, finalAmount);
+                        var leftovers = player.getInventory().addItem(tnt);
+                        if (!leftovers.isEmpty()) {
+                            for (ItemStack leftover : leftovers.values()) {
+                                player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+                            }
+                        }
+                        player.playSound(player.getLocation(), Sound.ENTITY_TNT_PRIMED, 1.0f, 1.2f);
+                        player.sendMessage(String.format(Locale.ROOT,
+                            "§a[Raid] Purchased %dx TNT for %,d coins! Place against enemy bases to blast open their walls!",
+                            finalAmount, expectedPrice));
+                    } else if (response.statusCode() == 402) {
+                        player.sendMessage(String.format(Locale.ROOT,
+                            "§c[Raid] Insufficient coins! You need %,d coins and must keep at least 1,000 coins in reserve.",
+                            expectedPrice));
+                    } else {
+                        player.sendMessage("[Raid] Cannot purchase TNT at this time (" + response.statusCode() + ").");
+                    }
+                });
+            });
             return;
         }
         if (args[0].equalsIgnoreCase("buy")) {
@@ -4063,7 +4156,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             });
             return;
         }
-        player.sendMessage("[Raid] Usage: /raid [buy|help]");
+        player.sendMessage("[Raid] Usage: /raid [buy|tnt|help]");
     }
 
     private void mineCommand(Player player, String[] args) {
@@ -4580,6 +4673,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
         if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+            if (block.getType() == Material.TNT) {
+                // Allow placing TNT in enemy private zones to blast open walls/doors!
+                return;
+            }
             event.setCancelled(true);
             player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "!"));
         }
@@ -4657,27 +4754,24 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
 
         Material type = block.getType();
-        boolean isProtectedInteractable = type.name().contains("CHEST")
-            || type.name().contains("BARREL")
-            || type.name().contains("SHULKER_BOX")
-            || type.name().contains("FURNACE")
-            || type.name().contains("SMOKER")
-            || type.name().contains("HOPPER")
-            || type.name().contains("DOOR")
-            || type.name().contains("GATE")
-            || type.name().contains("TRAPDOOR")
-            || type.name().contains("BUTTON")
-            || type.name().contains("LEVER");
+        String typeName = type.name();
+        boolean isProtectedInteractable = PrivateRules.isProtectedInteractable(typeName);
 
         if (isProtectedInteractable) {
             PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
             if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
                 if (activeBreaches.containsKey(pb.id)) {
-                    // Zone is breached! Raiders can access containers/doors!
-                    return;
+                    if (PrivateRules.canOpenInRaid(typeName)) {
+                        // In raid: only chests can be opened!
+                        return;
+                    } else {
+                        event.setCancelled(true);
+                        player.sendActionBar(Component.text("§c[Raid] In a raid you can only open chests (doors and trapdoors remain locked)!"));
+                        return;
+                    }
                 }
                 event.setCancelled(true);
-                player.sendActionBar(Component.text("§c[Protected] You cannot use containers in " + pb.ownerName + "'s zone!"));
+                player.sendActionBar(Component.text("§c[Protected] Cannot open doors or containers without an active raid!"));
             }
         }
     }
@@ -4866,13 +4960,25 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
 
-        UUID sourcePlayerUuid = null;
         if (event.getEntity() instanceof TNTPrimed tnt) {
+            UUID sourcePlayerUuid = null;
             if (tnt.getSource() instanceof Player p) {
                 sourcePlayerUuid = p.getUniqueId();
             }
+
+            final UUID finalTntSource = sourcePlayerUuid;
+            event.blockList().removeIf(b -> {
+                PlacedPrivateBlock pb = getProtectingBlock(b.getLocation());
+                if (pb == null) return false;
+
+                boolean isMember = finalTntSource != null && PrivateRules.canAccess(finalTntSource, pb.ownerUuid, pb.members);
+                boolean canDamage = PrivateRules.canTntDamageBlock(b.getType().name(), isMember);
+                return !canDamage;
+            });
+            return;
         }
 
+        UUID sourcePlayerUuid = null;
         final UUID finalSourceUuid = sourcePlayerUuid;
         event.blockList().removeIf(b -> {
             PlacedPrivateBlock pb = getProtectingBlock(b.getLocation());

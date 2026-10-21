@@ -85,6 +85,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/private/sync", post(sync_private_block))
         .route("/internal/minershop/buy", post(buy_miner_pickaxe))
         .route("/internal/raid/buy", post(buy_breach_charge))
+        .route("/internal/raid/tnt", post(buy_raid_tnt))
         .route("/internal/mine/enter", post(enter_mine))
         .route("/internal/mine/status", get(mine_status))
         .route("/api/minigames/config", get(minigame_config))
@@ -5249,6 +5250,7 @@ async fn report_economy_task(
 const PRIVATE_BLOCK_PRICES: [i64; 3] = [500, 20_000, 50_000];
 const MINER_PICKAXE_PRICES: [i64; 4] = [150, 1_000, 5_000, 20_000];
 const BREACH_CHARGE_PRICE: i64 = 2500;
+const RAID_TNT_PRICE: i64 = 50;
 const MINE_EXPEDITION_COOLDOWN_SECONDS: i64 = 4 * 3600; // 4 hours
 const MINE_EXPEDITION_DURATION_SECONDS: i64 = 300; // 5 minutes
 
@@ -5734,6 +5736,55 @@ async fn buy_breach_charge(
     tx.commit().await.map_err(market_db)?;
     Ok(Json(serde_json::json!({
         "item": "breach_charge",
+        "price": price,
+        "remaining_coins": balance.unwrap()
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct BuyRaidTntRequest {
+    uuid: String,
+    username: String,
+    #[serde(default = "default_raid_tnt_amount")]
+    amount: i32,
+}
+
+fn default_raid_tnt_amount() -> i32 {
+    10
+}
+
+async fn buy_raid_tnt(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<BuyRaidTntRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid) || !is_minecraft_username(&body.username) || body.amount < 1 || body.amount > 64 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let price = body.amount as i64 * RAID_TNT_PRICE;
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+
+    coin_reason(&mut tx, "raid_tnt_buy", &format!("{}:raid_tnt:{}", body.uuid, body.amount)).await?;
+    let balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1 AND coins>=$2+$3 RETURNING coins",
+    )
+    .bind(&body.uuid)
+    .bind(price)
+    .bind(ECONOMY_SERVICE_RESERVE)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    if balance.is_none() {
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(serde_json::json!({
+        "item": "tnt",
+        "amount": body.amount,
         "price": price,
         "remaining_coins": balance.unwrap()
     })))
@@ -13348,6 +13399,14 @@ mod test {
         assert_eq!(charge_res.status(), StatusCode::OK);
         let charge = body_json(charge_res).await?;
         assert_eq!(charge["price"], 2500);
+
+        let tnt_res = post_internal(&pool, "/internal/raid/tnt", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro", "amount": 10
+        }), &ip).await?;
+        assert_eq!(tnt_res.status(), StatusCode::OK);
+        let tnt_json = body_json(tnt_res).await?;
+        assert_eq!(tnt_json["amount"], 10);
+        assert_eq!(tnt_json["price"], 500);
         assert_eq!(pick4["tier"], 4);
 
         let status1 = body_json(get_internal(&pool, &format!("/internal/mine/status?uuid={uuid}"), Some(&token), &ip).await?).await?;
