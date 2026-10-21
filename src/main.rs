@@ -4364,13 +4364,6 @@ fn simulate_minefall(
 
         if block == MinefallBlock::Air {
             current_row += 1;
-            if random_below(4)? == 0 {
-                let dir = if random_below(2)? == 0 { -1i64 } else { 1i64 };
-                let target_c = (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
-                if current_row < MINEFALL_ROWS && grid_blocks[current_row][target_c] == MinefallBlock::Air {
-                    current_col = target_c;
-                }
-            }
             continue;
         }
 
@@ -4438,36 +4431,6 @@ fn simulate_minefall(
         if block == MinefallBlock::CraftingTable {
             grid_blocks[current_row][current_col] = MinefallBlock::Air;
             durability = (durability + MINEFALL_CRAFTING_TABLE_REPAIR).min(max_durability);
-            let next_row = current_row + 1;
-            let next_col = if random_below(4)? == 0 {
-                let dir = if random_below(2)? == 0 { -1i64 } else { 1i64 };
-                (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize
-            } else {
-                current_col
-            };
-            let mut affected = Vec::new();
-            if next_col != current_col && next_row < MINEFALL_ROWS - 1 {
-                let corner_b = grid_blocks[next_row][current_col];
-                if corner_b != MinefallBlock::Air && corner_b != MinefallBlock::Bedrock {
-                    grid_blocks[next_row][current_col] = MinefallBlock::Air;
-                    let is_ore = corner_b.is_ore();
-                    let c_boost = if is_ore {
-                        let b_val = (corner_b.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
-                        mult_x100 += b_val;
-                        *ores_collected.entry(corner_b.as_str().to_string()).or_insert(0) += 1;
-                        Some(b_val)
-                    } else {
-                        None
-                    };
-                    affected.push(MinefallAffectedView {
-                        row: next_row,
-                        col: current_col,
-                        block: corner_b.as_str().to_string(),
-                        is_ore,
-                        boost_x100: c_boost,
-                    });
-                }
-            }
             events.push(MinefallEventView {
                 event_type: "repair".to_string(),
                 row: current_row,
@@ -4475,10 +4438,9 @@ fn simulate_minefall(
                 block: "crafting_table".to_string(),
                 durability_left: durability,
                 boost_x100: None,
-                affected: if affected.is_empty() { None } else { Some(affected) },
+                affected: None,
             });
-            current_row = next_row;
-            current_col = next_col;
+            current_row += 1;
             continue;
         }
 
@@ -4488,36 +4450,6 @@ fn simulate_minefall(
             let boost = (block.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
             mult_x100 += boost;
             *ores_collected.entry(block.as_str().to_string()).or_insert(0) += 1;
-            let next_row = current_row + 1;
-            let next_col = if random_below(4)? == 0 {
-                let dir = if random_below(2)? == 0 { -1i64 } else { 1i64 };
-                (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize
-            } else {
-                current_col
-            };
-            let mut affected = Vec::new();
-            if next_col != current_col && next_row < MINEFALL_ROWS - 1 {
-                let corner_b = grid_blocks[next_row][current_col];
-                if corner_b != MinefallBlock::Air && corner_b != MinefallBlock::Bedrock {
-                    grid_blocks[next_row][current_col] = MinefallBlock::Air;
-                    let is_ore = corner_b.is_ore();
-                    let c_boost = if is_ore {
-                        let b_val = (corner_b.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
-                        mult_x100 += b_val;
-                        *ores_collected.entry(corner_b.as_str().to_string()).or_insert(0) += 1;
-                        Some(b_val)
-                    } else {
-                        None
-                    };
-                    affected.push(MinefallAffectedView {
-                        row: next_row,
-                        col: current_col,
-                        block: corner_b.as_str().to_string(),
-                        is_ore,
-                        boost_x100: c_boost,
-                    });
-                }
-            }
             events.push(MinefallEventView {
                 event_type: "collect_ore".to_string(),
                 row: current_row,
@@ -4525,7 +4457,7 @@ fn simulate_minefall(
                 block: block.as_str().to_string(),
                 durability_left: durability,
                 boost_x100: Some(boost),
-                affected: if affected.is_empty() { None } else { Some(affected) },
+                affected: None,
             });
             if durability <= 0 {
                 events.push(MinefallEventView {
@@ -4539,8 +4471,7 @@ fn simulate_minefall(
                 });
                 break;
             }
-            current_row = next_row;
-            current_col = next_col;
+            current_row += 1;
             continue;
         }
 
@@ -4549,36 +4480,6 @@ fn simulate_minefall(
         let hits = block_hits[current_row][current_col];
         if hits >= block.hits_needed() {
             grid_blocks[current_row][current_col] = MinefallBlock::Air;
-            let next_row = current_row + 1;
-            let next_col = if random_below(4)? == 0 {
-                let dir = if random_below(2)? == 0 { -1i64 } else { 1i64 };
-                (current_col as i64 + dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize
-            } else {
-                current_col
-            };
-            let mut affected = Vec::new();
-            if next_col != current_col && next_row < MINEFALL_ROWS - 1 {
-                let corner_b = grid_blocks[next_row][current_col];
-                if corner_b != MinefallBlock::Air && corner_b != MinefallBlock::Bedrock {
-                    grid_blocks[next_row][current_col] = MinefallBlock::Air;
-                    let is_ore = corner_b.is_ore();
-                    let c_boost = if is_ore {
-                        let b_val = (corner_b.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
-                        mult_x100 += b_val;
-                        *ores_collected.entry(corner_b.as_str().to_string()).or_insert(0) += 1;
-                        Some(b_val)
-                    } else {
-                        None
-                    };
-                    affected.push(MinefallAffectedView {
-                        row: next_row,
-                        col: current_col,
-                        block: corner_b.as_str().to_string(),
-                        is_ore,
-                        boost_x100: c_boost,
-                    });
-                }
-            }
             events.push(MinefallEventView {
                 event_type: "break".to_string(),
                 row: current_row,
@@ -4586,11 +4487,11 @@ fn simulate_minefall(
                 block: block.as_str().to_string(),
                 durability_left: durability,
                 boost_x100: None,
-                affected: if affected.is_empty() { None } else { Some(affected) },
+                affected: None,
             });
-            current_row = next_row;
-            current_col = next_col;
+            current_row += 1;
         } else {
+            // Unbroken rock hit: pickaxe bounces UP and ricochets to an adjacent column on the SAME row!
             events.push(MinefallEventView {
                 event_type: "hit".to_string(),
                 row: current_row,
@@ -4600,12 +4501,7 @@ fn simulate_minefall(
                 boost_x100: None,
                 affected: None,
             });
-            let lateral_dir = match random_below(3)? {
-                0 => -1,
-                1 => 0,
-                _ => 1,
-            };
-            current_col = (current_col as i64 + lateral_dir).clamp(0, (MINEFALL_COLS - 1) as i64) as usize;
+// Unbroken hit stays in the same column, bouncing straight up and falling down
         }
 
         if durability <= 0 {

@@ -409,12 +409,17 @@ export default function MinefallGame({
         const ev = events[currentEventIdx]
         const targetX = wallW + ev.col * cellW + cellW / 2
         const targetY = ev.row * cellH + 50 + cellH / 2
+        const dx = targetX - pickX
+        const distToX = Math.abs(dx)
 
         if (!isRecoiling) {
-          // Guided horizontal flight towards target block column
-          const dx = targetX - pickX
-          vx += Math.sign(dx) * Math.min(Math.abs(dx) * 0.06, 0.4) * speedFactor
-          vx *= Math.pow(0.90, speedFactor)
+          // Smooth horizontal glide towards target column
+          if (distToX > 1.5) {
+            vx += Math.sign(dx) * Math.min(distToX * 0.10, 0.9) * speedFactor
+            vx *= Math.pow(0.85, speedFactor)
+          } else {
+            vx *= 0.5
+          }
         } else {
           vx *= Math.pow(0.96, speedFactor)
         }
@@ -422,28 +427,46 @@ export default function MinefallGame({
         pickX += vx * speedFactor
         pickY += vy * speedFactor
 
-        // Solid Bedrock Wall collisions: elastic bounce back into the shaft
-        const leftWallBound = wallW + 12
-        const rightWallBound = totalW - wallW - 12
-        if (pickX < leftWallBound) {
-          pickX = leftWallBound
-          vx = Math.abs(vx) * 0.85 + 0.9 * speedFactor
-          angularVel = Math.random() * 0.12 + 0.06
-          cameraShake = Math.max(cameraShake, 1.4)
-          spawnBlockParticles(wallW / 2, pickY, '#e2e8f0', 8)
-          playSound('click')
-        } else if (pickX > rightWallBound) {
-          pickX = rightWallBound
-          vx = -Math.abs(vx) * 0.85 - 0.9 * speedFactor
-          angularVel = -Math.random() * 0.12 - 0.06
-          cameraShake = Math.max(cameraShake, 1.4)
-          spawnBlockParticles(totalW - wallW / 2, pickY, '#e2e8f0', 8)
-          playSound('click')
+        // Open cavity & bedrock boundary check: prevent pickaxe from penetrating unmined solid blocks
+        const currentCol = Math.floor((pickX - wallW) / cellW)
+        const currentRow = Math.floor((pickY - 50) / cellH)
+        let leftWallBound = wallW + 12
+        let rightWallBound = totalW - wallW - 12
+
+        if (currentRow >= 0 && currentRow < MINEFALL_ROWS) {
+          if (currentCol > 0 && grid[currentRow]?.[currentCol - 1] !== 'air') {
+            leftWallBound = Math.max(leftWallBound, wallW + currentCol * cellW + 10)
+          }
+          if (currentCol < MINEFALL_COLS - 1 && grid[currentRow]?.[currentCol + 1] !== 'air') {
+            rightWallBound = Math.min(rightWallBound, wallW + (currentCol + 1) * cellW - 10)
+          }
+        }
+
+        if (leftWallBound < rightWallBound) {
+          if (pickX < leftWallBound) {
+            pickX = leftWallBound
+            vx = Math.abs(vx) * 0.7 + 0.3 * speedFactor
+            angularVel = Math.random() * 0.12 + 0.06
+            cameraShake = Math.max(cameraShake, 1.2)
+            playSound('click')
+          } else if (pickX > rightWallBound) {
+            pickX = rightWallBound
+            vx = -Math.abs(vx) * 0.7 - 0.3 * speedFactor
+            angularVel = -Math.random() * 0.12 - 0.06
+            cameraShake = Math.max(cameraShake, 1.2)
+            playSound('click')
+          }
+        }
+
+        // If descending on top of a solid surface before aligning horizontally, slide across surface (NO TELEPORT)
+        if (pickY >= targetY - 4 && distToX > 8) {
+          pickY = targetY - 4
+          vy = 0
         }
 
         // IMPACT TRIGGER:
-        // Guaranteed collision: when falling pickaxe reaches or crosses the target block
-        const hasReachedTarget = !isRecoiling && (pickY >= targetY - 2 || targetY <= pickY)
+        // Must be in the target column (within 8px) and at or below target surface
+        const hasReachedTarget = !isRecoiling && distToX <= 8 && pickY >= targetY - 4
 
         if (hasReachedTarget) {
           pickX = targetX
@@ -451,27 +474,25 @@ export default function MinefallGame({
           activeDur = ev.durabilityLeft
           setCurrentDurability(activeDur)
 
-          // Direction from which pickaxe entered the block (or random initial)
-          const curDir = vx >= 0 ? 1 : -1
 
           if (ev.type === 'hit') {
             playSound('click')
             cameraShake = 3.0
             spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#78716c', 16)
-            // High springy elastic rock recoil: bounces UP ~50px and rebounds to the opposite side
+            // High springy elastic rock recoil: bounces UP ~50px within the mined shaft
             vy = -3.8 * speedFactor
-            vx = -curDir * (Math.random() * 1.3 + 0.9) * speedFactor
-            angularVel = -angularVel * 1.2 + Math.sign(vx) * 0.06
+            vx = (Math.random() - 0.5) * 0.8 * speedFactor
+            angularVel = (Math.random() - 0.5) * 0.15
             isRecoiling = true
           } else if (ev.type === 'break') {
             playSound('click')
             cameraShake = 2.0
             grid[ev.row][ev.col] = 'air'
             spawnBlockParticles(wallW + ev.col * cellW, ev.row * cellH + 50, '#57534e', 14)
-            // Elastic pop upwards and rebound sideways
+            // Elastic pop upwards
             vy = -2.2 * speedFactor
-            vx = -curDir * (Math.random() * 0.9 + 0.6) * speedFactor
-            angularVel = -angularVel * 0.9 + Math.sign(vx) * 0.05
+            vx = (Math.random() - 0.5) * 0.6 * speedFactor
+            angularVel = (Math.random() - 0.5) * 0.12
             isRecoiling = true
           } else if (ev.type === 'collect_ore') {
             playSound('click')
@@ -491,10 +512,10 @@ export default function MinefallGame({
               life: 0,
               maxLife: 50,
             })
-            // High elastic reward bounce to the other side
+            // High elastic reward bounce
             vy = -2.6 * speedFactor
-            vx = -curDir * (Math.random() * 1.0 + 0.7) * speedFactor
-            angularVel = -angularVel * 1.0 + Math.sign(vx) * 0.05
+            vx = (Math.random() - 0.5) * 0.7 * speedFactor
+            angularVel = (Math.random() - 0.5) * 0.12
             isRecoiling = true
           } else if (ev.type === 'repair') {
             playSound('done')
@@ -510,7 +531,7 @@ export default function MinefallGame({
               maxLife: 50,
             })
             vy = -2.2 * speedFactor
-            vx = -curDir * (Math.random() * 0.8 + 0.5) * speedFactor
+            vx = (Math.random() - 0.5) * 0.6 * speedFactor
             angularVel = 0.06
             isRecoiling = true
           } else if (ev.type === 'tnt_blast') {
@@ -518,9 +539,9 @@ export default function MinefallGame({
             cameraShake = 7.0
             grid[ev.row][ev.col] = 'air'
             spawnExplosion(wallW + ev.col * cellW, ev.row * cellH + 50)
-            // High explosive launch upwards
+            // High explosive launch upwards and across the blasted cavern
             vy = -5.2 * speedFactor
-            vx = -curDir * (Math.random() * 2.2 + 1.2) * speedFactor
+            vx = (Math.random() - 0.5) * 3.2 * speedFactor
             angularVel = (Math.random() - 0.5) * 0.22
             isRecoiling = true
           } else if (ev.type === 'reach_bottom') {
