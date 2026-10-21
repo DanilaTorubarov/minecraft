@@ -5249,8 +5249,8 @@ async fn report_economy_task(
 
 const PRIVATE_BLOCK_PRICES: [i64; 3] = [500, 20_000, 50_000];
 const MINER_PICKAXE_PRICES: [i64; 4] = [150, 1_000, 5_000, 20_000];
-const BREACH_CHARGE_PRICE: i64 = 2500;
-const RAID_TNT_PRICE: i64 = 50;
+const BREACH_CHARGE_PRICE: i64 = 20_000;
+const RAID_TNT_PRICE: i64 = 5_000;
 const MINE_EXPEDITION_COOLDOWN_SECONDS: i64 = 4 * 3600; // 4 hours
 const MINE_EXPEDITION_DURATION_SECONDS: i64 = 300; // 5 minutes
 
@@ -13398,7 +13398,7 @@ mod test {
         }), &ip).await?;
         assert_eq!(charge_res.status(), StatusCode::OK);
         let charge = body_json(charge_res).await?;
-        assert_eq!(charge["price"], 2500);
+        assert_eq!(charge["price"], 20000);
 
         let tnt_res = post_internal(&pool, "/internal/raid/tnt", Some(&token), serde_json::json!({
             "uuid": uuid, "username": "MinerPro", "amount": 10
@@ -13406,7 +13406,7 @@ mod test {
         assert_eq!(tnt_res.status(), StatusCode::OK);
         let tnt_json = body_json(tnt_res).await?;
         assert_eq!(tnt_json["amount"], 10);
-        assert_eq!(tnt_json["price"], 500);
+        assert_eq!(tnt_json["price"], 50000);
         assert_eq!(pick4["tier"], 4);
 
         let status1 = body_json(get_internal(&pool, &format!("/internal/mine/status?uuid={uuid}"), Some(&token), &ip).await?).await?;

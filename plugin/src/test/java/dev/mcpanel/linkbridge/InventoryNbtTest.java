@@ -273,8 +273,8 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.RaidRules.BREACH_DURATION_SECONDS == 300L, "Breach lasts 5 minutes");
         check(LinkBridgePlugin.RaidRules.BREACH_RADIUS == 3, "Breach radius is 3 blocks");
         check(LinkBridgePlugin.RaidRules.FUSE_SECONDS == 10, "Fuse is 10 seconds");
-        check(LinkBridgePlugin.RaidRules.CHARGE_PRICE == 2500L, "Breach charge costs 2500 coins");
-        check(LinkBridgePlugin.RaidRules.TNT_PRICE == 50L, "Raid TNT costs 50 coins");
+        check(LinkBridgePlugin.RaidRules.CHARGE_PRICE == 20000L, "Breach charge costs 20000 coins");
+        check(LinkBridgePlugin.RaidRules.TNT_PRICE == 5000L, "Raid TNT costs 5000 coins");
 
         // Raid interactable and TNT damage permissions
         // In raid: only chests/barrels/shulkers can be opened, NOT doors or trapdoors

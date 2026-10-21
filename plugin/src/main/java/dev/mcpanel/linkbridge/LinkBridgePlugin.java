@@ -897,8 +897,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         public static final long BREACH_DURATION_SECONDS = 300L; // 5 minutes
         public static final int BREACH_RADIUS = 3; // 3 blocks
         public static final int FUSE_SECONDS = 10; // 10 seconds
-        public static final long CHARGE_PRICE = 2500L;
-        public static final long TNT_PRICE = 50L;
+        public static final long CHARGE_PRICE = 20000L;
+        public static final long TNT_PRICE = 5000L;
     }
 
     public static final class BreachedBlock {
