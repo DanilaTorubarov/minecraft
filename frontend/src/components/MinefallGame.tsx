@@ -578,6 +578,16 @@ export default function MinefallGame({
               <strong className="minefall-boost-tag">
                 {liveMultiplier > 0 ? `+${(liveMultiplier / 100).toFixed(2)}x` : '+0.00x'}
               </strong>
+              {Object.keys(liveOres).length > 0 ? (
+                <div className="minefall-live-ores-bar">
+                  {Object.entries(liveOres).map(([ore, count]) => (
+                    <span key={ore} className="minefall-ore-chip">
+                      <img src={BLOCK_TEXTURES[ore] || stoneImg} alt="" />
+                      {count}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -673,12 +683,12 @@ export default function MinefallGame({
 
           {/* Bet controls */}
           <GameBetControls
+            id="minefall-bet"
             bet={bet}
-            minBet={rules.min_bet}
-            maxBet={rules.max_bet}
             balance={balance}
+            rules={rules}
             disabled={isAnimating || busy}
-            onSetBet={setBet}
+            onChange={setBet}
           />
 
           <button
