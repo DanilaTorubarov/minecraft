@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import chestIcon from '../assets/icons/game-lucky-chest.png'
 import minesIcon from '../assets/icons/game-minesweeper.png'
-import minefallIcon from '../assets/minefall/diamond_pickaxe.png'
+import minefallIcon from '../assets/icons/game-minefall.png'
 import LuckyChestGame from '../components/LuckyChestGame'
 import MinesweeperGame from '../components/MinesweeperGame'
 import MinefallGame from '../components/MinefallGame'
@@ -39,7 +39,7 @@ export default function MinigamesPage({ onGoToAccount }: { onGoToAccount?: () =>
     <div className="game-library">
       <section className="game-library-entry"><img src={chestIcon} alt="" /><div><h2>Lucky Chest</h2><p>Spin three floating treasures. Match a pair, land three alike, or find a lone diamond.</p><p className="muted">Expected return: {formatReturn(rules.chest.rtp_x10000)}</p><button className="btn btn-primary" onClick={() => setGame('chest')}>Play Lucky Chest</button></div></section>
       <section className="game-library-entry"><img src={minesIcon} alt="" /><div><h2>Minesweeper</h2><p>Explore a field of hidden ore and TNT. Cash out your finds before your luck runs out.</p><p className="muted">Four difficulties · Find {rules.mines.min_safe} ores to unlock cash-out</p><button className="btn btn-primary" onClick={() => setGame('mines')}>Play Minesweeper</button></div></section>
-      <section className="game-library-entry"><img src={minefallIcon} alt="" /><div><h2>Minefall</h2><p>Drop a physical pickaxe into an automated mine shaft. Smite stone, detonate TNT, repair on workbenches, and extract rare ores for massive multipliers!</p><p className="muted">6 pickaxes · Automatic mine · Expected return: {formatReturn(rules.minefall?.rtp_x10000 ?? 9200)}</p><button className="btn btn-primary" onClick={() => setGame('minefall')}>Play Minefall</button></div></section>
+      <section className="game-library-entry"><img src={minefallIcon} alt="" className="pixelated" /><div><h2>Minefall</h2><p>Drop a physical pickaxe into an automated mine shaft. Smite stone, detonate TNT, repair on workbenches, and extract rare ores for massive multipliers!</p><p className="muted">6 pickaxes · Automatic mine · Expected return: {formatReturn(rules.minefall?.rtp_x10000 ?? 9200)}</p><button className="btn btn-primary" onClick={() => setGame('minefall')}>Play Minefall</button></div></section>
     </div>
     <p className="game-rules">Stakes and payouts use your selected player’s Minecraft balance. Use /quests start in game to start quests and earn coins through hunting, fishing or farming. Economic adjustments apply equally to everyone; each round keeps the rules it starts with. These games do not use real money.</p>
   </div>

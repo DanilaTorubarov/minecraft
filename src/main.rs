@@ -4032,8 +4032,8 @@ where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
 }
 
 const MINEFALL_COLS: usize = 9;
-const MINEFALL_ROWS: usize = 22;
-const MINEFALL_CRAFTING_TABLE_REPAIR: i64 = 3;
+const MINEFALL_ROWS: usize = 120;
+const MINEFALL_CRAFTING_TABLE_REPAIR: i64 = 2;
 
 fn minefall_rtp_at(level: i32) -> i64 {
     9200 + i64::from(level) * 150
@@ -4088,6 +4088,17 @@ impl MinefallPickaxe {
         match self {
             Self::Golden => 2,
             _ => 1,
+        }
+    }
+
+    fn ore_scale_factor_x1000(&self) -> i64 {
+        match self {
+            Self::Wooden => 2620,
+            Self::Golden => 1570,
+            Self::Stone => 1430,
+            Self::Iron => 660,
+            Self::Diamond => 380,
+            Self::Netherite => 260,
         }
     }
 }
@@ -4163,15 +4174,15 @@ impl MinefallBlock {
 
     fn ore_boost_x100(&self) -> i64 {
         match self {
-            Self::CoalOre => 5,
-            Self::CopperOre => 8,
-            Self::IronOre => 15,
-            Self::GoldOre => 30,
-            Self::RedstoneOre => 20,
-            Self::LapisOre => 25,
-            Self::DiamondOre => 60,
-            Self::EmeraldOre => 100,
-            Self::AncientDebris => 200,
+            Self::CoalOre => 8,
+            Self::CopperOre => 12,
+            Self::IronOre => 25,
+            Self::GoldOre => 45,
+            Self::RedstoneOre => 35,
+            Self::LapisOre => 40,
+            Self::DiamondOre => 90,
+            Self::EmeraldOre => 150,
+            Self::AncientDebris => 300,
             _ => 0,
         }
     }
@@ -4256,51 +4267,68 @@ fn simulate_minefall(
         for c in 0..MINEFALL_COLS {
             if r == MINEFALL_ROWS - 1 {
                 grid_blocks[r][c] = MinefallBlock::Bedrock;
-            } else if r < 7 {
+            } else if r < 12 {
                 let roll = random_below(100)? as i64;
-                grid_blocks[r][c] = if roll < 4 {
+                grid_blocks[r][c] = if roll < 3 {
                     MinefallBlock::CraftingTable
-                } else if roll < 9 {
+                } else if roll < 7 {
                     MinefallBlock::Tnt
-                } else if roll < 21 {
+                } else if roll < 18 {
                     MinefallBlock::CoalOre
-                } else if roll < 31 {
+                } else if roll < 28 {
                     MinefallBlock::CopperOre
-                } else if roll < 39 {
+                } else if roll < 36 {
                     MinefallBlock::IronOre
                 } else {
                     MinefallBlock::Stone
                 };
-            } else if r < 15 {
+            } else if r < 28 {
                 let roll = random_below(100)? as i64;
-                grid_blocks[r][c] = if roll < 4 {
+                grid_blocks[r][c] = if roll < 3 {
                     MinefallBlock::CraftingTable
-                } else if roll < 10 {
+                } else if roll < 8 {
                     MinefallBlock::Tnt
-                } else if roll < 18 {
+                } else if roll < 16 {
                     MinefallBlock::IronOre
-                } else if roll < 26 {
+                } else if roll < 24 {
                     MinefallBlock::GoldOre
-                } else if roll < 34 {
+                } else if roll < 30 {
                     MinefallBlock::RedstoneOre
-                } else if roll < 40 {
+                } else if roll < 35 {
                     MinefallBlock::LapisOre
-                } else if roll < 70 {
+                } else if roll < 65 {
                     MinefallBlock::Deepslate
                 } else {
                     MinefallBlock::Stone
                 };
+            } else if r < 55 {
+                let roll = random_below(100)? as i64;
+                grid_blocks[r][c] = if roll < 2 {
+                    MinefallBlock::CraftingTable
+                } else if roll < 7 {
+                    MinefallBlock::Tnt
+                } else if roll < 14 {
+                    MinefallBlock::RedstoneOre
+                } else if roll < 20 {
+                    MinefallBlock::DiamondOre
+                } else if roll < 24 {
+                    MinefallBlock::EmeraldOre
+                } else if roll < 65 {
+                    MinefallBlock::Deepslate
+                } else {
+                    MinefallBlock::Obsidian
+                };
             } else {
                 let roll = random_below(100)? as i64;
-                grid_blocks[r][c] = if roll < 3 {
+                grid_blocks[r][c] = if roll < 2 {
                     MinefallBlock::CraftingTable
-                } else if roll < 10 {
+                } else if roll < 6 {
                     MinefallBlock::Tnt
-                } else if roll < 18 {
+                } else if roll < 13 {
                     MinefallBlock::DiamondOre
-                } else if roll < 23 {
+                } else if roll < 18 {
                     MinefallBlock::EmeraldOre
-                } else if roll < 27 {
+                } else if roll < 22 {
                     MinefallBlock::AncientDebris
                 } else if roll < 60 {
                     MinefallBlock::Deepslate
@@ -4319,6 +4347,7 @@ fn simulate_minefall(
     let mut durability = pickaxe.base_durability();
     let max_durability = durability;
     let bonus_mult = pickaxe.ore_bonus_multiplier();
+    let scale_x1000 = pickaxe.ore_scale_factor_x1000();
     let mut current_row = 0;
     let mut current_col = column;
     let mut mult_x100 = 0i64;
@@ -4327,7 +4356,7 @@ fn simulate_minefall(
     let mut block_hits = vec![vec![0i64; MINEFALL_COLS]; MINEFALL_ROWS];
 
     let mut iterations = 0;
-    while iterations < 300 && durability > 0 && current_row < MINEFALL_ROWS - 1 {
+    while iterations < 600 && durability > 0 && current_row < MINEFALL_ROWS - 1 {
         iterations += 1;
         let block = grid_blocks[current_row][current_col];
 
@@ -4367,7 +4396,7 @@ fn simulate_minefall(
                             grid_blocks[r_idx][c_idx] = MinefallBlock::Air;
                             let is_ore = b.is_ore();
                             let boost = if is_ore {
-                                let b_val = b.ore_boost_x100() * bonus_mult;
+                                let b_val = (b.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
                                 mult_x100 += b_val;
                                 *ores_collected.entry(b.as_str().to_string()).or_insert(0) += 1;
                                 Some(b_val)
@@ -4417,7 +4446,7 @@ fn simulate_minefall(
         if block.is_ore() {
             durability -= 1;
             grid_blocks[current_row][current_col] = MinefallBlock::Air;
-            let boost = block.ore_boost_x100() * bonus_mult;
+            let boost = (block.ore_boost_x100() * bonus_mult * scale_x1000 + 500) / 1000;
             mult_x100 += boost;
             *ores_collected.entry(block.as_str().to_string()).or_insert(0) += 1;
             events.push(MinefallEventView {
@@ -11599,12 +11628,10 @@ mod test {
     }
 
     #[tokio::test]
-    #[tokio::test]
     async fn minefall_play_requires_linked_player_valid_pickaxe_and_is_idempotent() -> TestResult {
         let pool = connect().await?;
-        let (cookie, _user_id, uuid) = setup_linked_user(&pool).await?;
+        let (email, cookie, uuid) = paid_player(&pool, 10_000).await?;
         let broke_uuid = test_uuid(&random_ip());
-        fund_coins(&pool, &uuid, 10_000).await?;
 
         let client_id = test_uuid(&random_ip());
         let bad_pickaxe = post_session(
@@ -11659,6 +11686,8 @@ mod test {
         assert_eq!(retry["payout"], play["payout"]);
         assert_eq!(coins_of(&pool, &uuid).await?, after_bal);
 
+        delete_player_stats(&pool, &uuid).await?;
+        delete_user(&pool, &email).await?;
         Ok(())
     }
 

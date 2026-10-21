@@ -123,6 +123,9 @@ export default function MinefallGame({
   const [liveOres, setLiveOres] = useState<Record<string, number>>({})
   const [liveMultiplier, setLiveMultiplier] = useState(0)
   const [isAnimating, setIsAnimating] = useState(false)
+  const [speed, setSpeed] = useState<'1x' | '2x'>('1x')
+  const speedRef = useRef<'1x' | '2x'>('1x')
+  const skipAnimRef = useRef(false)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animFrameRef = useRef<number | null>(null)
@@ -226,6 +229,7 @@ export default function MinefallGame({
 
   // Play animation sequence based on server round events
   const runAnimation = (playRound: MinefallRound) => {
+    skipAnimRef.current = false
     setIsAnimating(true)
     const canvas = canvasRef.current
     if (!canvas) return
@@ -247,12 +251,19 @@ export default function MinefallGame({
     let pickX = playRound.column * cellW + cellW / 2
     let pickY = 20
     let pickAngle = 0
+    let startX = pickX
+    let startY = pickY
+    let startAngle = 0
     let targetX = pickX
     let targetY = pickY
     let targetAngle = 0
 
     let currentEventIdx = 0
     let eventTimer = 0
+    let stepDuration = 26
+    let impactTriggered = false
+    let cameraShake = 0
+
     const particles: Particle[] = []
     const floatingTexts: FloatingText[] = []
 
@@ -267,138 +278,197 @@ export default function MinefallGame({
     setLiveOres({})
     setLiveMultiplier(0)
 
-    const spawnBlockParticles = (bx: number, by: number, color: string) => {
-      for (let i = 0; i < 12; i++) {
+    const spawnBlockParticles = (bx: number, by: number, color: string, count = 14) => {
+      for (let i = 0; i < count; i++) {
         particles.push({
           x: bx + cellW / 2,
           y: by + cellH / 2,
-          vx: (Math.random() - 0.5) * 6,
-          vy: (Math.random() - 0.5) * 6 - 2,
+          vx: (Math.random() - 0.5) * 7,
+          vy: (Math.random() - 0.5) * 6 - 2.5,
           color,
           size: Math.random() * 4 + 2,
           life: 0,
-          maxLife: 30,
+          maxLife: 32,
         })
       }
     }
 
     const spawnExplosion = (bx: number, by: number) => {
-      for (let i = 0; i < 35; i++) {
+      for (let i = 0; i < 40; i++) {
         const angle = Math.random() * Math.PI * 2
-        const speed = Math.random() * 8 + 2
+        const spd = Math.random() * 9 + 2
         particles.push({
           x: bx + cellW / 2,
           y: by + cellH / 2,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          color: Math.random() > 0.5 ? '#f97316' : '#eab308',
+          vx: Math.cos(angle) * spd,
+          vy: Math.sin(angle) * spd,
+          color: Math.random() > 0.4 ? (Math.random() > 0.5 ? '#f97316' : '#eab308') : '#ef4444',
           size: Math.random() * 6 + 3,
           life: 0,
-          maxLife: 40,
+          maxLife: 42,
         })
       }
     }
 
+    const initEvent = (ev: MinefallEvent) => {
+      startX = pickX
+      startY = pickY
+      startAngle = pickAngle
+      targetX = ev.col * cellW + cellW / 2
+      targetY = ev.row * cellH + cellH / 2
+      targetAngle = startAngle + (ev.type === 'hit' ? -1.2 : 1.5)
+      impactTriggered = false
+
+      const base = speedRef.current === '2x' ? 13 : 26
+      if (ev.type === 'tnt_blast') {
+        stepDuration = Math.round(base * 1.6)
+      } else if (ev.type === 'pickaxe_break') {
+        stepDuration = Math.round(base * 1.5)
+      } else if (ev.type === 'repair' || ev.type === 'collect_ore') {
+        stepDuration = Math.round(base * 1.15)
+      } else {
+        stepDuration = base
+      }
+    }
+
+    if (events.length > 0) {
+      initEvent(events[0])
+    }
+
     const step = () => {
-      // Advance physics towards target
-      pickX += (targetX - pickX) * 0.25
-      pickY += (targetY - pickY) * 0.25
-      pickAngle += (targetAngle - pickAngle) * 0.25
+      // If skip was requested, finalize instantly
+      if (skipAnimRef.current) {
+        setIsAnimating(false)
+        setRound(playRound)
+        setCurrentDurability(0)
+        setLiveMultiplier(playRound.multiplier_x100)
+        setLiveOres({ ...playRound.ores_collected })
+        playSound(playRound.payout > 0 ? 'done' : 'close')
+        return
+      }
 
-      // Camera smoothly follows pickaxe
-      const desiredCameraY = Math.max(0, pickY - 180)
-      cameraY += (desiredCameraY - cameraY) * 0.15
+      // Smooth camera follows pickaxe
+      const desiredCameraY = Math.max(0, pickY - 170)
+      cameraY += (desiredCameraY - cameraY) * 0.08
 
-      eventTimer += 1
-      if (eventTimer >= 8 && currentEventIdx < events.length) {
-        eventTimer = 0
+      // Decay camera shake
+      if (cameraShake > 0) {
+        cameraShake *= 0.85
+        if (cameraShake < 0.2) cameraShake = 0
+      }
+
+      if (currentEventIdx < events.length) {
         const ev = events[currentEventIdx]
-        currentEventIdx += 1
+        eventTimer += 1
+        const t = Math.min(1.0, eventTimer / Math.max(1, stepDuration))
 
-        targetX = ev.col * cellW + cellW / 2
-        targetY = ev.row * cellH + cellH / 2
-        targetAngle += 1.2
+        // Physics trajectory: smooth interpolation + bounce arc
+        pickX = startX + (targetX - startX) * t
+        const arc = Math.sin(t * Math.PI) * (ev.type === 'hit' ? 8 : 4)
+        pickY = startY + (targetY - startY) * t - arc
+        pickAngle = startAngle + (targetAngle - startAngle) * t
 
-        if (ev.type === 'hit') {
-          playSound('click')
-          activeDur = ev.durabilityLeft
-          setCurrentDurability(activeDur)
-          spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#78716c')
-        } else if (ev.type === 'break') {
-          playSound('click')
-          grid[ev.row][ev.col] = 'air'
-          activeDur = ev.durabilityLeft
-          setCurrentDurability(activeDur)
-          spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#57534e')
-        } else if (ev.type === 'collect_ore') {
-          playSound('click')
-          grid[ev.row][ev.col] = 'air'
-          activeDur = ev.durabilityLeft
-          setCurrentDurability(activeDur)
-          accumulatedOres[ev.block] = (accumulatedOres[ev.block] ?? 0) + 1
-          setLiveOres({ ...accumulatedOres })
-          const boost = ev.boostX100 ?? 0
-          activeMult += boost
-          setLiveMultiplier(activeMult)
-          spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#38bdf8')
-          floatingTexts.push({
-            x: targetX,
-            y: targetY - 10,
-            text: `+${(boost / 100).toFixed(2)}x`,
-            color: '#38bdf8',
-            life: 0,
-            maxLife: 45,
-          })
-        } else if (ev.type === 'repair') {
-          playSound('done')
-          grid[ev.row][ev.col] = 'air'
-          activeDur = ev.durabilityLeft
-          setCurrentDurability(activeDur)
-          floatingTexts.push({
-            x: targetX,
-            y: targetY - 10,
-            text: '+3 Durability!',
-            color: '#4ade80',
-            life: 0,
-            maxLife: 45,
-          })
-        } else if (ev.type === 'tnt_blast') {
-          playSound('close')
-          grid[ev.row][ev.col] = 'air'
-          spawnExplosion(ev.col * cellW, ev.row * cellH)
-          if (ev.affected) {
-            for (const aff of ev.affected) {
-              grid[aff.row][aff.col] = 'air'
-              if (aff.isOre) {
-                accumulatedOres[aff.block] = (accumulatedOres[aff.block] ?? 0) + 1
-                const boost = aff.boostX100 ?? 0
-                activeMult += boost
-                setLiveMultiplier(activeMult)
-                floatingTexts.push({
-                  x: aff.col * cellW + cellW / 2,
-                  y: aff.row * cellH,
-                  text: `+${(boost / 100).toFixed(2)}x`,
-                  color: '#fbbf24',
-                  life: 0,
-                  maxLife: 45,
-                })
-              }
-            }
+        // Impact moment (at ~45% of step)
+        if (!impactTriggered && eventTimer >= Math.floor(stepDuration * 0.45)) {
+          impactTriggered = true
+
+          if (ev.type === 'hit') {
+            playSound('click')
+            cameraShake = 2.0
+            activeDur = ev.durabilityLeft
+            setCurrentDurability(activeDur)
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#78716c', 10)
+          } else if (ev.type === 'break') {
+            playSound('click')
+            cameraShake = 2.5
+            grid[ev.row][ev.col] = 'air'
+            activeDur = ev.durabilityLeft
+            setCurrentDurability(activeDur)
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#57534e', 14)
+          } else if (ev.type === 'collect_ore') {
+            playSound('click')
+            cameraShake = 3.0
+            grid[ev.row][ev.col] = 'air'
+            activeDur = ev.durabilityLeft
+            setCurrentDurability(activeDur)
+            accumulatedOres[ev.block] = (accumulatedOres[ev.block] ?? 0) + 1
             setLiveOres({ ...accumulatedOres })
+            const boost = ev.boostX100 ?? 0
+            activeMult += boost
+            setLiveMultiplier(activeMult)
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#38bdf8', 18)
+            floatingTexts.push({
+              x: targetX,
+              y: targetY - 10,
+              text: `+${(boost / 100).toFixed(2)}x`,
+              color: '#38bdf8',
+              life: 0,
+              maxLife: 50,
+            })
+          } else if (ev.type === 'repair') {
+            playSound('done')
+            cameraShake = 1.5
+            grid[ev.row][ev.col] = 'air'
+            activeDur = ev.durabilityLeft
+            setCurrentDurability(activeDur)
+            spawnBlockParticles(ev.col * cellW, ev.row * cellH, '#4ade80', 16)
+            floatingTexts.push({
+              x: targetX,
+              y: targetY - 10,
+              text: '+2 Durability!',
+              color: '#4ade80',
+              life: 0,
+              maxLife: 50,
+            })
+          } else if (ev.type === 'tnt_blast') {
+            playSound('close')
+            cameraShake = 7.0
+            grid[ev.row][ev.col] = 'air'
+            spawnExplosion(ev.col * cellW, ev.row * cellH)
+            if (ev.affected) {
+              for (const aff of ev.affected) {
+                grid[aff.row][aff.col] = 'air'
+                if (aff.isOre) {
+                  accumulatedOres[aff.block] = (accumulatedOres[aff.block] ?? 0) + 1
+                  const boost = aff.boostX100 ?? 0
+                  activeMult += boost
+                  setLiveMultiplier(activeMult)
+                  floatingTexts.push({
+                    x: aff.col * cellW + cellW / 2,
+                    y: aff.row * cellH,
+                    text: `+${(boost / 100).toFixed(2)}x`,
+                    color: '#fbbf24',
+                    life: 0,
+                    maxLife: 50,
+                  })
+                }
+              }
+              setLiveOres({ ...accumulatedOres })
+            }
+          } else if (ev.type === 'pickaxe_break') {
+            playSound('close')
+            cameraShake = 4.0
+            activeDur = 0
+            setCurrentDurability(0)
+            spawnBlockParticles(targetX, targetY, '#ef4444', 24)
+            floatingTexts.push({
+              x: targetX,
+              y: targetY - 20,
+              text: 'Tool Broken!',
+              color: '#ef4444',
+              life: 0,
+              maxLife: 65,
+            })
           }
-        } else if (ev.type === 'pickaxe_break') {
-          playSound('close')
-          activeDur = 0
-          setCurrentDurability(0)
-          spawnBlockParticles(targetX, targetY, '#ef4444')
-          floatingTexts.push({
-            x: targetX,
-            y: targetY - 20,
-            text: 'Tool Broken!',
-            color: '#ef4444',
-            life: 0,
-            maxLife: 60,
-          })
+        }
+
+        // Advance to next event when duration reached
+        if (eventTimer >= stepDuration) {
+          eventTimer = 0
+          currentEventIdx += 1
+          if (currentEventIdx < events.length) {
+            initEvent(events[currentEventIdx])
+          }
         }
       }
 
@@ -407,9 +477,11 @@ export default function MinefallGame({
       ctx.fillRect(0, 0, totalW, totalH)
 
       ctx.save()
-      ctx.translate(0, -cameraY)
+      const shakeX = (Math.random() - 0.5) * cameraShake
+      const shakeY = (Math.random() - 0.5) * cameraShake
+      ctx.translate(shakeX, -cameraY + shakeY)
 
-      // Draw visible blocks
+      // Draw visible blocks across all rows
       for (let r = 0; r < MINEFALL_ROWS; r++) {
         for (let c = 0; c < MINEFALL_COLS; c++) {
           const blockType = grid[r][c]
@@ -493,6 +565,18 @@ export default function MinefallGame({
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
     }
   }, [])
+
+  const toggleSpeed = () => {
+    setSpeed((prev) => {
+      const next = prev === '1x' ? '2x' : '1x'
+      speedRef.current = next
+      return next
+    })
+  }
+
+  const handleSkip = () => {
+    skipAnimRef.current = true
+  }
 
   const handleDrop = async () => {
     if (sending.current || isAnimating) return
@@ -587,6 +671,27 @@ export default function MinefallGame({
                     </span>
                   ))}
                 </div>
+              ) : null}
+            </div>
+
+            <div className="minefall-hud-controls">
+              <button
+                type="button"
+                className="btn btn-sm minefall-speed-btn"
+                onClick={toggleSpeed}
+                title="Toggle animation playback speed"
+              >
+                Speed: {speed}
+              </button>
+              {isAnimating ? (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary minefall-skip-btn"
+                  onClick={handleSkip}
+                  title="Skip animation and reveal result immediately"
+                >
+                  Skip ⏭
+                </button>
               ) : null}
             </div>
           </div>

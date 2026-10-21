@@ -12,7 +12,7 @@ import {
   type MinefallEvent,
 } from '../src/lib/minefall.ts'
 
-test('all 6 Minecraft pickaxes exist with valid configurations', () => {
+test('all 6 Minecraft pickaxes exist with valid configurations and scaling', () => {
   const tiers = ['wooden', 'stone', 'iron', 'golden', 'diamond', 'netherite'] as const
   for (const tier of tiers) {
     assert.equal(isValidPickaxe(tier), true)
@@ -20,6 +20,7 @@ test('all 6 Minecraft pickaxes exist with valid configurations', () => {
     assert.equal(config.id, tier)
     assert.ok(config.durability > 0)
     assert.ok(config.oreBonus >= 1.0)
+    assert.ok(config.scaleX1000 > 0)
     assert.ok(config.name.length > 0)
   }
 })
@@ -28,6 +29,7 @@ test('golden pickaxe has Midas touch ore bonus', () => {
   const golden = getPickaxeConfig('golden')
   assert.equal(golden.oreBonus, 2.0)
   assert.equal(golden.durability, 5)
+  assert.equal(golden.scaleX1000, 1570)
 })
 
 test('blocks have appropriate hardness and rewards', () => {
@@ -40,14 +42,15 @@ test('blocks have appropriate hardness and rewards', () => {
 
   const diamond = getBlockConfig('diamond_ore')
   assert.equal(diamond.isOre, true)
+  assert.equal(diamond.multiplierX100, 90)
   assert.ok(diamond.multiplierX100 > getBlockConfig('iron_ore').multiplierX100)
   assert.ok(getBlockConfig('emerald_ore').multiplierX100 > diamond.multiplierX100)
   assert.ok(getBlockConfig('ancient_debris').multiplierX100 > getBlockConfig('emerald_ore').multiplierX100)
 })
 
-test('mine dimensions are 9 columns and 22 rows', () => {
+test('mine dimensions are 9 columns and 120 rows', () => {
   assert.equal(MINEFALL_COLS, 9)
-  assert.equal(MINEFALL_ROWS, 22)
+  assert.equal(MINEFALL_ROWS, 120)
 })
 
 test('calculateSummary accurately tallies collected ores, TNT blasts, and repairs', () => {

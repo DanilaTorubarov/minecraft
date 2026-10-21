@@ -17,6 +17,7 @@ Catalog: https://frutigeraeroarchive.org/icons
 | minigames-gamepad.png | https://frutigeraeroarchive.org/images/icons/windows_vista/vista_console.ico |
 | game-lucky-chest.png | https://icons.iconarchive.com/icons/iconarchive/seaside/256/Treasure-Chest-icon.png |
 | game-minesweeper.png | https://icons.iconarchive.com/icons/everaldo/crystal-clear/128/App-core-bomb-icon.png |
+| game-minefall.png | Sourced Minecraft Diamond Pickaxe texture, integer 16x upscale (256x256) |
 | coin.png | https://icons.iconarchive.com/icons/hopstarter/soft-scraps/256/Coin-icon.png |
 
 Each PNG is the original 256×256, 32-bit RGBA PNG frame extracted byte-for-byte

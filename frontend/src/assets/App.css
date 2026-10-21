@@ -1371,6 +1371,26 @@ button.inv-bubble { padding: 0; border: 0; color: inherit; font: inherit; cursor
   color: #38bdf8;
 }
 
+.minefall-hud-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.minefall-speed-btn,
+.minefall-skip-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.pixelated {
+  image-rendering: -moz-crisp-edges;
+  image-rendering: pixelated;
+}
+
 .minefall-column-selector {
   display: grid;
   grid-template-columns: repeat(9, 1fr);
