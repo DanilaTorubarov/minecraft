@@ -349,6 +349,26 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                       ? `${block.members.length} trusted player(s)`
                       : 'None (Owner only)'}
                   </dd>
+
+                  {isPlaced && (
+                    <>
+                      <dt style={{ color: 'var(--muted)' }}>Fast Travel:</dt>
+                      <dd style={{ margin: 0 }}>
+                        {isActive ? (
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', fontSize: '12px' }}>
+                            <code style={{ fontWeight: 600, color: 'var(--accent)', background: 'var(--surface-soft)', padding: '1px 5px', borderRadius: '4px' }}>/ps tp {block.block_index}</code>
+                            <span style={{ color: 'var(--muted)' }}>or</span>
+                            <code style={{ fontWeight: 600, color: 'var(--accent)', background: 'var(--surface-soft)', padding: '1px 5px', borderRadius: '4px' }}>/home {block.block_index}</code>
+                            <span style={{ color: 'var(--muted)', fontSize: '11px' }}>(25 coins · 3s warmup)</span>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '12px', color: 'var(--danger)' }}>
+                            Disabled (Dormant · deposit fuel crystals to activate)
+                          </span>
+                        )}
+                      </dd>
+                    </>
+                  )}
                 </dl>
 
                 {/* Fuel Queue Breakdown */}

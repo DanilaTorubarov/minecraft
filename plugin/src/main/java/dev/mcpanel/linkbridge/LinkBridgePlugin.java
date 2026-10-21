@@ -97,6 +97,7 @@ import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitRunnable;
 
 /**
  * Redeems a one-time code, issued by the web panel, against the panel's internal
@@ -325,6 +326,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             }
         }
         activeBreaches.clear();
+        for (org.bukkit.scheduler.BukkitTask task : activeTeleportWarmups.values()) {
+            try { task.cancel(); } catch (Exception ignored) {}
+        }
+        activeTeleportWarmups.clear();
 
         // One last attempt so a restart does not lose this run's activity. A short
         // timeout keeps the shutdown quick when the panel is down.
@@ -449,6 +454,15 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return true;
             }
             psCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("home")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Private] Wait a few seconds and try again.");
+                return true;
+            }
+            String targetIndex = (args.length >= 1) ? args[0] : "1";
+            psCommand(player, new String[]{"tp", targetIndex});
             return true;
         }
         if (command.getName().equalsIgnoreCase("mine")) {
@@ -1747,6 +1761,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private NamespacedKey raidTntKey;
     private NamespacedKey breachZoneKey;
     private final Map<String, String> activeRaidTntBlocks = new ConcurrentHashMap<>();
+    private final Map<UUID, org.bukkit.scheduler.BukkitTask> activeTeleportWarmups = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> teleportCooldowns = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastCombatMillis = new ConcurrentHashMap<>();
 
     private static final class RegeneratingOreNode {
         final Material originalMaterial;
@@ -2203,6 +2220,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         ) {
             return;
         }
+        if (activeTeleportWarmups.containsKey(event.getPlayer().getUniqueId())) {
+            cancelTeleportWarmup(event.getPlayer(), "Fast travel cancelled because you moved!");
+        }
         double blocks = from.distance(to);
         if (blocks <= 0.0 || blocks > MAX_WALK_BLOCKS) {
             return;
@@ -2266,6 +2286,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (event.isCancelled() || event.getFinalDamage() <= 0.0) {
             return;
         }
+        lastCombatMillis.put(player.getUniqueId(), System.currentTimeMillis());
         addCapped(countersFor(player).damageDealt, centiHearts(event.getFinalDamage()));
     }
 
@@ -2277,6 +2298,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         if (event.isCancelled() || event.getFinalDamage() <= 0.0) {
             return;
+        }
+        lastCombatMillis.put(player.getUniqueId(), System.currentTimeMillis());
+        if (activeTeleportWarmups.containsKey(player.getUniqueId())) {
+            cancelTeleportWarmup(player, "Fast travel cancelled because you took damage!");
         }
         addCapped(countersFor(player).damageTaken, centiHearts(event.getFinalDamage()));
     }
@@ -2388,6 +2413,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
         repairQuotes.remove(uuid);
+        org.bukkit.scheduler.BukkitTask warmup = activeTeleportWarmups.remove(uuid);
+        if (warmup != null) {
+            warmup.cancel();
+        }
         // A quit is a good moment to hand in the pending activity, so "last active"
         // in the panel tracks the disconnect. The panel may be unreachable; the
         // periodic flush still owns the data.
@@ -3365,8 +3394,22 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             getCommand("ps").setExecutor(this);
             getCommand("ps").setTabCompleter((sender, cmd, alias, args) -> {
                 if (args.length == 1) {
-                    return List.of("buy", "list", "claim", "add", "remove", "info", "raid").stream()
+                    return List.of("buy", "list", "claim", "tp", "home", "add", "remove", "info", "raid").stream()
                         .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+                }
+                if (args.length == 2 && (args[0].equalsIgnoreCase("tp") || args[0].equalsIgnoreCase("home"))) {
+                    return List.of("1", "2", "3").stream()
+                        .filter(s -> s.startsWith(args[1])).toList();
+                }
+                return List.of();
+            });
+        }
+        if (getCommand("home") != null) {
+            getCommand("home").setExecutor(this);
+            getCommand("home").setTabCompleter((sender, cmd, alias, args) -> {
+                if (args.length == 1) {
+                    return List.of("1", "2", "3").stream()
+                        .filter(s -> s.startsWith(args[0])).toList();
                 }
                 return List.of();
             });
@@ -3982,12 +4025,31 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
             player.sendMessage("§6=== Private Block System ===");
             player.sendMessage("§e/ps buy §7— Buy next private block (1/3: 500c, 2/3: 20k, 3/3: 50k)");
+            player.sendMessage("§e/ps tp [1|2|3] §7— Fast travel to your placed & fueled core (25c, 3s warmup)");
+            player.sendMessage("§e/home [1|2|3] §7— Quick alias for /ps tp");
             player.sendMessage("§e/ps claim §7— Recover any destroyed or lost private blocks for free");
             player.sendMessage("§e/ps list §7— List all your owned private blocks and status");
             player.sendMessage("§e/ps add <player> §7— Add a trusted friend to current private block");
             player.sendMessage("§e/ps remove <player> §7— Remove friend from current private block");
             player.sendMessage("§e/ps info §7— View details of the private block where you stand");
             player.sendMessage("§e/ps raid §7— Base raiding rules and breach charges");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("tp") || args[0].equalsIgnoreCase("teleport") || args[0].equalsIgnoreCase("home")) {
+            int targetIndex = 1;
+            if (args.length >= 2) {
+                try {
+                    targetIndex = Integer.parseInt(args[1]);
+                } catch (NumberFormatException e) {
+                    player.sendMessage("§c[Private] Usage: /ps tp [1|2|3] or /home [1|2|3]");
+                    return;
+                }
+            }
+            if (targetIndex < 1 || targetIndex > 3) {
+                player.sendMessage("§c[Private] Invalid Protection Core index. Choose 1, 2, or 3.");
+                return;
+            }
+            handlePrivateTeleport(player, targetIndex);
             return;
         }
         if (args[0].equalsIgnoreCase("raid")) {
@@ -4091,6 +4153,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                                     player.sendMessage(String.format(Locale.ROOT,
                                         "§e#%d: §aPlaced §7at %s | §bSize: %dx%d | §7Fuel: %s",
                                         i, loc, size, size, fuel > 0 ? "§a" + ExpeditionRules.formatDuration(fuel) : "§cDormant (No Fuel)"));
+                                    if (fuel > 0) {
+                                        player.sendMessage(String.format(Locale.ROOT, "  §7↳ Type §e/ps tp %d §7or §e/home %d §7to fast-travel (25 coins)", i, i));
+                                    }
                                 } else {
                                     boolean inInv = hasCoreItemInInventory(player, i);
                                     if (inInv) {
@@ -4181,6 +4246,142 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
         player.sendMessage("[Private] Unknown subcommand. Use /ps for help.");
+    }
+
+    private void handlePrivateTeleport(Player player, int targetIndex) {
+        PlacedPrivateBlock pb = getPlacedBlockByUserAndIndex(player.getUniqueId(), targetIndex);
+        if (pb == null || !pb.placed) {
+            player.sendMessage(String.format(Locale.ROOT, "§c[Private] Protection Core #%d is not placed in the world! Use /ps list to view status.", targetIndex));
+            return;
+        }
+        if (pb.fuelSeconds <= 0) {
+            player.sendMessage(String.format(Locale.ROOT, "§c[Private] Protection Core #%d is dormant (out of fuel)! Deposit fuel crystals to activate fast travel.", targetIndex));
+            return;
+        }
+        World destinationWorld = getServer().getWorld(pb.world);
+        if (destinationWorld == null) {
+            player.sendMessage("§c[Private] Destination world '" + pb.world + "' is currently unavailable.");
+            return;
+        }
+
+        long lastCombat = lastCombatMillis.getOrDefault(player.getUniqueId(), 0L);
+        long now = System.currentTimeMillis();
+        if (now - lastCombat < 10_000L) {
+            long waitSec = (10_000L - (now - lastCombat) + 999) / 1000;
+            player.sendMessage("§c[Private] You cannot fast travel while in combat! Wait " + waitSec + "s without taking damage.");
+            return;
+        }
+
+        long cdUntil = teleportCooldowns.getOrDefault(player.getUniqueId(), 0L);
+        if (now < cdUntil) {
+            long remainSec = (cdUntil - now + 999) / 1000;
+            player.sendMessage("§e[Private] Fast travel is on cooldown. Wait " + remainSec + "s.");
+            return;
+        }
+
+        if (activeTeleportWarmups.containsKey(player.getUniqueId())) {
+            player.sendMessage("§e[Private] You already have an active fast travel in progress!");
+            return;
+        }
+
+        int landY = pb.y + 1;
+        while (landY < destinationWorld.getMaxHeight() - 2 && destinationWorld.getBlockAt(pb.x, landY, pb.z).getType().isSolid()) {
+            landY++;
+        }
+        Location landingLoc = new Location(destinationWorld, pb.x + 0.5, landY, pb.z + 0.5, player.getLocation().getYaw(), player.getLocation().getPitch());
+
+        Location origin = player.getLocation().clone();
+        player.sendMessage(String.format(Locale.ROOT,
+            "§e[Private] Fast traveling to Protection Core #%d in 3 seconds... Do not move! (Cost: 25 coins)", targetIndex));
+        player.playSound(origin, Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.0f);
+
+        org.bukkit.scheduler.BukkitTask warmupTask = new BukkitRunnable() {
+            int ticksElapsed = 0;
+
+            @Override
+            public void run() {
+                if (!player.isOnline()) {
+                    activeTeleportWarmups.remove(player.getUniqueId());
+                    cancel();
+                    return;
+                }
+                ticksElapsed += 5;
+
+                Location current = player.getLocation();
+                current.getWorld().spawnParticle(Particle.PORTAL, current.clone().add(0, 0.4, 0), 8, 0.2, 0.3, 0.2, 0.05);
+
+                if (ticksElapsed % 20 == 0 && ticksElapsed < 60) {
+                    player.playSound(current, Sound.BLOCK_NOTE_BLOCK_PLING, 0.8f, 1.2f);
+                }
+
+                if (ticksElapsed >= 60) {
+                    activeTeleportWarmups.remove(player.getUniqueId());
+                    cancel();
+                    executeTeleportAsync(player, targetIndex, landingLoc);
+                }
+            }
+        }.runTaskTimer(this, 5L, 5L);
+
+        activeTeleportWarmups.put(player.getUniqueId(), warmupTask);
+    }
+
+    private void cancelTeleportWarmup(Player player, String reason) {
+        org.bukkit.scheduler.BukkitTask task = activeTeleportWarmups.remove(player.getUniqueId());
+        if (task != null) {
+            task.cancel();
+            player.sendMessage("§c[Private] " + reason);
+            player.playSound(player.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 0.8f);
+        }
+    }
+
+    private void executeTeleportAsync(Player player, int targetIndex, Location targetLoc) {
+        UUID uuid = player.getUniqueId();
+        String username = player.getName();
+        player.sendMessage("[Private] Confirming fast travel with economy ledger...");
+
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            String payload = "{\"uuid\":\"" + uuid + "\",\"username\":\"" + jsonEscape(username) + "\",\"block_index\":" + targetIndex + "}";
+            var response = post(internalBase + "/private/teleport", payload, requestTimeout);
+
+            getServer().getScheduler().runTask(this, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
+                if (response == null) {
+                    player.sendMessage("§c[Private] Server did not respond. No coins charged.");
+                    return;
+                }
+                if (response.statusCode() == 200) {
+                    try {
+                        var json = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
+                        long price = json.get("price").getAsLong();
+                        long remaining = json.get("remaining_coins").getAsLong();
+
+                        player.teleport(targetLoc);
+                        targetLoc.getWorld().spawnParticle(Particle.REVERSE_PORTAL, targetLoc.clone().add(0, 1.0, 0), 50, 0.4, 0.8, 0.4, 0.1);
+                        player.playSound(targetLoc, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
+                        teleportCooldowns.put(uuid, System.currentTimeMillis() + 30_000L);
+
+                        player.sendMessage(String.format(Locale.ROOT,
+                            "§a[Private] Successfully fast-traveled to Protection Core #%d! (-%,d coins, %,d coins remaining)",
+                            targetIndex, price, remaining));
+                    } catch (Exception e) {
+                        player.sendMessage("§c[Private] Error processing teleport response.");
+                    }
+                } else if (response.statusCode() == 402) {
+                    player.sendMessage("§c[Private] Fast travel failed: Insufficient coins! Fast travel costs 25 coins with 1,000 coins protected reserve.");
+                    player.playSound(player.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 0.8f);
+                } else if (response.statusCode() == 403) {
+                    player.sendMessage(String.format(Locale.ROOT,
+                        "§c[Private] Fast travel failed: Protection Core #%d is dormant (out of fuel)!", targetIndex));
+                } else if (response.statusCode() == 404 || response.statusCode() == 400) {
+                    player.sendMessage(String.format(Locale.ROOT,
+                        "§c[Private] Fast travel failed: Protection Core #%d is not placed in the world.", targetIndex));
+                } else {
+                    player.sendMessage("§c[Private] Fast travel failed (" + response.statusCode() + "). No coins charged.");
+                }
+            });
+        });
     }
 
     public ItemStack createBreachChargeItem(int amount) {

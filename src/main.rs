@@ -83,6 +83,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/private/buy", post(buy_private_block))
         .route("/internal/private/list", get(list_private_blocks))
         .route("/internal/private/sync", post(sync_private_block))
+        .route("/internal/private/teleport", post(teleport_private_block))
         .route("/internal/minershop/buy", post(buy_miner_pickaxe))
         .route("/internal/raid/buy", post(buy_breach_charge))
         .route("/internal/raid/tnt", post(buy_raid_tnt))
@@ -5363,6 +5364,84 @@ async fn buy_private_block(
     Ok(Json(serde_json::json!({
         "id": id,
         "block_index": block_index,
+        "price": price,
+        "remaining_coins": balance.unwrap()
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct TeleportPrivateBlockRequest {
+    uuid: String,
+    username: String,
+    block_index: i32,
+}
+
+async fn teleport_private_block(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<TeleportPrivateBlockRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_service_token(&headers)?;
+    if !is_uuid(&body.uuid) || !is_minecraft_username(&body.username) || !(1..=3).contains(&body.block_index) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = pool.begin().await.map_err(market_db)?;
+    lock_economy(&mut tx).await?;
+    grant_starter(&mut tx, &body.uuid, &body.username).await?;
+
+    let row_opt = sqlx::query(
+        "SELECT world, x, y, z, placed, fuel_seconds FROM private_blocks WHERE uuid=$1 AND block_index=$2 FOR UPDATE",
+    )
+    .bind(&body.uuid)
+    .bind(body.block_index)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    let row = match row_opt {
+        Some(r) => r,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let placed: bool = row.get("placed");
+    let world: Option<String> = row.get("world");
+    let x: Option<i32> = row.get("x");
+    let y: Option<i32> = row.get("y");
+    let z: Option<i32> = row.get("z");
+    let fuel_seconds: i64 = row.get("fuel_seconds");
+
+    if !placed || world.is_none() || x.is_none() || y.is_none() || z.is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if fuel_seconds <= 0 {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let price = ECONOMY_TRAVEL_PRICE;
+    coin_reason(&mut tx, "private_teleport", &format!("{}:{}", body.uuid, body.block_index)).await?;
+    let balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE player_stats SET coins=coins-$2 WHERE uuid=$1 AND coins>=$2+$3 RETURNING coins",
+    )
+    .bind(&body.uuid)
+    .bind(price)
+    .bind(ECONOMY_SERVICE_RESERVE)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(market_db)?;
+
+    if balance.is_none() {
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+
+    tx.commit().await.map_err(market_db)?;
+    Ok(Json(serde_json::json!({
+        "block_index": body.block_index,
+        "world": world.unwrap(),
+        "x": x.unwrap(),
+        "y": y.unwrap(),
+        "z": z.unwrap(),
         "price": price,
         "remaining_coins": balance.unwrap()
     })))
@@ -16790,6 +16869,31 @@ mod test {
         let list_all = body_json(list_all_res).await?;
         assert_eq!(list_all.as_array().unwrap().len(), 1);
         assert_eq!(list_all[0]["placed"], true);
+
+        // Teleport to placed & fueled private block 1
+        let tp_res = post_internal(&pool, "/internal/private/teleport", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro", "block_index": 1
+        }), &ip).await?;
+        assert_eq!(tp_res.status(), StatusCode::OK);
+        let tp_json = body_json(tp_res).await?;
+        assert_eq!(tp_json["block_index"], 1);
+        assert_eq!(tp_json["world"], "world");
+        assert_eq!(tp_json["x"], 100);
+        assert_eq!(tp_json["y"], 64);
+        assert_eq!(tp_json["z"], 200);
+        assert_eq!(tp_json["price"], 25);
+
+        // Teleport to unplaced private block 2 fails with BAD_REQUEST
+        let tp_unplaced = post_internal(&pool, "/internal/private/teleport", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro", "block_index": 2
+        }), &ip).await?;
+        assert_eq!(tp_unplaced.status(), StatusCode::BAD_REQUEST);
+
+        // Teleport with invalid block index fails with BAD_REQUEST
+        let tp_invalid = post_internal(&pool, "/internal/private/teleport", Some(&token), serde_json::json!({
+            "uuid": uuid, "username": "MinerPro", "block_index": 4
+        }), &ip).await?;
+        assert_eq!(tp_invalid.status(), StatusCode::BAD_REQUEST);
 
         let pick1 = body_json(post_internal(&pool, "/internal/minershop/buy", Some(&token), serde_json::json!({
             "uuid": uuid, "username": "MinerPro", "tier": 1
