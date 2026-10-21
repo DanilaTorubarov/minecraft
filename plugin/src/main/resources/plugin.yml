@@ -1,5 +1,5 @@
 name: LinkBridge
-version: '1.11.1'
+version: '1.11.2'
 main: dev.mcpanel.linkbridge.LinkBridgePlugin
 description: Links a Minecraft account to a web panel account and reports per-player statistics and inventory snapshots to the panel.
 api-version: '1.21'

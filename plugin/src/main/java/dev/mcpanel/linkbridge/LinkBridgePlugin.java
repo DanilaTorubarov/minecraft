@@ -121,6 +121,21 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private static final long PLAY_TICK_TICKS = 200L;
 
     /**
+     * The panel validates every reported counter as an unsigned 32-bit value, so
+     * the counters saturate here. Without the ceiling one absurd event (an
+     * infinite-damage hit rounding to {@code Long.MAX_VALUE}) produced a report
+     * the panel rejected with 400, which then blocked the whole outbox.
+     */
+    private static final long MAX_COUNTER = 4_294_967_295L;
+
+    /**
+     * No honest single hit reaches this many centi-hearts (1000 hearts); a larger
+     * value is a hostile or broken damage source and must not consume the whole
+     * counter budget.
+     */
+    private static final long MAX_EVENT_CENTI_HEARTS = 100_000L;
+
+    /**
      * A single move event longer than this is a teleport, a portal, or a server
      * correction — not walking. Counting it as distance would invent travel.
      */
@@ -1412,7 +1427,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
      */
     private void countLogin(Player player) {
         if (player != null && isAuthenticated(player)) {
-            countersFor(player).logins.incrementAndGet();
+            addCapped(countersFor(player).logins, 1);
             economyLogin(player);
         }
     }
@@ -1913,7 +1928,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         for (Player player : getServer().getOnlinePlayers()) {
             if (isAuthenticated(player)) {
-                countersFor(player).playSeconds.addAndGet(seconds);
+                addCapped(countersFor(player).playSeconds, seconds);
             }
         }
     }
@@ -1925,7 +1940,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
         lastActive.put(player.getUniqueId(),System.currentTimeMillis());
-        countersFor(player).blocksPlaced.incrementAndGet();
+        addCapped(countersFor(player).blocksPlaced, 1);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -1936,7 +1951,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
         lastActive.put(player.getUniqueId(),System.currentTimeMillis());
-        countersFor(player).blocksBroken.incrementAndGet();
+        addCapped(countersFor(player).blocksBroken, 1);
     }
 
     /**
@@ -1970,14 +1985,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         // Centi-blocks: a walk of a fraction of a block must still count, and an
         // integer counter survives the flush retries without losing the fraction.
         lastActive.put(player.getUniqueId(),System.currentTimeMillis());
-        countersFor(player).distanceCm.addAndGet(Math.round(blocks * 100.0));
+        addCapped(countersFor(player).distanceCm, Math.round(blocks * 100.0));
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onEntityDeath(EntityDeathEvent event) {
         Player killer = event.getEntity().getKiller();
         if (killer != null && isAuthenticated(killer)) {
-            countersFor(killer).mobsKilled.incrementAndGet();
+            addCapped(countersFor(killer).mobsKilled, 1);
             economyKill(event,killer);
         }
     }
@@ -1986,7 +2001,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
         if (isAuthenticated(player)) {
-            countersFor(player).deaths.incrementAndGet();
+            addCapped(countersFor(player).deaths, 1);
         }
 
         if (player.getWorld().getName().equals("mine_world") || activeMineExpeditions.containsKey(player.getUniqueId())) {
@@ -2022,7 +2037,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (event.isCancelled() || event.getFinalDamage() <= 0.0) {
             return;
         }
-        countersFor(player).damageDealt.addAndGet(centiHearts(event.getFinalDamage()));
+        addCapped(countersFor(player).damageDealt, centiHearts(event.getFinalDamage()));
     }
 
     /** Damage that lands on the player, whatever the cause. */
@@ -2034,13 +2049,19 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (event.isCancelled() || event.getFinalDamage() <= 0.0) {
             return;
         }
-        countersFor(player).damageTaken.addAndGet(centiHearts(event.getFinalDamage()));
+        addCapped(countersFor(player).damageTaken, centiHearts(event.getFinalDamage()));
     }
 
     /** The damage the game finally applied, in hundredths of a heart. */
     private long centiHearts(double damagePoints) {
         // One damage point is half a heart, so 100 centi-hearts per 2 points.
-        return Math.max(0L, Math.round(damagePoints * 50.0));
+        // An infinite or absurd damage source (some plugins kill with
+        // Double.MAX_VALUE) would otherwise round to Long.MAX_VALUE and poison
+        // the report the panel accepts.
+        if (!Double.isFinite(damagePoints) || damagePoints <= 0.0) {
+            return 0L;
+        }
+        return Math.min(MAX_EVENT_CENTI_HEARTS, Math.max(0L, Math.round(damagePoints * 50.0)));
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -2051,7 +2072,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         ItemStack result = event.getRecipe().getResult();
         if (result != null) {
-            countersFor(player).itemsCrafted.addAndGet(result.getAmount());
+            addCapped(countersFor(player).itemsCrafted, result.getAmount());
         }
     }
 
@@ -2060,7 +2081,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (!(event.getEntity() instanceof Player player) || !isAuthenticated(player)) {
             return;
         }
-        countersFor(player).itemsPickedUp.addAndGet(event.getItem().getItemStack().getAmount());
+        addCapped(countersFor(player).itemsPickedUp, event.getItem().getItemStack().getAmount());
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -2070,7 +2091,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         Player player = event.getPlayer();
         if (isAuthenticated(player)) {
-            countersFor(player).fishCaught.incrementAndGet();
+            addCapped(countersFor(player).fishCaught, 1);
         }
     }
 
@@ -2078,7 +2099,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onEnchant(EnchantItemEvent event) {
         Player player = event.getEnchanter();
         if (isAuthenticated(player)) {
-            countersFor(player).itemsEnchanted.incrementAndGet();
+            addCapped(countersFor(player).itemsEnchanted, 1);
         }
     }
 
@@ -2086,7 +2107,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onToolBreak(PlayerItemBreakEvent event) {
         Player player = event.getPlayer();
         if (isAuthenticated(player)) {
-            countersFor(player).toolsBroken.incrementAndGet();
+            addCapped(countersFor(player).toolsBroken, 1);
         }
     }
 
@@ -2095,7 +2116,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (!(event.getBreeder() instanceof Player player) || !isAuthenticated(player)) {
             return;
         }
-        countersFor(player).animalsBred.incrementAndGet();
+        addCapped(countersFor(player).animalsBred, 1);
     }
 
     /**
@@ -2118,7 +2139,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     public void onBedLeave(PlayerBedLeaveEvent event) {
         Player player = event.getPlayer();
         if (isAuthenticated(player) && sleeping.remove(player.getUniqueId())) {
-            countersFor(player).timesSlept.incrementAndGet();
+            addCapped(countersFor(player).timesSlept, 1);
         }
     }
 
@@ -2130,7 +2151,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             return;
         }
         if (isAuthenticated(player)) {
-            countersFor(player).advancements.incrementAndGet();
+            addCapped(countersFor(player).advancements, 1);
         }
     }
 
@@ -2149,15 +2170,24 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         return totals.computeIfAbsent(player.getUniqueId(), id -> new Counters());
     }
 
+    /** Adds to a counter, saturating at the panel's unsigned 32-bit ceiling. */
+    private static void addCapped(AtomicLong counter, long delta) {
+        if (delta <= 0L) {
+            return;
+        }
+        counter.updateAndGet(current -> current > MAX_COUNTER - delta ? MAX_COUNTER : current + delta);
+    }
+
     /**
      * Reports, for one player (or every player when {@code only} is null), the
      * activity measured since the panel last accepted a report for that player.
      *
      * <p>Compute, send, and mark-as-reported happen under one lock, so the timer
      * flush and a quit flush can never hand the panel the same activity twice.
-     * When the panel does not answer 200 the delta is kept and retried by the
-     * next flush; a hard shutdown loses at most the activity measured since the
-     * last accepted report.
+     * A transport failure or a 5xx keeps the delta for the next flush; a 4xx
+     * means the body can never be accepted, so it is dropped and logged rather
+     * than retried forever. A hard shutdown loses at most the activity measured
+     * since the last accepted report.
      */
     private boolean flush(UUID only, Duration timeout) {
         if (statsUrl.isBlank()) return false;
@@ -2187,11 +2217,39 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     private boolean sendPending(Duration timeout) {
         HttpResponse<String> response = post(statsUrl, pendingBody, timeout);
-        if (response == null || response.statusCode() != 200) return false;
+        if (response == null) {
+            return false;
+        }
+        int code = response.statusCode();
+        if (code >= 500) {
+            return false;
+        }
+        if (code != 200) {
+            // The panel refuses this body on its merits — a counter outside its
+            // unsigned 32-bit range, a name it will not accept. Retrying it
+            // forever would starve every later report for every player, which is
+            // exactly how statistics once stopped for a whole server after one
+            // bad damage value. Drop it, count the delta as reported (so the
+            // same poison is never rebuilt from the counters), and carry on.
+            getLogger().warning(
+                "Dropping a statistics report the panel rejected (" + code + ")"
+                    + (pendingBatch.isEmpty()
+                        ? ": recovered from disk, nothing to re-count."
+                        : ": " + pendingBatch.size() + " player(s) of activity lost."));
+            markReported(pendingBatch);
+            pendingBatch = List.of();
+            pendingBody = null;
+            try {
+                Files.deleteIfExists(outbox);
+            } catch (IOException error) {
+                getLogger().warning("Cannot clear rejected statistics report: " + error);
+            }
+            return true;
+        }
         try {
             Files.deleteIfExists(outbox);
         } catch (IOException error) {
-            getLogger().warning("Cannot clear accepted coin report; will safely retry: " + error);
+            getLogger().warning("Cannot clear accepted statistics report; will safely retry: " + error);
             return false;
         }
         markReported(pendingBatch);
