@@ -51,20 +51,29 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.enchantments.Enchantment;
+import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.Creeper;
+import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
+import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.enchantment.EnchantItemEvent;
 import org.bukkit.event.entity.EntityBreedEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
+import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.hanging.HangingBreakByEntityEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
@@ -72,6 +81,7 @@ import org.bukkit.event.player.PlayerAdvancementDoneEvent;
 import org.bukkit.event.player.PlayerBedEnterEvent;
 import org.bukkit.event.player.PlayerBedLeaveEvent;
 import org.bukkit.event.player.PlayerFishEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerItemBreakEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -742,6 +752,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             if (player == null || owner == null) return false;
             if (player.equals(owner)) return true;
             return members != null && members.contains(player);
+        }
+
+        public static boolean canExplosionDamageZone(UUID triggerPlayer, UUID owner, List<UUID> members) {
+            return canAccess(triggerPlayer, owner, members);
         }
     }
 
@@ -1522,6 +1536,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private final Map<UUID, PlacedPrivateBlock> activeCoreGuis = new ConcurrentHashMap<>();
     private final Map<String, ActiveBreach> activeBreaches = new ConcurrentHashMap<>();
     private final List<PrimedCharge> primedCharges = new CopyOnWriteArrayList<>();
+    private NamespacedKey creeperTriggerKey;
 
     private static final class RegeneratingOreNode {
         final Material originalMaterial;
@@ -3090,6 +3105,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     }
 
     private void initializePrivateAndMining() {
+        creeperTriggerKey = new NamespacedKey(this, "creeper_trigger");
         if (getCommand("ps") != null) {
             getCommand("ps").setExecutor(this);
             getCommand("ps").setTabCompleter((sender, cmd, alias, args) -> {
@@ -4764,22 +4780,154 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
     }
 
+    private UUID resolveCreeperTrigger(Creeper creeper) {
+        if (creeper.getTarget() instanceof Player p) {
+            return p.getUniqueId();
+        }
+
+        try {
+            if (creeperTriggerKey != null) {
+                var pdc = creeper.getPersistentDataContainer();
+                if (pdc.has(creeperTriggerKey, org.bukkit.persistence.PersistentDataType.STRING)) {
+                    String stored = pdc.get(creeperTriggerKey, org.bukkit.persistence.PersistentDataType.STRING);
+                    if (stored != null && !stored.isBlank()) {
+                        return UUID.fromString(stored);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        double closestDistSq = 49.0;
+        UUID nearest = null;
+        for (Player p : creeper.getWorld().getPlayers()) {
+            if (!p.isOnline() || p.isDead()) continue;
+            double dSq = p.getLocation().distanceSquared(creeper.getLocation());
+            if (dSq <= closestDistSq) {
+                closestDistSq = dSq;
+                nearest = p.getUniqueId();
+            }
+        }
+        return nearest;
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onCreeperTarget(EntityTargetLivingEntityEvent event) {
+        if (event.getEntity() instanceof Creeper creeper && creeperTriggerKey != null) {
+            if (event.getTarget() instanceof Player player) {
+                creeper.getPersistentDataContainer().set(creeperTriggerKey, org.bukkit.persistence.PersistentDataType.STRING, player.getUniqueId().toString());
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onCreeperDamage(EntityDamageByEntityEvent event) {
+        if (event.getEntity() instanceof Creeper creeper && creeperTriggerKey != null) {
+            Player damager = null;
+            if (event.getDamager() instanceof Player p) {
+                damager = p;
+            } else if (event.getDamager() instanceof Projectile proj && proj.getShooter() instanceof Player p) {
+                damager = p;
+            }
+            if (damager != null) {
+                creeper.getPersistentDataContainer().set(creeperTriggerKey, org.bukkit.persistence.PersistentDataType.STRING, damager.getUniqueId().toString());
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onCreeperIgnite(PlayerInteractEntityEvent event) {
+        if (event.getRightClicked() instanceof Creeper creeper && creeperTriggerKey != null) {
+            ItemStack item = event.getPlayer().getInventory().getItem(event.getHand());
+            if (item != null && (item.getType() == Material.FLINT_AND_STEEL || item.getType() == Material.FIRE_CHARGE)) {
+                creeper.getPersistentDataContainer().set(creeperTriggerKey, org.bukkit.persistence.PersistentDataType.STRING, event.getPlayer().getUniqueId().toString());
+            }
+        }
+    }
+
     @EventHandler(priority = EventPriority.NORMAL)
-    public void onMineEntityExplode(org.bukkit.event.entity.EntityExplodeEvent event) {
+    public void onPrivateEntityExplode(EntityExplodeEvent event) {
         if (event.getLocation().getWorld().getName().equals("mine_world")) {
             event.blockList().clear();
             return;
         }
+
         event.blockList().removeIf(b -> getPlacedCoreAt(b.getLocation()) != null);
+
+        if (event.getEntity() instanceof Creeper creeper) {
+            UUID triggerUuid = resolveCreeperTrigger(creeper);
+
+            event.blockList().removeIf(b -> {
+                PlacedPrivateBlock pb = getProtectingBlock(b.getLocation());
+                if (pb == null) return false;
+
+                boolean canDamage = PrivateRules.canExplosionDamageZone(triggerUuid, pb.ownerUuid, pb.members);
+                return !canDamage;
+            });
+            return;
+        }
+
+        UUID sourcePlayerUuid = null;
+        if (event.getEntity() instanceof TNTPrimed tnt) {
+            if (tnt.getSource() instanceof Player p) {
+                sourcePlayerUuid = p.getUniqueId();
+            }
+        }
+
+        final UUID finalSourceUuid = sourcePlayerUuid;
+        event.blockList().removeIf(b -> {
+            PlacedPrivateBlock pb = getProtectingBlock(b.getLocation());
+            if (pb == null) return false;
+
+            boolean canDamage = PrivateRules.canExplosionDamageZone(finalSourceUuid, pb.ownerUuid, pb.members);
+            return !canDamage;
+        });
     }
 
     @EventHandler(priority = EventPriority.NORMAL)
-    public void onMineBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
+    public void onPrivateBlockExplode(BlockExplodeEvent event) {
         if (event.getBlock().getWorld().getName().equals("mine_world")) {
             event.blockList().clear();
             return;
         }
-        event.blockList().removeIf(b -> getPlacedCoreAt(b.getLocation()) != null);
+        event.blockList().removeIf(b -> getPlacedCoreAt(b.getLocation()) != null || getProtectingBlock(b.getLocation()) != null);
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPrivateHangingBreakByEntity(HangingBreakByEntityEvent event) {
+        PlacedPrivateBlock pb = getProtectingBlock(event.getEntity().getLocation());
+        if (pb == null) return;
+
+        if (event.getRemover() instanceof Creeper creeper) {
+            UUID trigger = resolveCreeperTrigger(creeper);
+            if (!PrivateRules.canExplosionDamageZone(trigger, pb.ownerUuid, pb.members)) {
+                event.setCancelled(true);
+            }
+        } else if (event.getRemover() instanceof TNTPrimed tnt) {
+            UUID source = (tnt.getSource() instanceof Player p) ? p.getUniqueId() : null;
+            if (!PrivateRules.canExplosionDamageZone(source, pb.ownerUuid, pb.members)) {
+                event.setCancelled(true);
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onPrivateArmorStandDamage(EntityDamageByEntityEvent event) {
+        if (event.getEntity() instanceof ArmorStand || event.getEntity() instanceof ItemFrame) {
+            PlacedPrivateBlock pb = getProtectingBlock(event.getEntity().getLocation());
+            if (pb == null) return;
+
+            if (event.getDamager() instanceof Creeper creeper) {
+                UUID trigger = resolveCreeperTrigger(creeper);
+                if (!PrivateRules.canExplosionDamageZone(trigger, pb.ownerUuid, pb.members)) {
+                    event.setCancelled(true);
+                }
+            } else if (event.getDamager() instanceof TNTPrimed tnt) {
+                UUID source = (tnt.getSource() instanceof Player p) ? p.getUniqueId() : null;
+                if (!PrivateRules.canExplosionDamageZone(source, pb.ownerUuid, pb.members)) {
+                    event.setCancelled(true);
+                }
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.NORMAL)

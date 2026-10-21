@@ -275,6 +275,21 @@ public final class InventoryNbtTest {
         check(LinkBridgePlugin.RaidRules.FUSE_SECONDS == 10, "Fuse is 10 seconds");
         check(LinkBridgePlugin.RaidRules.CHARGE_PRICE == 2500L, "Breach charge costs 2500 coins");
 
+        // Private zone creeper and explosion defense rules
+        var ownerUuid = UUID.randomUUID();
+        var memberUuid = UUID.randomUUID();
+        var strangerUuid = UUID.randomUUID();
+        var zoneMembers = List.of(memberUuid);
+
+        check(LinkBridgePlugin.PrivateRules.canExplosionDamageZone(ownerUuid, ownerUuid, zoneMembers),
+            "Owner triggering creeper in own base allows damage (vanilla consequences)");
+        check(LinkBridgePlugin.PrivateRules.canExplosionDamageZone(memberUuid, ownerUuid, zoneMembers),
+            "Member triggering creeper in base allows damage");
+        check(!LinkBridgePlugin.PrivateRules.canExplosionDamageZone(strangerUuid, ownerUuid, zoneMembers),
+            "Stranger triggering creeper must NOT damage private zone blocks");
+        check(!LinkBridgePlugin.PrivateRules.canExplosionDamageZone(null, ownerUuid, zoneMembers),
+            "Unidentified / untargeted creeper explosion must NOT damage private zone blocks");
+
         System.out.println("Inventory NBT regression checks passed");
     }
 }
