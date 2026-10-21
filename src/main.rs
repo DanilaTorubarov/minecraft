@@ -16727,7 +16727,7 @@ mod test {
         let (admin, pool, schema) = isolated_budget_pool().await?;
         let uuid = test_uuid(&random_ip());
         budget_identity(&pool, &uuid).await?;
-        sqlx::query("UPDATE player_stats SET coins=100000 WHERE uuid=$1")
+        sqlx::query("UPDATE player_stats SET coins=200000 WHERE uuid=$1")
             .bind(&uuid)
             .execute(&pool)
             .await?;
@@ -16740,21 +16740,21 @@ mod test {
         let b1 = body_json(res1).await?;
         assert_eq!(b1["block_index"], 1);
         assert_eq!(b1["price"], 500);
-        assert_eq!(coins_of(&pool, &uuid).await?, 99500);
+        assert_eq!(coins_of(&pool, &uuid).await?, 199500);
 
         let res2 = post_internal(&pool, "/internal/private/buy", Some(&token), buy1_body.clone(), &ip).await?;
         assert_eq!(res2.status(), StatusCode::OK);
         let b2 = body_json(res2).await?;
         assert_eq!(b2["block_index"], 2);
         assert_eq!(b2["price"], 20000);
-        assert_eq!(coins_of(&pool, &uuid).await?, 79500);
+        assert_eq!(coins_of(&pool, &uuid).await?, 179500);
 
         let res3 = post_internal(&pool, "/internal/private/buy", Some(&token), buy1_body.clone(), &ip).await?;
         assert_eq!(res3.status(), StatusCode::OK);
         let b3 = body_json(res3).await?;
         assert_eq!(b3["block_index"], 3);
         assert_eq!(b3["price"], 50000);
-        assert_eq!(coins_of(&pool, &uuid).await?, 29500);
+        assert_eq!(coins_of(&pool, &uuid).await?, 129500);
 
         let res4 = post_internal(&pool, "/internal/private/buy", Some(&token), buy1_body.clone(), &ip).await?;
         assert_eq!(res4.status(), StatusCode::CONFLICT);
@@ -17551,6 +17551,11 @@ mod economy_simulation {
     ];
     const TRAVEL_PRICE: i64 = ECONOMY_TRAVEL_PRICE;
     const REPAIR_PRICE: i64 = ECONOMY_REPAIR_PRICE;
+    const PRIVATE_PRICES: [i64; 3] = PRIVATE_BLOCK_PRICES;
+    const PICKAXE_PRICES: [i64; 4] = MINER_PICKAXE_PRICES;
+    const BREACH_PRICE: i64 = BREACH_CHARGE_PRICE;
+    const TNT_PRICE: i64 = RAID_TNT_PRICE;
+    const SERVICE_RESERVE: i64 = ECONOMY_SERVICE_RESERVE;
     const NEWCOMER_DAYS: usize = 14;
     const MAX_DAILY_ALLOWANCE: i64 = 1200;
 
@@ -17628,6 +17633,8 @@ mod economy_simulation {
         starter_mined: i64,
         starter_smelting_minutes: i64,
         starter_done: bool,
+        private_blocks: usize,
+        pickaxe_tier: usize,
     }
     impl Agent {
         fn new(kind: usize, joined: usize, rng: &mut SimRng) -> Self {
@@ -17659,6 +17666,8 @@ mod economy_simulation {
                 starter_mined: 0,
                 starter_smelting_minutes: 0,
                 starter_done: false,
+                private_blocks: 0,
+                pickaxe_tier: 0,
             }
         }
         fn milestones(&mut self, day: usize) {
@@ -17707,6 +17716,12 @@ mod economy_simulation {
         self_supplied: [i64; 2],
         produced: [i64; 2],
         consumed: [i64; 2],
+        private_blocks_bought: usize,
+        private_block_coins: i64,
+        pickaxes_bought: usize,
+        pickaxe_coins: i64,
+        raid_items_bought: usize,
+        raid_item_coins: i64,
     }
     #[derive(Debug, Clone, serde::Serialize, PartialEq)]
     struct Day {
@@ -18245,6 +18260,55 @@ mod economy_simulation {
                     agents[id].needs[0] -= units;
                     accounting.services += units * REPAIR_PRICE;
                     accounting.repaired_iron += units;
+                }
+                // Modeled sinks for newly added features: Private Territory Cores, Prospector Pickaxes, and Raiding Equipment.
+                if uses_services {
+                    // 1. Private Territory Blocks (Core 1: 500, Core 2: 20k, Core 3: 50k)
+                    if agents[id].private_blocks < 3 {
+                        let pb_index = agents[id].private_blocks;
+                        let price = PRIVATE_PRICES[pb_index];
+                        let ready = match pb_index {
+                            0 => agents[id].has_kit || agents[id].contracts_done >= 3,
+                            1 => agents[id].contracts_done >= 10 && agents[id].balance >= SERVICE_RESERVE + price * 3 / 2,
+                            _ => agents[id].contracts_done >= 20 && agents[id].balance >= SERVICE_RESERVE + price * 2,
+                        };
+                        if ready && agents[id].balance >= SERVICE_RESERVE + price {
+                            agents[id].balance -= price;
+                            agents[id].private_blocks += 1;
+                            accounting.services += price;
+                            accounting.private_blocks_bought += 1;
+                            accounting.private_block_coins += price;
+                        }
+                    }
+
+                    // 2. Prospector Pickaxes (Tier 1: 150, Tier 2: 1k, Tier 3: 5k, Tier 4: 20k)
+                    if agents[id].pickaxe_tier < 4 {
+                        let pick_tier = agents[id].pickaxe_tier;
+                        let price = PICKAXE_PRICES[pick_tier];
+                        let wants_pickaxe = agents[id].kind == 4 || agents[id].has_kit || agents[id].mining_minutes >= 30;
+                        if wants_pickaxe && agents[id].balance >= SERVICE_RESERVE + price {
+                            agents[id].balance -= price;
+                            agents[id].pickaxe_tier += 1;
+                            accounting.services += price;
+                            accounting.pickaxes_bought += 1;
+                            accounting.pickaxe_coins += price;
+                        }
+                    }
+
+                    // 3. Raiding & Breaching Items (Breach Charge: 20k, Raid TNT: 5k)
+                    if agents[id].private_blocks >= 1 && (agents[id].kind == 3 || agents[id].kind == 5 || service_rng.n(100) < 15) {
+                        if agents[id].balance >= SERVICE_RESERVE + BREACH_PRICE * 2 && service_rng.n(100) < 10 {
+                            agents[id].balance -= BREACH_PRICE;
+                            accounting.services += BREACH_PRICE;
+                            accounting.raid_items_bought += 1;
+                            accounting.raid_item_coins += BREACH_PRICE;
+                        } else if agents[id].balance >= SERVICE_RESERVE + TNT_PRICE * 2 && service_rng.n(100) < 20 {
+                            agents[id].balance -= TNT_PRICE;
+                            accounting.services += TNT_PRICE;
+                            accounting.raid_items_bought += 1;
+                            accounting.raid_item_coins += TNT_PRICE;
+                        }
+                    }
                 }
                 let scarcity = if scenario == "item_shortage" && day >= 120 {
                     8
@@ -18892,6 +18956,35 @@ mod economy_simulation {
         );
     }
 
+    #[test]
+    fn economy_simulation_incorporates_new_gameplay_sinks() {
+        let run = simulate_experiment("stable_20", 42, true, 180, MODELS[0], Some(IMPLEMENTED));
+        assert!(run.accounting.private_blocks_bought > 0, "agents purchase private blocks");
+        assert!(run.accounting.private_block_coins > 0);
+        assert!(run.accounting.pickaxes_bought > 0, "agents purchase prospector pickaxes");
+        assert!(run.accounting.pickaxe_coins > 0);
+        assert!(run.accounting.raid_items_bought > 0, "agents invest in raiding gear");
+        assert!(run.accounting.raid_item_coins > 0);
+
+        let total_new_sinks = run.accounting.private_block_coins
+            + run.accounting.pickaxe_coins
+            + run.accounting.raid_item_coins;
+        assert!(run.accounting.services >= total_new_sinks);
+
+        let final_coins = run.days.last().unwrap().total_money;
+        let expected_coins = run.accounting.opening + run.accounting.grants + run.accounting.quests + run.accounting.payouts
+            - run.accounting.stakes
+            - run.accounting.commission
+            - run.accounting.services;
+        assert_eq!(final_coins, expected_coins, "coin conservation must hold with all new sinks");
+
+        let hoarders = simulate_experiment("hoarders", 42, true, 90, MODELS[0], None);
+        assert_eq!(hoarders.accounting.private_blocks_bought, 0);
+        assert_eq!(hoarders.accounting.pickaxes_bought, 0);
+        assert_eq!(hoarders.accounting.raid_items_bought, 0);
+        assert_eq!(hoarders.accounting.services, 0);
+    }
+
     fn comparison_record(r: &Run, name: &str) -> serde_json::Value {
         serde_json::json!({"variant":name,"model":r.model,"scenario":r.scenario,"seed":r.seed,
             "acceptance":r.acceptance,"accounting":r.accounting,"newcomer_cohorts":r.newcomer_cohorts,
@@ -19009,7 +19102,7 @@ mod economy_simulation {
             std::env::var("ECONOMY_SIM_OUTPUT").unwrap_or_else(|_| "reports/economy".into());
         std::fs::create_dir_all(&output).unwrap();
         std::fs::write(format!("{output}/manifest.json"),serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version":5,"implemented_policy":IMPLEMENTED,"models":MODELS,"experiments":EXPERIMENTS,"experiment_rules":{"newcomer_days":NEWCOMER_DAYS,"newcomer_reserve_percent":20,"max_daily_allowance":MAX_DAILY_ALLOWANCE,"travel_price":TRAVEL_PRICE,"repair_price":REPAIR_PRICE,"daily_budget_step_percent":10,"daily_budget_step_floor_per_player":25,"burn_ema_new_weight":"1/7","progression_contracts":10,"progression_mining_minutes":120,"progression_point_assumed_coin_utility":5,"starter_contract_iron":[3,8,8,8],"starter_contract_food":[1,0,0,0],"release_gate":"implemented policy only; thresholds unchanged"},"rng":"SplitMix64 v1 with rejection sampling","days":DAYS,"seeds":SEEDS,"scenarios":SCENARIOS,
+            "schema_version":5,"implemented_policy":IMPLEMENTED,"models":MODELS,"experiments":EXPERIMENTS,"experiment_rules":{"newcomer_days":NEWCOMER_DAYS,"newcomer_reserve_percent":20,"max_daily_allowance":MAX_DAILY_ALLOWANCE,"travel_price":TRAVEL_PRICE,"repair_price":REPAIR_PRICE,"private_block_prices":PRIVATE_PRICES,"miner_pickaxe_prices":PICKAXE_PRICES,"breach_charge_price":BREACH_PRICE,"raid_tnt_price":TNT_PRICE,"service_reserve":SERVICE_RESERVE,"daily_budget_step_percent":10,"daily_budget_step_floor_per_player":25,"burn_ema_new_weight":"1/7","progression_contracts":10,"progression_mining_minutes":120,"progression_point_assumed_coin_utility":5,"starter_contract_iron":[3,8,8,8],"starter_contract_food":[1,0,0,0],"release_gate":"implemented policy only; thresholds unchanged"},"rng":"SplitMix64 v1 with rejection sampling","days":DAYS,"seeds":SEEDS,"scenarios":SCENARIOS,
             "source_sha256":hash_token(include_str!("main.rs")),"initial_policy":EconomyControl::default(),"activity_rules":EconomyActivityRules::default(),
             "assumptions":{"calibration":"synthetic sensitivity envelope; no live measurements","labor":"minute budget shared between combat, iron and food; gathering adapts to private needs and lagged sell-through","eligible_kills_per_minute":"per model","travel_minutes_per_contract":3,"daily_play_minutes_by_kind":[30,20,60,120,60,90,90],"skill_percent_range":[75,125],"daily_productivity_percent_range":[80,120],"trader_productivity_percent":150,"starter_axe_iron":3,"starter_iron":27,"starter_food_bundles":1,"food_use_per_active_hour":1,"outstanding_need_caps":[12,3],"sell_through_ema_new_weight":0.25,"initial_sell_through":0.25,"price_sample":"market open after self-use, before purchases; concurrent full basket availability","kit_probe_limit_contracts":DAYS*ECONOMY_DAILY_CONTRACT_LIMIT as usize,"cohort_timing":"active minutes measured through end of completion session, conservative; incomplete players censored","release_gate_scenarios":["stable_20","growth_5_to_20"],"release_gate_models":"all five; existing thresholds unchanged","paired_exogenous_streams":["attendance","productivity"],"limitations":["no measured Minecraft productivity","current quests: iron-work starter then hunting route; fishing/farming action rates uncalibrated","current starter: 10 mined iron plus five assumed smelting minutes, no NPC items or XP; agent expiry not emulated","repair benefit approximates iron-equivalent wear; no equipment durability or crafting engine","pending commitments covered by SQL tests rather than agent model","diagnostic mining gate is not a production crafting restriction","no long-lived pinned listings","no causal claim from endogenous RNG branches"]}
         })).unwrap()).unwrap();
