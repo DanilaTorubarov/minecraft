@@ -80,3 +80,4 @@ test('calculateSummary accurately tallies collected ores, TNT blasts, and repair
   assert.equal(summary.ores['gold_ore'], 1)
   assert.equal(summary.ores['diamond_ore'], 2) // 1 from tnt, 1 direct
 })
+

@@ -15,6 +15,7 @@
 # whose pgdata cluster is not the hardened image's needs — see AGENTS.md
 # "Traps"). Never deploy these; main keeps the hardened images.
 compose.override.yaml
+Dockerfile.local
 
 # Logs and machine-specific files
 *.log

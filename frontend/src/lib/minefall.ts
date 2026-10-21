@@ -184,3 +184,4 @@ export function calculateSummary(events: MinefallEvent[]): {
 
   return { ores, tntCount, repairCount, maxRow }
 }
+
