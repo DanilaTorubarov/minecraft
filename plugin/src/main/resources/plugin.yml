@@ -54,7 +54,15 @@ commands:
         description: Check and claim deliveries and parcels sent from the website or other players.
         usage: /mail [claim|list]
         permission: linkbridge.mail
+    clan:
+        description: Manage your clan, allies, wars, clan home, and shared treasury.
+        usage: /clan [create|invite|join|leave|home|sethome|bank|info|ally|enemy|neutral|disband]
+        aliases: [f, faction, clans]
+        permission: linkbridge.clan
 permissions:
+    linkbridge.clan:
+        description: Create, join, and manage your clan after authentication.
+        default: true
     linkbridge.mail:
         description: Check and claim deliveries after authentication.
         default: true

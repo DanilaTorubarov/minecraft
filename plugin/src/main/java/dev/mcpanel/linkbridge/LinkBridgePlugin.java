@@ -29,6 +29,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -247,8 +248,26 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return List.of();
             });
         }
+        if (getCommand("clan") != null) {
+            getCommand("clan").setExecutor(this);
+            getCommand("clan").setTabCompleter((sender, command, alias, args) -> {
+                if (!(sender instanceof Player player) || !isAuthenticated(player)) return List.of();
+                if (args.length == 1) {
+                    String prefix = args[0].toLowerCase(Locale.ROOT);
+                    return List.of("create", "invite", "join", "leave", "home", "sethome", "bank", "info", "ally", "enemy", "neutral", "disband")
+                        .stream().filter(s -> s.startsWith(prefix)).toList();
+                }
+                if (args.length == 2 && args[0].equalsIgnoreCase("bank")) {
+                    String prefix = args[1].toLowerCase(Locale.ROOT);
+                    return List.of("deposit", "withdraw", "balance")
+                        .stream().filter(s -> s.startsWith(prefix)).toList();
+                }
+                return List.of();
+            });
+        }
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimerAsynchronously(this, this::syncSkins, 40L, 100L);
+        getServer().getScheduler().runTaskTimerAsynchronously(this, this::syncClans, 50L, 200L);
 
         initializeEconomy();
         initializeEconomyServices();
@@ -447,6 +466,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return true;
             }
             handleMailCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("clan") || command.getName().equalsIgnoreCase("f") || command.getName().equalsIgnoreCase("faction") || command.getName().equalsIgnoreCase("clans")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Clan] Wait a few seconds and try again.");
+                return true;
+            }
+            handleClanCommand(player, args);
             return true;
         }
 
@@ -4871,7 +4898,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
 
         PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
-        if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+        if (pb != null && !canAccessZone(player.getUniqueId(), pb)) {
             event.setCancelled(true);
             player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "!"));
         }
@@ -4902,7 +4929,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 Location loc = block.getLocation();
 
                 PlacedPrivateBlock overlapping = getProtectingBlock(loc);
-                if (overlapping != null && !overlapping.ownerUuid.equals(player.getUniqueId())) {
+                if (overlapping != null && !overlapping.ownerUuid.equals(player.getUniqueId()) && !isSameClan(player.getUniqueId(), overlapping.ownerUuid)) {
                     event.setCancelled(true);
                     player.sendMessage("§c[Private] You cannot place a private block inside " + overlapping.ownerName + "'s protected zone!");
                     return;
@@ -4948,7 +4975,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
 
         PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
-        if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+        if (pb != null && !canAccessZone(player.getUniqueId(), pb)) {
             if (activeBreaches.containsKey(pb.id)) {
                 if (isRaidTnt(item)) {
                     activeRaidTntBlocks.put(blockKey(block.getLocation()), pb.id);
@@ -5008,7 +5035,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     player.sendMessage("§c[Raid] Breach Charges can only be used on enemy protected zones!");
                     return;
                 }
-                if (targetZone.ownerUuid.equals(player.getUniqueId()) || targetZone.members.contains(player.getUniqueId())) {
+                if (targetZone.ownerUuid.equals(player.getUniqueId()) || targetZone.members.contains(player.getUniqueId()) || isSameClan(player.getUniqueId(), targetZone.ownerUuid)) {
                     player.sendMessage("§c[Raid] You cannot breach your own or your teammates' base!");
                     return;
                 }
@@ -5068,7 +5095,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         if (isProtectedInteractable) {
             PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
-            if (pb != null && !PrivateRules.canAccess(player.getUniqueId(), pb.ownerUuid, pb.members)) {
+            if (pb != null && !canAccessZone(player.getUniqueId(), pb)) {
                 if (activeBreaches.containsKey(pb.id)) {
                     if (PrivateRules.canOpenInRaid(typeName)) {
                         // In raid: only chests can be opened!
@@ -5323,7 +5350,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 PlacedPrivateBlock pb = getProtectingBlock(b.getLocation());
                 if (pb == null) return false;
 
-                boolean isMember = sourcePlayerUuid != null && PrivateRules.canAccess(sourcePlayerUuid, pb.ownerUuid, pb.members);
+                boolean isMember = sourcePlayerUuid != null && canAccessZone(sourcePlayerUuid, pb);
                 boolean isZoneUnderRaid = activeBreaches.containsKey(pb.id);
                 boolean canDamage = PrivateRules.canTntDamageBlock(b.getType().name(), isMember, isRaidTnt, isZoneUnderRaid);
 
@@ -5793,6 +5820,388 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     p.sendMessage(Component.text("§a[Unmuted] You have been unmuted."));
                 }
             }
+        }
+    }
+
+    // --- Clan & Factions System ---------------------------------------------
+
+    public record ClanHome(String world, double x, double y, double z, float yaw, float pitch) {}
+    public record ClanCacheEntry(
+        UUID id,
+        String tag,
+        String name,
+        UUID leaderUuid,
+        long coins,
+        ClanHome home,
+        Set<UUID> members,
+        Set<String> allies,
+        Set<String> truces,
+        Set<String> wars
+    ) {}
+
+    private final Map<UUID, UUID> playerToClanId = new ConcurrentHashMap<>();
+    private final Map<UUID, ClanCacheEntry> clansById = new ConcurrentHashMap<>();
+    private final Map<String, UUID> clanTagToId = new ConcurrentHashMap<>();
+
+    public boolean isSameClan(UUID u1, UUID u2) {
+        if (u1 == null || u2 == null) return false;
+        UUID c1 = playerToClanId.get(u1);
+        UUID c2 = playerToClanId.get(u2);
+        return c1 != null && c1.equals(c2);
+    }
+
+    public boolean canAccessZone(UUID playerUuid, PlacedPrivateBlock pb) {
+        if (pb == null) return true;
+        if (PrivateRules.canAccess(playerUuid, pb.ownerUuid, pb.members)) return true;
+        return isSameClan(playerUuid, pb.ownerUuid);
+    }
+
+    private void syncClans() {
+        if (internalBase == null || internalBase.isBlank() || serviceToken == null || serviceToken.isBlank()) return;
+        try {
+            HttpResponse<String> resp = get(internalBase + "/clans/sync", requestTimeout);
+            if (resp != null && resp.statusCode() == 200) {
+                com.google.gson.JsonArray arr = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonArray();
+                Map<UUID, UUID> newPlayerClan = new HashMap<>();
+                Map<UUID, ClanCacheEntry> newClans = new HashMap<>();
+                Map<String, UUID> newTagToId = new HashMap<>();
+
+                for (com.google.gson.JsonElement el : arr) {
+                    com.google.gson.JsonObject c = el.getAsJsonObject();
+                    UUID clanId = UUID.fromString(c.get("id").getAsString());
+                    String tag = c.get("tag").getAsString();
+                    String name = c.get("name").getAsString();
+                    UUID leaderUuid = UUID.fromString(c.get("leader_uuid").getAsString());
+                    long coins = c.get("coins").getAsLong();
+
+                    ClanHome home = null;
+                    if (c.has("home") && !c.get("home").isJsonNull()) {
+                        var h = c.getAsJsonObject("home");
+                        home = new ClanHome(
+                            h.get("world").getAsString(),
+                            h.get("x").getAsDouble(),
+                            h.get("y").getAsDouble(),
+                            h.get("z").getAsDouble(),
+                            h.get("yaw").getAsFloat(),
+                            h.get("pitch").getAsFloat()
+                        );
+                    }
+
+                    Set<UUID> members = new HashSet<>();
+                    if (c.has("members")) {
+                        for (var m : c.getAsJsonArray("members")) {
+                            UUID mUuid = UUID.fromString(m.getAsJsonObject().get("uuid").getAsString());
+                            members.add(mUuid);
+                            newPlayerClan.put(mUuid, clanId);
+                        }
+                    }
+
+                    Set<String> allies = new HashSet<>();
+                    if (c.has("allies")) {
+                        for (var a : c.getAsJsonArray("allies")) allies.add(a.getAsString());
+                    }
+                    Set<String> truces = new HashSet<>();
+                    if (c.has("truces")) {
+                        for (var t : c.getAsJsonArray("truces")) truces.add(t.getAsString());
+                    }
+                    Set<String> wars = new HashSet<>();
+                    if (c.has("wars")) {
+                        for (var w : c.getAsJsonArray("wars")) wars.add(w.getAsString());
+                    }
+
+                    ClanCacheEntry entry = new ClanCacheEntry(
+                        clanId, tag, name, leaderUuid, coins, home, members, allies, truces, wars
+                    );
+                    newClans.put(clanId, entry);
+                    newTagToId.put(tag.toUpperCase(Locale.ROOT), clanId);
+                }
+
+                playerToClanId.clear();
+                playerToClanId.putAll(newPlayerClan);
+                clansById.clear();
+                clansById.putAll(newClans);
+                clanTagToId.clear();
+                clanTagToId.putAll(newTagToId);
+            }
+        } catch (Exception e) {
+            getLogger().warning("[Clan] Failed to sync clans: " + e.getMessage());
+        }
+    }
+
+    private void handleClanCommand(Player player, String[] args) {
+        if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+            player.sendMessage("§6§l==== [Clan & Factions Commands] ====");
+            player.sendMessage("§e/clan create <tag> <name> §7- Create a new clan");
+            player.sendMessage("§e/clan invite <player> §7- Invite an ally to your clan");
+            player.sendMessage("§e/clan join <tag> §7- Accept an invitation and join a clan");
+            player.sendMessage("§e/clan leave §7- Leave your current clan");
+            player.sendMessage("§e/clan sethome §7- Set your clan's home point");
+            player.sendMessage("§e/clan home §7- Teleport to your clan home");
+            player.sendMessage("§e/clan bank [deposit|withdraw <amount>] §7- Clan treasury");
+            player.sendMessage("§e/clan info [tag] §7- View clan members, allies and status");
+            player.sendMessage("§e/clan ally|enemy|neutral <tag> §7- Set diplomatic relations");
+            player.sendMessage("§e/clan disband §7- Disband your clan (Leader only)");
+            return;
+        }
+
+        String sub = args[0].toLowerCase(Locale.ROOT);
+        UUID playerUuid = player.getUniqueId();
+        String playerName = player.getName();
+
+        switch (sub) {
+            case "create" -> {
+                if (args.length < 3) {
+                    player.sendMessage("§c[Clan] Usage: /clan create <TAG> <Name>");
+                    return;
+                }
+                String tag = args[1].toUpperCase(Locale.ROOT);
+                StringBuilder nameB = new StringBuilder();
+                for (int i = 2; i < args.length; i++) {
+                    if (i > 2) nameB.append(" ");
+                    nameB.append(args[i]);
+                }
+                String name = nameB.toString();
+
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("action", "create");
+                body.addProperty("player_uuid", playerUuid.toString());
+                body.addProperty("player_username", playerName);
+                body.addProperty("tag", tag);
+                body.addProperty("name", name);
+
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                    handleClanActionResponse(player, resp);
+                    syncClans();
+                });
+            }
+
+            case "invite" -> {
+                if (args.length < 2) {
+                    player.sendMessage("§c[Clan] Usage: /clan invite <player>");
+                    return;
+                }
+                String target = args[1];
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("action", "invite");
+                body.addProperty("player_uuid", playerUuid.toString());
+                body.addProperty("player_username", playerName);
+                body.addProperty("target_username", target);
+
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                    handleClanActionResponse(player, resp);
+
+                    Player targetPlayer = getServer().getPlayerExact(target);
+                    if (targetPlayer != null && targetPlayer.isOnline()) {
+                        UUID clanId = playerToClanId.get(playerUuid);
+                        ClanCacheEntry c = clanId != null ? clansById.get(clanId) : null;
+                        String tag = c != null ? c.tag : "clan";
+                        targetPlayer.sendMessage(Component.text(
+                            String.format(Locale.ROOT, "§6[Clan] §eYou were invited to join §b[%s]§e! Type §a/clan join %s§e or accept on the website.", tag, tag)
+                        ));
+                        targetPlayer.playSound(targetPlayer.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                    }
+                });
+            }
+
+            case "join", "accept" -> {
+                if (args.length < 2) {
+                    player.sendMessage("§c[Clan] Usage: /clan join <TAG>");
+                    return;
+                }
+                String tag = args[1].toUpperCase(Locale.ROOT);
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("action", "join");
+                body.addProperty("player_uuid", playerUuid.toString());
+                body.addProperty("player_username", playerName);
+                body.addProperty("target_tag", tag);
+
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                    handleClanActionResponse(player, resp);
+                    syncClans();
+                });
+            }
+
+            case "leave" -> {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("action", "leave");
+                body.addProperty("player_uuid", playerUuid.toString());
+                body.addProperty("player_username", playerName);
+
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                    handleClanActionResponse(player, resp);
+                    syncClans();
+                });
+            }
+
+            case "sethome" -> {
+                Location loc = player.getLocation();
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("action", "sethome");
+                body.addProperty("player_uuid", playerUuid.toString());
+                body.addProperty("player_username", playerName);
+                body.addProperty("home_world", loc.getWorld().getName());
+                body.addProperty("home_x", loc.getX());
+                body.addProperty("home_y", loc.getY());
+                body.addProperty("home_z", loc.getZ());
+                body.addProperty("home_yaw", loc.getYaw());
+                body.addProperty("home_pitch", loc.getPitch());
+
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                    handleClanActionResponse(player, resp);
+                    syncClans();
+                });
+            }
+
+            case "home" -> {
+                UUID clanId = playerToClanId.get(playerUuid);
+                if (clanId == null) {
+                    player.sendMessage("§c[Clan] You are not in a clan.");
+                    return;
+                }
+                ClanCacheEntry clan = clansById.get(clanId);
+                if (clan == null || clan.home == null) {
+                    player.sendMessage("§c[Clan] Your clan has not set a home point yet! Leaders can use /clan sethome.");
+                    return;
+                }
+                ClanHome h = clan.home;
+                World w = getServer().getWorld(h.world);
+                if (w == null) {
+                    player.sendMessage("§c[Clan] Home world is currently unavailable.");
+                    return;
+                }
+                Location targetLoc = new Location(w, h.x, h.y, h.z, h.yaw, h.pitch);
+                player.sendMessage("§a[Clan] Teleporting to clan home...");
+                player.teleport(targetLoc);
+                player.playSound(targetLoc, Sound.ITEM_CHORUS_FRUIT_TELEPORT, 1.0f, 1.0f);
+                player.spawnParticle(Particle.PORTAL, targetLoc.clone().add(0, 1, 0), 30);
+            }
+
+            case "bank", "bal", "balance" -> {
+                UUID clanId = playerToClanId.get(playerUuid);
+                if (clanId == null) {
+                    player.sendMessage("§c[Clan] You are not in a clan.");
+                    return;
+                }
+                if (args.length >= 3 && (args[1].equalsIgnoreCase("deposit") || args[1].equalsIgnoreCase("withdraw"))) {
+                    boolean isDeposit = args[1].equalsIgnoreCase("deposit");
+                    long amount;
+                    try {
+                        amount = Long.parseLong(args[2].trim());
+                    } catch (NumberFormatException e) {
+                        player.sendMessage("§c[Clan] Please enter a valid number of coins.");
+                        return;
+                    }
+                    var body = new com.google.gson.JsonObject();
+                    body.addProperty("action", isDeposit ? "deposit" : "withdraw");
+                    body.addProperty("player_uuid", playerUuid.toString());
+                    body.addProperty("player_username", playerName);
+                    body.addProperty("amount", amount);
+
+                    getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                        var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                        handleClanActionResponse(player, resp);
+                        syncClans();
+                    });
+                    return;
+                }
+                ClanCacheEntry clan = clansById.get(clanId);
+                if (clan != null) {
+                    player.sendMessage(String.format(Locale.ROOT,
+                        "§6[Clan Bank] §eClan §b[%s] §eTreasury: §6%s coins§e. Use §a/clan bank deposit <amt> §eor §a/clan bank withdraw <amt>§e.",
+                        clan.tag, String.format(Locale.ROOT, "%,d", clan.coins)));
+                } else {
+                    player.sendMessage("§c[Clan] Clan information is refreshing, try again in a moment.");
+                }
+            }
+
+            case "info" -> {
+                UUID targetClanId = null;
+                if (args.length >= 2) {
+                    targetClanId = clanTagToId.get(args[1].toUpperCase(Locale.ROOT));
+                } else {
+                    targetClanId = playerToClanId.get(playerUuid);
+                }
+                if (targetClanId == null) {
+                    player.sendMessage("§c[Clan] Clan not found.");
+                    return;
+                }
+                ClanCacheEntry clan = clansById.get(targetClanId);
+                if (clan == null) {
+                    player.sendMessage("§c[Clan] Clan not found.");
+                    return;
+                }
+                player.sendMessage(String.format(Locale.ROOT, "§6§l==== [Clan: [%s] %s] ====", clan.tag, clan.name));
+                player.sendMessage(String.format(Locale.ROOT, "§7Members: §f%d §7| Treasury: §6%s coins", clan.members.size(), String.format(Locale.ROOT, "%,d", clan.coins)));
+                player.sendMessage(String.format(Locale.ROOT, "§7Home: %s", clan.home != null ? "§aSet" : "§cNone"));
+                if (!clan.allies.isEmpty()) player.sendMessage("§aAllies: §f" + String.join(", ", clan.allies));
+                if (!clan.wars.isEmpty()) player.sendMessage("§cWars: §f" + String.join(", ", clan.wars));
+                if (!clan.truces.isEmpty()) player.sendMessage("§bTruces: §f" + String.join(", ", clan.truces));
+            }
+
+            case "ally", "enemy", "war", "neutral", "truce" -> {
+                if (args.length < 2) {
+                    player.sendMessage("§c[Clan] Usage: /clan " + sub + " <TAG>");
+                    return;
+                }
+                String relStatus = (sub.equals("enemy") || sub.equals("war")) ? "war" : sub;
+                String targetTag = args[1].toUpperCase(Locale.ROOT);
+
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("action", "relation");
+                body.addProperty("player_uuid", playerUuid.toString());
+                body.addProperty("player_username", playerName);
+                body.addProperty("target_tag", targetTag);
+                body.addProperty("status", relStatus);
+
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                    handleClanActionResponse(player, resp);
+                    syncClans();
+                });
+            }
+
+            case "disband" -> {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("action", "disband");
+                body.addProperty("player_uuid", playerUuid.toString());
+                body.addProperty("player_username", playerName);
+
+                getServer().getScheduler().runTaskAsynchronously(this, () -> {
+                    var resp = post(internalBase + "/clans/action", body.toString(), requestTimeout);
+                    handleClanActionResponse(player, resp);
+                    syncClans();
+                });
+            }
+
+            default -> player.sendMessage("§c[Clan] Unknown subcommand. Type §e/clan help§c.");
+        }
+    }
+
+    private void handleClanActionResponse(Player player, HttpResponse<String> resp) {
+        if (resp != null && resp.statusCode() == 200) {
+            try {
+                var json = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+                boolean success = json.has("success") && json.get("success").getAsBoolean();
+                String msg = json.has("message") ? json.get("message").getAsString() : "";
+                getServer().getScheduler().runTask(this, () -> {
+                    if (!player.isOnline()) return;
+                    player.sendMessage((success ? "§a" : "§c") + msg);
+                    if (success) player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                });
+            } catch (Exception e) {
+                getServer().getScheduler().runTask(this, () -> {
+                    if (player.isOnline()) player.sendMessage("§c[Clan] Error parsing server response.");
+                });
+            }
+        } else {
+            getServer().getScheduler().runTask(this, () -> {
+                if (player.isOnline()) player.sendMessage("§c[Clan] Failed to communicate with server.");
+            });
         }
     }
 

@@ -340,4 +340,59 @@ test('admin moderation kick and ban send appropriate requests', async () => {
   assert.equal(JSON.parse(calls[4].body).username, 'Spammer1')
 })
 
+test('clan endpoints send expected payloads and endpoints', async () => {
+  const {
+    getMyClan,
+    createClan,
+    depositClanBank,
+    withdrawClanBank,
+    setClanRelation,
+    inviteClanMember,
+    kickClanMember,
+  } = await import('../src/lib/api.ts')
+
+  const calls: { url: string; method: string; body: string }[] = []
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      method: init?.method ?? 'GET',
+      body: String(init?.body ?? ''),
+    })
+    if (String(input) === '/api/clans/my') {
+      return new Response(JSON.stringify({ in_clan: false }), { status: 200 })
+    }
+    return new Response(null, { status: 200 })
+  }
+
+  const myClan = await getMyClan()
+  assert.equal(calls[0].url, '/api/clans/my')
+  assert.equal(myClan.in_clan, false)
+
+  await createClan({ tag: 'AERO', name: 'Aero Clan', description: 'Legendary' })
+  assert.equal(calls[1].url, '/api/clans/create')
+  assert.equal(calls[1].method, 'POST')
+  assert.deepEqual(JSON.parse(calls[1].body), { tag: 'AERO', name: 'Aero Clan', description: 'Legendary' })
+
+  await depositClanBank(500)
+  assert.equal(calls[2].url, '/api/clans/bank/deposit')
+  assert.deepEqual(JSON.parse(calls[2].body), { amount: 500 })
+
+  await withdrawClanBank(200)
+  assert.equal(calls[3].url, '/api/clans/bank/withdraw')
+  assert.deepEqual(JSON.parse(calls[3].body), { amount: 200 })
+
+  await setClanRelation('WAR', 'war')
+  assert.equal(calls[4].url, '/api/clans/relation')
+  assert.deepEqual(JSON.parse(calls[4].body), { target_tag: 'WAR', status: 'war' })
+
+  await inviteClanMember('Steve')
+  assert.equal(calls[5].url, '/api/clans/invite')
+  assert.deepEqual(JSON.parse(calls[5].body), { username: 'Steve' })
+
+  await kickClanMember('uuid-123')
+  assert.equal(calls[6].url, '/api/clans/kick')
+  assert.deepEqual(JSON.parse(calls[6].body), { uuid: 'uuid-123' })
+})
+
+
 

@@ -22,6 +22,7 @@ import MinigamesPage from '../pages/MinigamesPage'
 import AdminPage from '../pages/AdminPage'
 import ChatPage from '../pages/ChatPage'
 import MapPage from '../pages/MapPage'
+import ClanPage from '../pages/ClanPage'
 import LeaderboardsPage from '../pages/LeaderboardsPage'
 import { getTerritoryAlerts, markTerritoryAlertsRead, type TerritoryAlert } from '../lib/api'
 
@@ -43,6 +44,7 @@ function Shell() {
   const [adminOpen, setAdminOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [mapOpen, setMapOpen] = useState(false)
+  const [clanOpen, setClanOpen] = useState(false)
   const [leaderboardsOpen, setLeaderboardsOpen] = useState(false)
   const [active, setActive] = useState('account')
   const [accountActivation, setAccountActivation] = useState(0)
@@ -52,6 +54,7 @@ function Shell() {
   const [adminActivation, setAdminActivation] = useState(0)
   const [chatActivation, setChatActivation] = useState(0)
   const [mapActivation, setMapActivation] = useState(0)
+  const [clanActivation, setClanActivation] = useState(0)
   const [leaderboardsActivation, setLeaderboardsActivation] = useState(0)
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
@@ -88,6 +91,7 @@ function Shell() {
   const adminDock = useRef<HTMLButtonElement>(null)
   const chatDock = useRef<HTMLButtonElement>(null)
   const mapDock = useRef<HTMLButtonElement>(null)
+  const clanDock = useRef<HTMLButtonElement>(null)
   const leaderboardsDock = useRef<HTMLButtonElement>(null)
   function openPlayer(uuid?: string) {
     if (uuid === 'all') { openStats(); return }
@@ -113,6 +117,7 @@ function Shell() {
   function openAdmin() { setAdminOpen(true); setActive('admin'); setAdminActivation((value) => value + 1) }
   function openChat() { setChatOpen(true); setActive('chat'); setChatActivation((value) => value + 1) }
   function openMap() { setMapOpen(true); setActive('map'); setMapActivation((value) => value + 1) }
+  function openClan() { setClanOpen(true); setActive('clan'); setClanActivation((value) => value + 1) }
   function openLeaderboards() { setLeaderboardsOpen(true); setActive('leaderboards'); setLeaderboardsActivation((value) => value + 1) }
   function hideAccount() { setAccountOpen(false); setActive('settings'); accountDock.current?.focus() }
   function hideSettings() { setSettingsOpen(false); setActive('account'); settingsDock.current?.focus() }
@@ -121,6 +126,7 @@ function Shell() {
   function hideAdmin() { setAdminOpen(false); setActive('account'); adminDock.current?.focus() }
   function hideChat() { setChatOpen(false); setActive('account'); chatDock.current?.focus() }
   function hideMap() { setMapOpen(false); setActive('account'); mapDock.current?.focus() }
+  function hideClan() { setClanOpen(false); setActive('account'); clanDock.current?.focus() }
   function hideLeaderboards() { setLeaderboardsOpen(false); setActive('account'); leaderboardsDock.current?.focus() }
 
   async function handleSignOut() {
@@ -154,6 +160,7 @@ function Shell() {
           <button onClick={openLeaderboards} data-ui-sound={leaderboardsOpen ? 'click' : 'open'} aria-controls="leaderboards-window">Leaderboards</button>
           <button onClick={openCasino} data-ui-sound={casinoOpen ? 'click' : 'open'} aria-controls="casino-window">Minigames</button>
           <button onClick={openMarket} data-ui-sound={marketOpen ? 'click' : 'open'} aria-controls="marketplace-window">Marketplace</button>
+          <button onClick={openClan} data-ui-sound={clanOpen ? 'click' : 'open'} aria-controls="clan-window">Clans & Factions</button>
           <button onClick={openChat} data-ui-sound={chatOpen ? 'click' : 'open'} aria-controls="chat-window">Chat</button>
           <button onClick={openMap} data-ui-sound={mapOpen ? 'click' : 'open'} aria-controls="map-window">Live Map</button>
           <button onClick={() => openPlayer()} data-ui-sound={playerOpen ? 'click' : 'open'} aria-controls="player-controls-window">Player Controls</button>
@@ -343,6 +350,9 @@ function Shell() {
         <DesktopWindow id="map-window" title="Live World Map" icon={globeIcon} kind="map" open={mapOpen} activation={mapActivation} active={active === 'map'} onFocus={() => setActive('map')} onClose={hideMap} onMinimize={hideMap}>
           <MapPage visible={mapOpen} />
         </DesktopWindow>
+        <DesktopWindow id="clan-window" title="Clans & Factions" icon={firewallOnIcon} kind="clan" open={clanOpen} activation={clanActivation} active={active === 'clan'} onFocus={() => setActive('clan')} onClose={hideClan} onMinimize={hideClan}>
+          <ClanPage visible={clanOpen} onOpenMap={openMap} />
+        </DesktopWindow>
         <DesktopWindow id="leaderboards-window" title="Hall of Fame & Leaderboards" icon={perfCenterIcon} kind="leaderboards" open={leaderboardsOpen} activation={leaderboardsActivation} active={active === 'leaderboards'} onFocus={() => setActive('leaderboards')} onClose={hideLeaderboards} onMinimize={hideLeaderboards}>
           <LeaderboardsPage visible={leaderboardsOpen} onOpenPlayer={(uuid) => openPlayer(uuid)} linkedUuids={statsAccounts.map((a) => a.uuid)} />
         </DesktopWindow>
@@ -355,6 +365,7 @@ function Shell() {
         <button ref={marketDock} className="dock-app" data-ui-sound={marketOpen ? active === 'market' ? 'close' : 'click' : 'open'} onClick={marketOpen && active === 'market' ? hideMarket : openMarket} aria-controls="marketplace-window" aria-expanded={marketOpen} data-open={marketOpen}><img src={globeIcon} alt="" /><span>Marketplace</span></button>
         <button ref={chatDock} className="dock-app" data-ui-sound={chatOpen ? active === 'chat' ? 'close' : 'click' : 'open'} onClick={chatOpen && active === 'chat' ? hideChat : openChat} aria-controls="chat-window" aria-expanded={chatOpen} data-open={chatOpen}><img src={globeIcon} alt="" /><span>Chat</span></button>
         <button ref={mapDock} className="dock-app" data-ui-sound={mapOpen ? active === 'map' ? 'close' : 'click' : 'open'} onClick={mapOpen && active === 'map' ? hideMap : openMap} aria-controls="map-window" aria-expanded={mapOpen} data-open={mapOpen}><img src={globeIcon} alt="" /><span>Live Map</span></button>
+        <button ref={clanDock} className="dock-app" data-ui-sound={clanOpen ? active === 'clan' ? 'close' : 'click' : 'open'} onClick={clanOpen && active === 'clan' ? hideClan : openClan} aria-controls="clan-window" aria-expanded={clanOpen} data-open={clanOpen}><img src={firewallOnIcon} alt="" /><span>Clans</span></button>
         <button ref={playerDock} className="dock-app" onClick={playerOpen && active === 'player' ? hidePlayer : () => openPlayer()} aria-controls="player-controls-window" aria-expanded={playerOpen} data-open={playerOpen} data-ui-sound={playerOpen ? active === 'player' ? 'close' : 'click' : 'open'}>{selectedPlayer ? <PlayerHead username={selectedPlayer.username} textureHash={selectedPlayer.skin_hash} /> : <img src={perfCenterIcon} alt="" />}<span>Player Controls</span></button>
         {user?.is_admin && (
           <button ref={adminDock} className="dock-app" data-ui-sound={adminOpen ? active === 'admin' ? 'close' : 'click' : 'open'} onClick={adminOpen && active === 'admin' ? hideAdmin : openAdmin} aria-controls="admin-window" aria-expanded={adminOpen} data-open={adminOpen}><img src={firewallOnIcon} alt="" /><span>Admin Panel</span></button>

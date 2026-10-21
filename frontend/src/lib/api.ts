@@ -790,3 +790,167 @@ export async function markTerritoryAlertsRead(): Promise<void> {
   const response = await send('POST', '/api/territory/alerts/read', {})
   if (!response.ok) throw new ApiError(response.status)
 }
+
+// --- Clan & Factions System -------------------------------------------------
+
+export type PublicClan = {
+  id: string
+  tag: string
+  name: string
+  description: string
+  leader_uuid: string
+  leader_username: string
+  member_count: number
+  coins: number
+  created_at: string
+}
+
+export type ClanMember = {
+  uuid: string
+  username: string
+  role: 'leader' | 'officer' | 'member'
+  joined_at: string
+  is_online: boolean
+}
+
+export type ClanInvite = {
+  id: string
+  clan_id: string
+  clan_tag: string
+  clan_name: string
+  inviter_uuid: string
+  invited_username: string
+  created_at: string
+}
+
+export type ClanRelation = {
+  other_clan_id: string
+  other_clan_tag: string
+  other_clan_name: string
+  status: 'ally' | 'truce' | 'war'
+  created_at: string
+}
+
+export type ClanTreasuryLog = {
+  id: number
+  player_username: string
+  action: 'deposit' | 'withdraw'
+  amount: number
+  balance_after: number
+  created_at: string
+}
+
+export type ClanTerritoryBase = {
+  id: string
+  owner_uuid: string
+  owner_username: string
+  block_index: number
+  world: string
+  x: number
+  y: number
+  z: number
+  radius: number
+  fuel_seconds: number
+  fuel_tier: number
+}
+
+export type ClanHome = {
+  world: string
+  x: number
+  y: number
+  z: number
+  yaw: number
+  pitch: number
+}
+
+export type MyClanData = {
+  in_clan: boolean
+  clan: PublicClan | null
+  my_uuid: string | null
+  my_role: 'leader' | 'officer' | 'member' | null
+  home: ClanHome | null
+  members: ClanMember[]
+  allies: ClanRelation[]
+  wars: ClanRelation[]
+  truces: ClanRelation[]
+  bases: ClanTerritoryBase[]
+  treasury_logs: ClanTreasuryLog[]
+  pending_invites: ClanInvite[]
+}
+
+export async function getPublicClans(): Promise<PublicClan[]> {
+  const response = await fetch('/api/clans')
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as PublicClan[]
+}
+
+export async function getMyClan(): Promise<MyClanData> {
+  const response = await fetch('/api/clans/my')
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as MyClanData
+}
+
+export async function createClan(input: {
+  tag: string
+  name: string
+  description?: string
+}): Promise<void> {
+  const response = await send('POST', '/api/clans/create', input)
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function inviteClanMember(username: string): Promise<void> {
+  const response = await send('POST', '/api/clans/invite', { username })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function acceptClanInvite(inviteId: string): Promise<void> {
+  const response = await send('POST', `/api/clans/invites/${inviteId}/accept`, {})
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function declineClanInvite(inviteId: string): Promise<void> {
+  const response = await send('POST', `/api/clans/invites/${inviteId}/decline`, {})
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function kickClanMember(uuid: string): Promise<void> {
+  const response = await send('POST', '/api/clans/kick', { uuid })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function leaveClan(): Promise<void> {
+  const response = await send('POST', '/api/clans/leave', {})
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function disbandClan(): Promise<void> {
+  const response = await send('POST', '/api/clans/disband', {})
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function promoteClanMember(
+  uuid: string,
+  role: 'officer' | 'member' | 'leader'
+): Promise<void> {
+  const response = await send('POST', '/api/clans/promote', { uuid, role })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function depositClanBank(amount: number): Promise<void> {
+  const response = await send('POST', '/api/clans/bank/deposit', { amount })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function withdrawClanBank(amount: number): Promise<void> {
+  const response = await send('POST', '/api/clans/bank/withdraw', { amount })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function setClanRelation(
+  targetTag: string,
+  status: 'ally' | 'truce' | 'war' | 'neutral'
+): Promise<void> {
+  const response = await send('POST', '/api/clans/relation', { target_tag: targetTag, status })
+  if (!response.ok) throw new ApiError(response.status)
+}

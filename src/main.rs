@@ -113,6 +113,21 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/admin/moderation/list", get(admin_get_moderation_list))
         .route("/api/admin/chat/logs", get(admin_get_chat_logs))
         .route("/internal/admin/sync", post(internal_admin_sync))
+        .route("/api/clans", get(list_public_clans))
+        .route("/api/clans/my", get(get_my_clan))
+        .route("/api/clans/create", post(create_clan))
+        .route("/api/clans/invite", post(invite_clan_member))
+        .route("/api/clans/invites/{id}/accept", post(accept_clan_invite))
+        .route("/api/clans/invites/{id}/decline", post(decline_clan_invite))
+        .route("/api/clans/kick", post(kick_clan_member))
+        .route("/api/clans/leave", post(leave_clan))
+        .route("/api/clans/disband", post(disband_clan))
+        .route("/api/clans/promote", post(promote_clan_member))
+        .route("/api/clans/bank/deposit", post(clan_bank_deposit))
+        .route("/api/clans/bank/withdraw", post(clan_bank_withdraw))
+        .route("/api/clans/relation", post(set_clan_relation))
+        .route("/internal/clans/sync", get(internal_clans_sync))
+        .route("/internal/clans/action", post(internal_clan_action))
         .route("/api/chat/messages", get(get_chat_messages).post(send_chat_message))
         .route("/internal/chat/sync", post(sync_chat_messages))
         .route("/internal/skins/sync", post(sync_player_skins))
@@ -7111,6 +7126,2000 @@ async fn admin_get_chat_logs(
     Ok(Json(list))
 }
 
+// --- Clan & Faction System --------------------------------------------------
+
+fn is_valid_clan_tag(tag: &str) -> bool {
+    let t = tag.trim();
+    t.len() >= 2 && t.len() <= 6 && t.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn is_valid_clan_name(name: &str) -> bool {
+    let t = name.trim();
+    t.len() >= 3 && t.len() <= 24 && t.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '_')
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct PublicClanView {
+    id: String,
+    tag: String,
+    name: String,
+    description: String,
+    leader_uuid: String,
+    leader_username: String,
+    member_count: i64,
+    coins: i64,
+    created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ClanMemberView {
+    uuid: String,
+    username: String,
+    role: String,
+    joined_at: String,
+    is_online: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ClanInviteView {
+    id: String,
+    clan_id: String,
+    clan_tag: String,
+    clan_name: String,
+    inviter_uuid: String,
+    invited_username: String,
+    created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ClanRelationView {
+    other_clan_id: String,
+    other_clan_tag: String,
+    other_clan_name: String,
+    status: String,
+    created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ClanTreasuryLogView {
+    id: i64,
+    player_username: String,
+    action: String,
+    amount: i64,
+    balance_after: i64,
+    created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ClanTerritoryBaseView {
+    id: String,
+    owner_uuid: String,
+    owner_username: String,
+    block_index: i32,
+    world: String,
+    x: i32,
+    y: i32,
+    z: i32,
+    radius: i32,
+    fuel_seconds: i64,
+    fuel_tier: i32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ClanHomeView {
+    world: String,
+    x: f64,
+    y: f64,
+    z: f64,
+    yaw: f32,
+    pitch: f32,
+}
+
+#[derive(serde::Serialize)]
+struct MyClanResponse {
+    in_clan: bool,
+    clan: Option<PublicClanView>,
+    my_uuid: Option<String>,
+    my_role: Option<String>,
+    home: Option<ClanHomeView>,
+    members: Vec<ClanMemberView>,
+    allies: Vec<ClanRelationView>,
+    wars: Vec<ClanRelationView>,
+    truces: Vec<ClanRelationView>,
+    bases: Vec<ClanTerritoryBaseView>,
+    treasury_logs: Vec<ClanTreasuryLogView>,
+    pending_invites: Vec<ClanInviteView>,
+}
+
+async fn list_public_clans(
+    State(pool): State<sqlx::PgPool>,
+) -> Result<Json<Vec<PublicClanView>>, StatusCode> {
+    let rows = sqlx::query(
+        "SELECT c.id::text AS id, c.tag, c.name, c.description, c.leader_uuid, c.leader_username,
+                (SELECT count(*) FROM clan_members WHERE clan_id = c.id) AS member_count,
+                c.coins, c.created_at::text AS created_at
+         FROM clans c
+         ORDER BY c.coins DESC, c.created_at ASC"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let clans = rows.into_iter().map(|r| PublicClanView {
+        id: r.get("id"),
+        tag: r.get("tag"),
+        name: r.get("name"),
+        description: r.get("description"),
+        leader_uuid: r.get("leader_uuid"),
+        leader_username: r.get("leader_username"),
+        member_count: r.get("member_count"),
+        coins: r.get("coins"),
+        created_at: r.get("created_at"),
+    }).collect();
+
+    Ok(Json(clans))
+}
+
+async fn get_my_clan(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<MyClanResponse>, StatusCode> {
+    let linked_accounts: Vec<(String, String)> = sqlx::query_as(
+        "SELECT uuid, username FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let uuids: Vec<String> = linked_accounts.iter().map(|(u, _)| u.clone()).collect();
+
+    let membership = if !uuids.is_empty() {
+        sqlx::query(
+            "SELECT cm.clan_id::text AS clan_id, cm.uuid, cm.username, cm.role
+             FROM clan_members cm
+             WHERE cm.uuid = ANY($1::text[])
+             LIMIT 1"
+        )
+        .bind(&uuids)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        None
+    };
+
+    if let Some(mem) = membership {
+        let clan_id_str: String = mem.get("clan_id");
+        let my_uuid: String = mem.get("uuid");
+        let my_role: String = mem.get("role");
+
+        let clan_row = sqlx::query(
+            "SELECT id::text AS id, tag, name, description, leader_uuid, leader_username,
+                    (SELECT count(*) FROM clan_members WHERE clan_id = clans.id) AS member_count,
+                    coins, home_world, home_x, home_y, home_z, home_yaw, home_pitch, created_at::text AS created_at
+             FROM clans WHERE id = $1::uuid"
+        )
+        .bind(&clan_id_str)
+        .fetch_one(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let clan = PublicClanView {
+            id: clan_row.get("id"),
+            tag: clan_row.get("tag"),
+            name: clan_row.get("name"),
+            description: clan_row.get("description"),
+            leader_uuid: clan_row.get("leader_uuid"),
+            leader_username: clan_row.get("leader_username"),
+            member_count: clan_row.get("member_count"),
+            coins: clan_row.get("coins"),
+            created_at: clan_row.get("created_at"),
+        };
+
+        let home: Option<ClanHomeView> = match (
+            clan_row.get::<Option<String>, _>("home_world"),
+            clan_row.get::<Option<f64>, _>("home_x"),
+            clan_row.get::<Option<f64>, _>("home_y"),
+            clan_row.get::<Option<f64>, _>("home_z"),
+        ) {
+            (Some(world), Some(x), Some(y), Some(z)) => Some(ClanHomeView {
+                world,
+                x,
+                y,
+                z,
+                yaw: clan_row.get::<Option<f32>, _>("home_yaw").unwrap_or(0.0),
+                pitch: clan_row.get::<Option<f32>, _>("home_pitch").unwrap_or(0.0),
+            }),
+            _ => None,
+        };
+
+        let member_rows = sqlx::query(
+            "SELECT uuid, username, role, joined_at::text AS joined_at
+             FROM clan_members
+             WHERE clan_id = $1::uuid
+             ORDER BY CASE role WHEN 'leader' THEN 1 WHEN 'officer' THEN 2 ELSE 3 END, joined_at ASC"
+        )
+        .bind(&clan_id_str)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let admin_state = GLOBAL_ADMIN_STATE.read().await;
+        let online_uuids: std::collections::HashSet<String> = admin_state.online_players.iter().map(|p| p.uuid.clone()).collect();
+        drop(admin_state);
+
+        let mut members = Vec::with_capacity(member_rows.len());
+        let mut member_uuids = Vec::with_capacity(member_rows.len());
+        for mr in member_rows {
+            let u: String = mr.get("uuid");
+            member_uuids.push(u.clone());
+            members.push(ClanMemberView {
+                is_online: online_uuids.contains(&u),
+                uuid: u,
+                username: mr.get("username"),
+                role: mr.get("role"),
+                joined_at: mr.get("joined_at"),
+            });
+        }
+
+        let rel_rows = sqlx::query(
+            "SELECT cr.status, cr.created_at::text AS created_at,
+                    CASE WHEN cr.clan_id_1 = $1::uuid THEN c2.id::text ELSE c1.id::text END AS other_id,
+                    CASE WHEN cr.clan_id_1 = $1::uuid THEN c2.tag ELSE c1.tag END AS other_tag,
+                    CASE WHEN cr.clan_id_1 = $1::uuid THEN c2.name ELSE c1.name END AS other_name
+             FROM clan_relations cr
+             JOIN clans c1 ON c1.id = cr.clan_id_1
+             JOIN clans c2 ON c2.id = cr.clan_id_2
+             WHERE cr.clan_id_1 = $1::uuid OR cr.clan_id_2 = $1::uuid"
+        )
+        .bind(&clan_id_str)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let mut allies = Vec::new();
+        let mut wars = Vec::new();
+        let mut truces = Vec::new();
+
+        for r in rel_rows {
+            let status: String = r.get("status");
+            let view = ClanRelationView {
+                other_clan_id: r.get("other_id"),
+                other_clan_tag: r.get("other_tag"),
+                other_clan_name: r.get("other_name"),
+                status: status.clone(),
+                created_at: r.get("created_at"),
+            };
+            match status.as_str() {
+                "ally" => allies.push(view),
+                "war" => wars.push(view),
+                "truce" => truces.push(view),
+                _ => {}
+            }
+        }
+
+        let base_rows = sqlx::query(
+            "SELECT p.id::text AS id, p.uuid, coalesce(s.username, p.uuid) AS username, p.block_index,
+                    p.world, p.x, p.y, p.z, p.radius, p.fuel_seconds, p.fuel_tier
+             FROM private_blocks p
+             LEFT JOIN player_stats s ON s.uuid = p.uuid
+             WHERE p.uuid = ANY($1::text[]) AND p.placed = true
+             ORDER BY p.uuid, p.block_index ASC"
+        )
+        .bind(&member_uuids)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let bases = base_rows.into_iter().map(|r| ClanTerritoryBaseView {
+            id: r.get("id"),
+            owner_uuid: r.get("uuid"),
+            owner_username: r.get("username"),
+            block_index: r.get("block_index"),
+            world: r.get("world"),
+            x: r.get("x"),
+            y: r.get("y"),
+            z: r.get("z"),
+            radius: r.get("radius"),
+            fuel_seconds: r.get("fuel_seconds"),
+            fuel_tier: r.get("fuel_tier"),
+        }).collect();
+
+        let log_rows = sqlx::query(
+            "SELECT id, player_username, action, amount, balance_after, created_at::text AS created_at
+             FROM clan_treasury_log
+             WHERE clan_id = $1::uuid
+             ORDER BY id DESC LIMIT 25"
+        )
+        .bind(&clan_id_str)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let treasury_logs = log_rows.into_iter().map(|r| ClanTreasuryLogView {
+            id: r.get("id"),
+            player_username: r.get("player_username"),
+            action: r.get("action"),
+            amount: r.get("amount"),
+            balance_after: r.get("balance_after"),
+            created_at: r.get("created_at"),
+        }).collect();
+
+        return Ok(Json(MyClanResponse {
+            in_clan: true,
+            clan: Some(clan),
+            my_uuid: Some(my_uuid),
+            my_role: Some(my_role),
+            home,
+            members,
+            allies,
+            wars,
+            truces,
+            bases,
+            treasury_logs,
+            pending_invites: Vec::new(),
+        }));
+    }
+
+    let invites = if !uuids.is_empty() {
+        let inv_rows = sqlx::query(
+            "SELECT ci.id::text AS id, ci.clan_id::text AS clan_id, c.tag AS clan_tag, c.name AS clan_name,
+                    ci.inviter_uuid, ci.invited_username, ci.created_at::text AS created_at
+             FROM clan_invites ci
+             JOIN clans c ON c.id = ci.clan_id
+             WHERE ci.invited_uuid = ANY($1::text[]) AND ci.expires_at > now()
+             ORDER BY ci.created_at DESC"
+        )
+        .bind(&uuids)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        inv_rows.into_iter().map(|r| ClanInviteView {
+            id: r.get("id"),
+            clan_id: r.get("clan_id"),
+            clan_tag: r.get("clan_tag"),
+            clan_name: r.get("clan_name"),
+            inviter_uuid: r.get("inviter_uuid"),
+            invited_username: r.get("invited_username"),
+            created_at: r.get("created_at"),
+        }).collect()
+    } else {
+        Vec::new()
+    };
+
+    Ok(Json(MyClanResponse {
+        in_clan: false,
+        clan: None,
+        my_uuid: None,
+        my_role: None,
+        home: None,
+        members: Vec::new(),
+        allies: Vec::new(),
+        wars: Vec::new(),
+        truces: Vec::new(),
+        bases: Vec::new(),
+        treasury_logs: Vec::new(),
+        pending_invites: invites,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct CreateClanRequest {
+    tag: String,
+    name: String,
+    description: Option<String>,
+}
+
+async fn create_clan(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<CreateClanRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let tag = body.tag.trim().to_uppercase();
+    let name = body.name.trim().to_string();
+    let description = body.description.unwrap_or_default().trim().to_string();
+
+    if !is_valid_clan_tag(&tag) || !is_valid_clan_name(&name) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let linked_account: Option<(String, String)> = sqlx::query_as(
+        "SELECT uuid, username FROM minecraft_accounts WHERE user_id = $1 LIMIT 1"
+    )
+    .bind(user_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (player_uuid, player_username) = match linked_account {
+        Some(acc) => acc,
+        None => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    // Ensure player is not already in a clan
+    let already_in: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM clan_members WHERE uuid = $1)"
+    )
+    .bind(&player_uuid)
+    .fetch_one(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if already_in {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let clan_id: String = sqlx::query_scalar(
+        "INSERT INTO clans (tag, name, description, leader_uuid, leader_username, coins)
+         VALUES ($1, $2, $3, $4, $5, 0)
+         RETURNING id::text"
+    )
+    .bind(&tag)
+    .bind(&name)
+    .bind(&description)
+    .bind(&player_uuid)
+    .bind(&player_username)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::CONFLICT)?;
+
+    sqlx::query(
+        "INSERT INTO clan_members (clan_id, uuid, username, role)
+         VALUES ($1::uuid, $2, $3, 'leader')"
+    )
+    .bind(&clan_id)
+    .bind(&player_uuid)
+    .bind(&player_username)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::CREATED)
+}
+
+#[derive(serde::Deserialize)]
+struct InviteClanMemberRequest {
+    username: String,
+}
+
+async fn invite_clan_member(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<InviteClanMemberRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let target_name = body.username.trim();
+    if !is_minecraft_username(target_name) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let linked: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let caller_member = sqlx::query(
+        "SELECT clan_id::text AS clan_id, uuid, role FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&linked)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (clan_id, inviter_uuid) = match caller_member {
+        Some(m) => {
+            let role: String = m.get("role");
+            if role != "leader" && role != "officer" {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            (m.get::<String, _>("clan_id"), m.get::<String, _>("uuid"))
+        }
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+
+    // Find target UUID
+    let target_uuid: Option<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE lower(username) = lower($1)
+         UNION
+         SELECT uuid FROM player_stats WHERE lower(username) = lower($1)
+         LIMIT 1"
+    )
+    .bind(target_name)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let target_uuid = match target_uuid {
+        Some(u) => u,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    // Check if target is already in a clan
+    let already_in: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM clan_members WHERE uuid = $1)"
+    )
+    .bind(&target_uuid)
+    .fetch_one(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if already_in {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    sqlx::query(
+        "INSERT INTO clan_invites (clan_id, inviter_uuid, invited_uuid, invited_username)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (clan_id, invited_uuid) DO UPDATE SET created_at = now(), expires_at = now() + interval '1 day'"
+    )
+    .bind(&clan_id)
+    .bind(&inviter_uuid)
+    .bind(&target_uuid)
+    .bind(target_name)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn accept_clan_invite(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    axum::extract::Path(invite_id): axum::extract::Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let linked: Vec<(String, String)> = sqlx::query_as(
+        "SELECT uuid, username FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let uuids: Vec<String> = linked.iter().map(|(u, _)| u.clone()).collect();
+
+    let inv = sqlx::query(
+        "SELECT clan_id::text AS clan_id, invited_uuid, invited_username
+         FROM clan_invites
+         WHERE id = $1::uuid AND invited_uuid = ANY($2::text[]) AND expires_at > now()"
+    )
+    .bind(&invite_id)
+    .bind(&uuids)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let inv = match inv {
+        Some(i) => i,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let clan_id: String = inv.get("clan_id");
+    let invited_uuid: String = inv.get("invited_uuid");
+    let invited_username: String = inv.get("invited_username");
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Target cannot already be in any clan
+    let already_in: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM clan_members WHERE uuid = $1)"
+    )
+    .bind(&invited_uuid)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if already_in {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    sqlx::query(
+        "INSERT INTO clan_members (clan_id, uuid, username, role)
+         VALUES ($1::uuid, $2, $3, 'member')"
+    )
+    .bind(&clan_id)
+    .bind(&invited_uuid)
+    .bind(&invited_username)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    sqlx::query("DELETE FROM clan_invites WHERE id = $1::uuid")
+        .bind(&invite_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+async fn decline_clan_invite(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    axum::extract::Path(invite_id): axum::extract::Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let linked: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let res = sqlx::query(
+        "DELETE FROM clan_invites WHERE id = $1::uuid AND invited_uuid = ANY($2::text[])"
+    )
+    .bind(&invite_id)
+    .bind(&linked)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct KickClanMemberRequest {
+    uuid: String,
+}
+
+async fn kick_clan_member(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<KickClanMemberRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let linked: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let caller_mem = sqlx::query(
+        "SELECT clan_id::text AS clan_id, role FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&linked)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (clan_id, caller_role) = match caller_mem {
+        Some(m) => {
+            let r: String = m.get("role");
+            if r != "leader" && r != "officer" {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            (m.get::<String, _>("clan_id"), r)
+        }
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+
+    let target_mem = sqlx::query(
+        "SELECT role FROM clan_members WHERE clan_id = $1::uuid AND uuid = $2"
+    )
+    .bind(&clan_id)
+    .bind(&body.uuid)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let target_role: String = match target_mem {
+        Some(tm) => tm.get("role"),
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    if target_role == "leader" {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if caller_role == "officer" && target_role == "officer" {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    sqlx::query("DELETE FROM clan_members WHERE clan_id = $1::uuid AND uuid = $2")
+        .bind(&clan_id)
+        .bind(&body.uuid)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn leave_clan(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<StatusCode, StatusCode> {
+    let linked: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let caller_mem = sqlx::query(
+        "SELECT clan_id::text AS clan_id, uuid, role FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&linked)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (clan_id, my_uuid, my_role) = match caller_mem {
+        Some(m) => (m.get::<String, _>("clan_id"), m.get::<String, _>("uuid"), m.get::<String, _>("role")),
+        None => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    if my_role == "leader" {
+        let total_members: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM clan_members WHERE clan_id = $1::uuid"
+        )
+        .bind(&clan_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if total_members > 1 {
+            // Leader must transfer leadership or disband
+            return Err(StatusCode::CONFLICT);
+        } else {
+            // Only member left -> disband clan
+            sqlx::query("DELETE FROM clans WHERE id = $1::uuid")
+                .bind(&clan_id)
+                .execute(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            return Ok(StatusCode::OK);
+        }
+    }
+
+    sqlx::query("DELETE FROM clan_members WHERE clan_id = $1::uuid AND uuid = $2")
+        .bind(&clan_id)
+        .bind(&my_uuid)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn disband_clan(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<StatusCode, StatusCode> {
+    let linked: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let caller_mem = sqlx::query(
+        "SELECT clan_id::text AS clan_id, role FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&linked)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let clan_id = match caller_mem {
+        Some(m) => {
+            let role: String = m.get("role");
+            if role != "leader" {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            m.get::<String, _>("clan_id")
+        }
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+
+    sqlx::query("DELETE FROM clans WHERE id = $1::uuid")
+        .bind(&clan_id)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct PromoteClanMemberRequest {
+    uuid: String,
+    role: String, // "officer", "member", "leader"
+}
+
+async fn promote_clan_member(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<PromoteClanMemberRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if body.role != "officer" && body.role != "member" && body.role != "leader" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let linked: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let caller_mem = sqlx::query(
+        "SELECT clan_id::text AS clan_id, uuid, role FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&linked)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (clan_id, caller_uuid) = match caller_mem {
+        Some(m) => {
+            let r: String = m.get("role");
+            if r != "leader" {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            (m.get::<String, _>("clan_id"), m.get::<String, _>("uuid"))
+        }
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+
+    let target_mem = sqlx::query(
+        "SELECT username FROM clan_members WHERE clan_id = $1::uuid AND uuid = $2"
+    )
+    .bind(&clan_id)
+    .bind(&body.uuid)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let target_username: String = match target_mem {
+        Some(tm) => tm.get("username"),
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if body.role == "leader" {
+        // Transfer leadership
+        sqlx::query("UPDATE clan_members SET role = 'officer' WHERE clan_id = $1::uuid AND uuid = $2")
+            .bind(&clan_id)
+            .bind(&caller_uuid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        sqlx::query("UPDATE clan_members SET role = 'leader' WHERE clan_id = $1::uuid AND uuid = $2")
+            .bind(&clan_id)
+            .bind(&body.uuid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        sqlx::query("UPDATE clans SET leader_uuid = $2, leader_username = $3 WHERE id = $1::uuid")
+            .bind(&clan_id)
+            .bind(&body.uuid)
+            .bind(&target_username)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        sqlx::query("UPDATE clan_members SET role = $3 WHERE clan_id = $1::uuid AND uuid = $2")
+            .bind(&clan_id)
+            .bind(&body.uuid)
+            .bind(&body.role)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct ClanBankAmountRequest {
+    amount: i64,
+}
+
+async fn clan_bank_deposit(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<ClanBankAmountRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if body.amount <= 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let linked: Vec<(String, String)> = sqlx::query_as(
+        "SELECT uuid, username FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let uuids: Vec<String> = linked.iter().map(|(u, _)| u.clone()).collect();
+
+    let caller_mem = sqlx::query(
+        "SELECT clan_id::text AS clan_id, uuid, username FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&uuids)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (clan_id, player_uuid, player_username) = match caller_mem {
+        Some(m) => (m.get::<String, _>("clan_id"), m.get::<String, _>("uuid"), m.get::<String, _>("username")),
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    lock_economy(&mut tx).await?;
+    grant_starter(&mut tx, &player_uuid, &player_username).await?;
+
+    // Deduct coins from player
+    let new_player_balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE player_stats SET coins = coins - $2 WHERE uuid = $1 AND coins >= $2 RETURNING coins"
+    )
+    .bind(&player_uuid)
+    .bind(body.amount)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if new_player_balance.is_none() {
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+
+    // Add coins to clan treasury
+    let new_clan_balance: i64 = sqlx::query_scalar(
+        "UPDATE clans SET coins = coins + $2, updated_at = now() WHERE id = $1::uuid RETURNING coins"
+    )
+    .bind(&clan_id)
+    .bind(body.amount)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Log to treasury history
+    sqlx::query(
+        "INSERT INTO clan_treasury_log (clan_id, player_uuid, player_username, action, amount, balance_after)
+         VALUES ($1::uuid, $2, $3, 'deposit', $4, $5)"
+    )
+    .bind(&clan_id)
+    .bind(&player_uuid)
+    .bind(&player_username)
+    .bind(body.amount)
+    .bind(new_clan_balance)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+async fn clan_bank_withdraw(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<ClanBankAmountRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if body.amount <= 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let linked: Vec<(String, String)> = sqlx::query_as(
+        "SELECT uuid, username FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let uuids: Vec<String> = linked.iter().map(|(u, _)| u.clone()).collect();
+
+    let caller_mem = sqlx::query(
+        "SELECT clan_id::text AS clan_id, uuid, username, role FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&uuids)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (clan_id, player_uuid, player_username) = match caller_mem {
+        Some(m) => {
+            let r: String = m.get("role");
+            if r != "leader" && r != "officer" {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            (m.get::<String, _>("clan_id"), m.get::<String, _>("uuid"), m.get::<String, _>("username"))
+        }
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    lock_economy(&mut tx).await?;
+    grant_starter(&mut tx, &player_uuid, &player_username).await?;
+
+    // Deduct from clan treasury
+    let new_clan_balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE clans SET coins = coins - $2, updated_at = now() WHERE id = $1::uuid AND coins >= $2 RETURNING coins"
+    )
+    .bind(&clan_id)
+    .bind(body.amount)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let new_clan_balance = match new_clan_balance {
+        Some(b) => b,
+        None => return Err(StatusCode::PAYMENT_REQUIRED),
+    };
+
+    // Add to player coins
+    sqlx::query(
+        "UPDATE player_stats SET coins = coins + $2 WHERE uuid = $1"
+    )
+    .bind(&player_uuid)
+    .bind(body.amount)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Log to treasury history
+    sqlx::query(
+        "INSERT INTO clan_treasury_log (clan_id, player_uuid, player_username, action, amount, balance_after)
+         VALUES ($1::uuid, $2, $3, 'withdraw', $4, $5)"
+    )
+    .bind(&clan_id)
+    .bind(&player_uuid)
+    .bind(&player_username)
+    .bind(body.amount)
+    .bind(new_clan_balance)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct SetClanRelationRequest {
+    target_tag: String,
+    status: String, // "ally", "truce", "war", "neutral"
+}
+
+async fn set_clan_relation(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(body): Json<SetClanRelationRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let status = body.status.trim().to_lowercase();
+    if status != "ally" && status != "truce" && status != "war" && status != "neutral" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let target_tag = body.target_tag.trim().to_uppercase();
+
+    let linked: Vec<String> = sqlx::query_scalar(
+        "SELECT uuid FROM minecraft_accounts WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let caller_mem = sqlx::query(
+        "SELECT clan_id::text AS clan_id, role FROM clan_members WHERE uuid = ANY($1::text[])"
+    )
+    .bind(&linked)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let my_clan_id = match caller_mem {
+        Some(m) => {
+            let r: String = m.get("role");
+            if r != "leader" && r != "officer" {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            m.get::<String, _>("clan_id")
+        }
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+
+    let target_clan_id: Option<String> = sqlx::query_scalar(
+        "SELECT id::text FROM clans WHERE tag = $1"
+    )
+    .bind(&target_tag)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let target_clan_id = match target_clan_id {
+        Some(id) => id,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    if my_clan_id == target_clan_id {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let (c1, c2) = if my_clan_id < target_clan_id {
+        (&my_clan_id, &target_clan_id)
+    } else {
+        (&target_clan_id, &my_clan_id)
+    };
+
+    if status == "neutral" {
+        sqlx::query("DELETE FROM clan_relations WHERE clan_id_1 = $1::uuid AND clan_id_2 = $2::uuid")
+            .bind(c1)
+            .bind(c2)
+            .execute(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        sqlx::query(
+            "INSERT INTO clan_relations (clan_id_1, clan_id_2, status, initiated_by)
+             VALUES ($1::uuid, $2::uuid, $3, $4::uuid)
+             ON CONFLICT (clan_id_1, clan_id_2) DO UPDATE SET status = EXCLUDED.status, initiated_by = EXCLUDED.initiated_by"
+        )
+        .bind(c1)
+        .bind(c2)
+        .bind(&status)
+        .bind(&my_clan_id)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    Ok(StatusCode::OK)
+}
+
+// Internal plugin sync endpoint for clans
+#[derive(serde::Serialize)]
+struct InternalClanSyncDto {
+    id: String,
+    tag: String,
+    name: String,
+    leader_uuid: String,
+    coins: i64,
+    home: Option<ClanHomeView>,
+    members: Vec<InternalClanMemberDto>,
+    allies: Vec<String>,
+    truces: Vec<String>,
+    wars: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct InternalClanMemberDto {
+    uuid: String,
+    username: String,
+    role: String,
+}
+
+async fn internal_clans_sync(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<InternalClanSyncDto>>, StatusCode> {
+    require_service_token(&headers)?;
+
+    let clan_rows = sqlx::query(
+        "SELECT id::text AS id, tag, name, leader_uuid, coins,
+                home_world, home_x, home_y, home_z, home_yaw, home_pitch
+         FROM clans
+         ORDER BY id ASC"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let member_rows = sqlx::query(
+        "SELECT clan_id::text AS clan_id, uuid, username, role FROM clan_members"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut members_by_clan: std::collections::HashMap<String, Vec<InternalClanMemberDto>> = std::collections::HashMap::new();
+    for mr in member_rows {
+        let cid: String = mr.get("clan_id");
+        members_by_clan.entry(cid).or_default().push(InternalClanMemberDto {
+            uuid: mr.get("uuid"),
+            username: mr.get("username"),
+            role: mr.get("role"),
+        });
+    }
+
+    let rel_rows = sqlx::query(
+        "SELECT cr.clan_id_1::text AS c1, cr.clan_id_2::text AS c2, cr.status,
+                cl1.tag AS t1, cl2.tag AS t2
+         FROM clan_relations cr
+         JOIN clans cl1 ON cl1.id = cr.clan_id_1
+         JOIN clans cl2 ON cl2.id = cr.clan_id_2"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut allies_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut truces_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut wars_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+    for r in rel_rows {
+        let c1: String = r.get("c1");
+        let c2: String = r.get("c2");
+        let t1: String = r.get("t1");
+        let t2: String = r.get("t2");
+        let status: String = r.get("status");
+
+        match status.as_str() {
+            "ally" => {
+                allies_map.entry(c1.clone()).or_default().push(t2.clone());
+                allies_map.entry(c2).or_default().push(t1);
+            }
+            "truce" => {
+                truces_map.entry(c1.clone()).or_default().push(t2.clone());
+                truces_map.entry(c2).or_default().push(t1);
+            }
+            "war" => {
+                wars_map.entry(c1.clone()).or_default().push(t2.clone());
+                wars_map.entry(c2).or_default().push(t1);
+            }
+            _ => {}
+        }
+    }
+
+    let mut list = Vec::with_capacity(clan_rows.len());
+    for r in clan_rows {
+        let id: String = r.get("id");
+        let home: Option<ClanHomeView> = match (
+            r.get::<Option<String>, _>("home_world"),
+            r.get::<Option<f64>, _>("home_x"),
+            r.get::<Option<f64>, _>("home_y"),
+            r.get::<Option<f64>, _>("home_z"),
+        ) {
+            (Some(world), Some(x), Some(y), Some(z)) => Some(ClanHomeView {
+                world,
+                x,
+                y,
+                z,
+                yaw: r.get::<Option<f32>, _>("home_yaw").unwrap_or(0.0),
+                pitch: r.get::<Option<f32>, _>("home_pitch").unwrap_or(0.0),
+            }),
+            _ => None,
+        };
+
+        list.push(InternalClanSyncDto {
+            id: id.clone(),
+            tag: r.get("tag"),
+            name: r.get("name"),
+            leader_uuid: r.get("leader_uuid"),
+            coins: r.get("coins"),
+            home,
+            members: members_by_clan.remove(&id).unwrap_or_default(),
+            allies: allies_map.remove(&id).unwrap_or_default(),
+            truces: truces_map.remove(&id).unwrap_or_default(),
+            wars: wars_map.remove(&id).unwrap_or_default(),
+        });
+    }
+
+    Ok(Json(list))
+}
+
+#[derive(serde::Deserialize)]
+struct InternalClanActionRequest {
+    action: String,
+    player_uuid: String,
+    player_username: String,
+    tag: Option<String>,
+    name: Option<String>,
+    target_username: Option<String>,
+    target_tag: Option<String>,
+    status: Option<String>,
+    amount: Option<i64>,
+    home_world: Option<String>,
+    home_x: Option<f64>,
+    home_y: Option<f64>,
+    home_z: Option<f64>,
+    home_yaw: Option<f32>,
+    home_pitch: Option<f32>,
+}
+
+#[derive(serde::Serialize)]
+struct InternalClanActionResponse {
+    success: bool,
+    message: String,
+}
+
+async fn internal_clan_action(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(body): Json<InternalClanActionRequest>,
+) -> Result<Json<InternalClanActionResponse>, StatusCode> {
+    require_service_token(&headers)?;
+
+    let player_uuid = body.player_uuid.trim();
+    let player_username = body.player_username.trim();
+
+    match body.action.as_str() {
+        "create" => {
+            let tag = body.tag.as_deref().unwrap_or("").trim().to_uppercase();
+            let name = body.name.as_deref().unwrap_or("").trim().to_string();
+
+            if !is_valid_clan_tag(&tag) {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "Tag must be 2-6 alphanumeric characters (e.g. TITAN).".to_string(),
+                }));
+            }
+            if !is_valid_clan_name(&name) {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "Name must be 3-24 characters.".to_string(),
+                }));
+            }
+
+            let already_in: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM clan_members WHERE uuid = $1)"
+            )
+            .bind(player_uuid)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if already_in {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "You are already in a clan. Leave your clan before creating a new one.".to_string(),
+                }));
+            }
+
+            let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let clan_id_opt: Option<String> = sqlx::query_scalar(
+                "INSERT INTO clans (tag, name, leader_uuid, leader_username, coins)
+                 VALUES ($1, $2, $3, $4, 0)
+                 ON CONFLICT DO NOTHING
+                 RETURNING id::text"
+            )
+            .bind(&tag)
+            .bind(&name)
+            .bind(player_uuid)
+            .bind(player_username)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let clan_id = match clan_id_opt {
+                Some(id) => id,
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "A clan with that tag or name already exists!".to_string(),
+                    }));
+                }
+            };
+
+            sqlx::query(
+                "INSERT INTO clan_members (clan_id, uuid, username, role)
+                 VALUES ($1::uuid, $2, $3, 'leader')"
+            )
+            .bind(&clan_id)
+            .bind(player_uuid)
+            .bind(player_username)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: format!("Clan [{tag}] {name} created successfully! You are the Clan Leader."),
+            }))
+        }
+
+        "sethome" => {
+            let caller_mem = sqlx::query(
+                "SELECT clan_id::text AS clan_id, role FROM clan_members WHERE uuid = $1"
+            )
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let clan_id = match caller_mem {
+                Some(m) => {
+                    let role: String = m.get("role");
+                    if role != "leader" && role != "officer" {
+                        return Ok(Json(InternalClanActionResponse {
+                            success: false,
+                            message: "Only clan leaders and officers can set the clan home.".to_string(),
+                        }));
+                    }
+                    m.get::<String, _>("clan_id")
+                }
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "You are not in a clan.".to_string(),
+                    }));
+                }
+            };
+
+            sqlx::query(
+                "UPDATE clans SET home_world = $2, home_x = $3, home_y = $4, home_z = $5, home_yaw = $6, home_pitch = $7, updated_at = now()
+                 WHERE id = $1::uuid"
+            )
+            .bind(&clan_id)
+            .bind(&body.home_world)
+            .bind(body.home_x)
+            .bind(body.home_y)
+            .bind(body.home_z)
+            .bind(body.home_yaw)
+            .bind(body.home_pitch)
+            .execute(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: "Clan home set to your current location.".to_string(),
+            }))
+        }
+
+        "invite" => {
+            let target_name = body.target_username.as_deref().unwrap_or("").trim();
+            if !is_minecraft_username(target_name) {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "Invalid target player username.".to_string(),
+                }));
+            }
+            let caller_mem = sqlx::query(
+                "SELECT cm.clan_id::text AS clan_id, cm.role, c.tag
+                 FROM clan_members cm
+                 JOIN clans c ON c.id = cm.clan_id
+                 WHERE cm.uuid = $1"
+            )
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let (clan_id, clan_tag) = match caller_mem {
+                Some(m) => {
+                    let r: String = m.get("role");
+                    if r != "leader" && r != "officer" {
+                        return Ok(Json(InternalClanActionResponse {
+                            success: false,
+                            message: "Only clan leaders and officers can invite members.".to_string(),
+                        }));
+                    }
+                    (m.get::<String, _>("clan_id"), m.get::<String, _>("tag"))
+                }
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "You are not in a clan.".to_string(),
+                    }));
+                }
+            };
+
+            let target_uuid: Option<String> = sqlx::query_scalar(
+                "SELECT uuid FROM minecraft_accounts WHERE lower(username) = lower($1)
+                 UNION
+                 SELECT uuid FROM player_stats WHERE lower(username) = lower($1)
+                 LIMIT 1"
+            )
+            .bind(target_name)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let target_uuid = match target_uuid {
+                Some(u) => u,
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: format!("Player '{target_name}' not found."),
+                    }));
+                }
+            };
+
+            let already_in: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM clan_members WHERE uuid = $1)"
+            )
+            .bind(&target_uuid)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if already_in {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: format!("Player '{target_name}' is already in a clan!"),
+                }));
+            }
+
+            sqlx::query(
+                "INSERT INTO clan_invites (clan_id, inviter_uuid, invited_uuid, invited_username)
+                 VALUES ($1::uuid, $2, $3, $4)
+                 ON CONFLICT (clan_id, invited_uuid) DO UPDATE SET created_at = now(), expires_at = now() + interval '1 day'"
+            )
+            .bind(&clan_id)
+            .bind(player_uuid)
+            .bind(&target_uuid)
+            .bind(target_name)
+            .execute(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: format!("Invited {target_name} to [{clan_tag}]. They can join with /clan join {clan_tag}"),
+            }))
+        }
+
+        "join" => {
+            let target_tag = body.target_tag.as_deref().unwrap_or("").trim().to_uppercase();
+            if target_tag.is_empty() {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "Usage: /clan join <TAG>".to_string(),
+                }));
+            }
+
+            let already_in: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM clan_members WHERE uuid = $1)"
+            )
+            .bind(player_uuid)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if already_in {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "You are already in a clan! Leave your current clan first.".to_string(),
+                }));
+            }
+
+            let inv_row = sqlx::query(
+                "SELECT ci.id::text AS id, ci.clan_id::text AS clan_id, c.tag
+                 FROM clan_invites ci
+                 JOIN clans c ON c.id = ci.clan_id
+                 WHERE c.tag = $1 AND ci.invited_uuid = $2 AND ci.expires_at > now()"
+            )
+            .bind(&target_tag)
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let (invite_id, clan_id, clan_tag) = match inv_row {
+                Some(r) => (r.get::<String, _>("id"), r.get::<String, _>("clan_id"), r.get::<String, _>("tag")),
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: format!("You do not have a pending invitation to clan [{target_tag}]."),
+                    }));
+                }
+            };
+
+            let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            sqlx::query(
+                "INSERT INTO clan_members (clan_id, uuid, username, role)
+                 VALUES ($1::uuid, $2, $3, 'member')"
+            )
+            .bind(&clan_id)
+            .bind(player_uuid)
+            .bind(player_username)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            sqlx::query("DELETE FROM clan_invites WHERE id = $1::uuid")
+                .bind(&invite_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: format!("You have joined clan [{clan_tag}]!"),
+            }))
+        }
+
+        "relation" => {
+            let target_tag = body.target_tag.as_deref().unwrap_or("").trim().to_uppercase();
+            let status = body.status.as_deref().unwrap_or("").trim().to_lowercase();
+            if status != "ally" && status != "truce" && status != "war" && status != "neutral" {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "Relation must be 'ally', 'truce', 'war', or 'neutral'.".to_string(),
+                }));
+            }
+
+            let caller_mem = sqlx::query(
+                "SELECT clan_id::text AS clan_id, role FROM clan_members WHERE uuid = $1"
+            )
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let my_clan_id = match caller_mem {
+                Some(m) => {
+                    let r: String = m.get("role");
+                    if r != "leader" && r != "officer" {
+                        return Ok(Json(InternalClanActionResponse {
+                            success: false,
+                            message: "Only clan leaders and officers can manage diplomatic relations.".to_string(),
+                        }));
+                    }
+                    m.get::<String, _>("clan_id")
+                }
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "You are not in a clan.".to_string(),
+                    }));
+                }
+            };
+
+            let target_clan_id: Option<String> = sqlx::query_scalar(
+                "SELECT id::text FROM clans WHERE tag = $1"
+            )
+            .bind(&target_tag)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let target_clan_id = match target_clan_id {
+                Some(id) => id,
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: format!("Clan [{target_tag}] does not exist."),
+                    }));
+                }
+            };
+
+            if my_clan_id == target_clan_id {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "You cannot set a relation with your own clan!".to_string(),
+                }));
+            }
+
+            let (c1, c2) = if my_clan_id < target_clan_id {
+                (&my_clan_id, &target_clan_id)
+            } else {
+                (&target_clan_id, &my_clan_id)
+            };
+
+            if status == "neutral" {
+                sqlx::query("DELETE FROM clan_relations WHERE clan_id_1 = $1::uuid AND clan_id_2 = $2::uuid")
+                    .bind(c1)
+                    .bind(c2)
+                    .execute(&pool)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            } else {
+                sqlx::query(
+                    "INSERT INTO clan_relations (clan_id_1, clan_id_2, status, initiated_by)
+                     VALUES ($1::uuid, $2::uuid, $3, $4::uuid)
+                     ON CONFLICT (clan_id_1, clan_id_2) DO UPDATE SET status = EXCLUDED.status, initiated_by = EXCLUDED.initiated_by"
+                )
+                .bind(c1)
+                .bind(c2)
+                .bind(&status)
+                .bind(&my_clan_id)
+                .execute(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: format!("Diplomatic relation with [{target_tag}] set to {status}."),
+            }))
+        }
+
+        "deposit" => {
+            let amount = body.amount.unwrap_or(0);
+            if amount <= 0 {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "Amount must be greater than 0.".to_string(),
+                }));
+            }
+
+            let caller_mem = sqlx::query(
+                "SELECT clan_id::text AS clan_id, c.tag FROM clan_members cm JOIN clans c ON c.id = cm.clan_id WHERE cm.uuid = $1"
+            )
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let (clan_id, clan_tag) = match caller_mem {
+                Some(m) => (m.get::<String, _>("clan_id"), m.get::<String, _>("tag")),
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "You are not in a clan.".to_string(),
+                    }));
+                }
+            };
+
+            let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            lock_economy(&mut tx).await?;
+            grant_starter(&mut tx, player_uuid, player_username).await?;
+
+            let new_player_bal: Option<i64> = sqlx::query_scalar(
+                "UPDATE player_stats SET coins = coins - $2 WHERE uuid = $1 AND coins >= $2 RETURNING coins"
+            )
+            .bind(player_uuid)
+            .bind(amount)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if new_player_bal.is_none() {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: format!("Insufficient balance! You need {amount} coins to deposit."),
+                }));
+            }
+
+            let new_clan_bal: i64 = sqlx::query_scalar(
+                "UPDATE clans SET coins = coins + $2, updated_at = now() WHERE id = $1::uuid RETURNING coins"
+            )
+            .bind(&clan_id)
+            .bind(amount)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            sqlx::query(
+                "INSERT INTO clan_treasury_log (clan_id, player_uuid, player_username, action, amount, balance_after)
+                 VALUES ($1::uuid, $2, $3, 'deposit', $4, $5)"
+            )
+            .bind(&clan_id)
+            .bind(player_uuid)
+            .bind(player_username)
+            .bind(amount)
+            .bind(new_clan_bal)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: format!("Deposited {amount} coins into [{clan_tag}] clan bank! Treasury balance: {new_clan_bal} coins."),
+            }))
+        }
+
+        "withdraw" => {
+            let amount = body.amount.unwrap_or(0);
+            if amount <= 0 {
+                return Ok(Json(InternalClanActionResponse {
+                    success: false,
+                    message: "Amount must be greater than 0.".to_string(),
+                }));
+            }
+
+            let caller_mem = sqlx::query(
+                "SELECT cm.clan_id::text AS clan_id, cm.role, c.tag
+                 FROM clan_members cm
+                 JOIN clans c ON c.id = cm.clan_id
+                 WHERE cm.uuid = $1"
+            )
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let (clan_id, clan_tag) = match caller_mem {
+                Some(m) => {
+                    let r: String = m.get("role");
+                    if r != "leader" && r != "officer" {
+                        return Ok(Json(InternalClanActionResponse {
+                            success: false,
+                            message: "Only clan leaders and officers can withdraw from the clan bank.".to_string(),
+                        }));
+                    }
+                    (m.get::<String, _>("clan_id"), m.get::<String, _>("tag"))
+                }
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "You are not in a clan.".to_string(),
+                    }));
+                }
+            };
+
+            let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            lock_economy(&mut tx).await?;
+            grant_starter(&mut tx, player_uuid, player_username).await?;
+
+            let new_clan_bal: Option<i64> = sqlx::query_scalar(
+                "UPDATE clans SET coins = coins - $2, updated_at = now() WHERE id = $1::uuid AND coins >= $2 RETURNING coins"
+            )
+            .bind(&clan_id)
+            .bind(amount)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let new_clan_bal = match new_clan_bal {
+                Some(b) => b,
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: format!("Insufficient clan treasury funds! Cannot withdraw {amount} coins."),
+                    }));
+                }
+            };
+
+            sqlx::query("UPDATE player_stats SET coins = coins + $2 WHERE uuid = $1")
+                .bind(player_uuid)
+                .bind(amount)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            sqlx::query(
+                "INSERT INTO clan_treasury_log (clan_id, player_uuid, player_username, action, amount, balance_after)
+                 VALUES ($1::uuid, $2, $3, 'withdraw', $4, $5)"
+            )
+            .bind(&clan_id)
+            .bind(player_uuid)
+            .bind(player_username)
+            .bind(amount)
+            .bind(new_clan_bal)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: format!("Withdrew {amount} coins from [{clan_tag}] clan bank! Treasury balance: {new_clan_bal} coins."),
+            }))
+        }
+
+        "leave" => {
+            let caller_mem = sqlx::query(
+                "SELECT clan_id::text AS clan_id, role FROM clan_members WHERE uuid = $1"
+            )
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let (clan_id, role) = match caller_mem {
+                Some(m) => (m.get::<String, _>("clan_id"), m.get::<String, _>("role")),
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "You are not in a clan.".to_string(),
+                    }));
+                }
+            };
+
+            if role == "leader" {
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM clan_members WHERE clan_id = $1::uuid"
+                )
+                .bind(&clan_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+                if count > 1 {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "As Clan Leader, promote another member to leader or type /clan disband before leaving.".to_string(),
+                    }));
+                } else {
+                    sqlx::query("DELETE FROM clans WHERE id = $1::uuid")
+                        .bind(&clan_id)
+                        .execute(&pool)
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    return Ok(Json(InternalClanActionResponse {
+                        success: true,
+                        message: "You left and disbanded the clan.".to_string(),
+                    }));
+                }
+            }
+
+            sqlx::query("DELETE FROM clan_members WHERE clan_id = $1::uuid AND uuid = $2")
+                .bind(&clan_id)
+                .bind(player_uuid)
+                .execute(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: "You have left your clan.".to_string(),
+            }))
+        }
+
+        "disband" => {
+            let caller_mem = sqlx::query(
+                "SELECT clan_id::text AS clan_id, role, c.tag
+                 FROM clan_members cm
+                 JOIN clans c ON c.id = cm.clan_id
+                 WHERE cm.uuid = $1"
+            )
+            .bind(player_uuid)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let (clan_id, clan_tag) = match caller_mem {
+                Some(m) => {
+                    let r: String = m.get("role");
+                    if r != "leader" {
+                        return Ok(Json(InternalClanActionResponse {
+                            success: false,
+                            message: "Only the Clan Leader can disband the clan.".to_string(),
+                        }));
+                    }
+                    (m.get::<String, _>("clan_id"), m.get::<String, _>("tag"))
+                }
+                None => {
+                    return Ok(Json(InternalClanActionResponse {
+                        success: false,
+                        message: "You are not in a clan.".to_string(),
+                    }));
+                }
+            };
+
+            sqlx::query("DELETE FROM clans WHERE id = $1::uuid")
+                .bind(&clan_id)
+                .execute(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(InternalClanActionResponse {
+                success: true,
+                message: format!("Clan [{clan_tag}] has been disbanded."),
+            }))
+        }
+
+        _ => Ok(Json(InternalClanActionResponse {
+            success: false,
+            message: "Unknown clan action.".to_string(),
+        })),
+    }
+}
+
+
 // --- Live Chat Integration --------------------------------------------------
 
 const CHAT_MAX_TEXT_LEN: usize = 256;
@@ -10541,6 +12550,23 @@ mod test {
         assert!(asks_for_a_file("/assets/index-DMpDOvKb.js"));
         assert!(asks_for_a_file("/favicon.svg"));
         assert!(asks_for_a_file("/cabinet.json"));
+    }
+
+    #[test]
+    fn clan_tag_and_name_validation_enforces_clean_standards() {
+        assert!(is_valid_clan_tag("AERO"));
+        assert!(is_valid_clan_tag("OASIS"));
+        assert!(is_valid_clan_tag("GG"));
+        assert!(!is_valid_clan_tag("A"));
+        assert!(!is_valid_clan_tag("LONGERTAG"));
+        assert!(!is_valid_clan_tag("AE RO"));
+        assert!(!is_valid_clan_tag("AE-RO"));
+
+        assert!(is_valid_clan_name("Aero Clan"));
+        assert!(is_valid_clan_name("The_Defenders"));
+        assert!(!is_valid_clan_name("A"));
+        assert!(!is_valid_clan_name("This Clan Name Is Way Way Too Long To Be Accepted"));
+        assert!(!is_valid_clan_name("Clan@Hack$"));
     }
 
     #[tokio::test]
