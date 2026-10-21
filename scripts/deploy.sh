@@ -54,6 +54,10 @@ fi
 
 compose() { docker compose --env-file .env.docker "$@"; }
 
+# Reclaim disk space from dangling images and builder cache before building
+docker image prune -f || true
+docker builder prune -f --keep-storage 2GB || true
+
 # Build before replacing running services. Runtime data stays in mc/ and volumes.
 compose build app
 ./scripts/build-plugin.sh
@@ -61,3 +65,6 @@ compose up -d db app proxy purpur velocity
 # Plugin jars are bind-mounted; Compose does not detect changes to their contents.
 compose restart purpur
 compose ps
+
+# Clean up replaced images
+docker image prune -f || true

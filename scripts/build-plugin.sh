@@ -21,7 +21,6 @@ lib="$root/.plugin-build/lib"
 AUTHME="6.0.1"
 GRADLE_IMAGE="gradle:jdk25"
 SKINSRESTORER="15.12.6"
-BLUEMAP="5.29"
 
 version="$(sed -n "s/^version:[[:space:]]*'\{0,1\}\([^']*\)'\{0,1\}[[:space:]]*$/\1/p" \
   "$resources/plugin.yml" | head -n1)"
@@ -34,6 +33,7 @@ mkdir -p "$lib"
 authme_jar="$lib/AuthMe-$AUTHME-Paper.jar"
 if [ ! -s "$authme_jar" ]; then
   echo "build-plugin: downloading AuthMe-$AUTHME-Paper.jar"
+  rm -f "$authme_jar.part"
   curl -fsSL --retry 3 -o "$authme_jar.part" \
     "https://github.com/AuthMe/AuthMeReloaded/releases/download/$AUTHME/AuthMe-$AUTHME-Paper.jar"
   mv "$authme_jar.part" "$authme_jar"
@@ -41,6 +41,8 @@ fi
 
 skin_jar="$lib/SkinsRestorer-$SKINSRESTORER.jar"
 if [ ! -s "$skin_jar" ]; then
+  echo "build-plugin: downloading SkinsRestorer-$SKINSRESTORER.jar"
+  rm -f "$skin_jar.part"
   curl -fsSL --retry 3 -o "$skin_jar.part" \
     "https://github.com/SkinsRestorer/SkinsRestorer/releases/download/$SKINSRESTORER/SkinsRestorer.jar"
   mv "$skin_jar.part" "$skin_jar"
@@ -49,17 +51,6 @@ skin_hash="$(shasum -a 256 "$skin_jar" | cut -d ' ' -f 1)"
 if [ "$skin_hash" != "a85b4a370f988741c9a38f4d0498262edacbf3220314790ac1c127461996359c" ]; then
   echo "build-plugin: SkinsRestorer checksum mismatch" >&2
   exit 1
-fi
-
-bluemap_jar="$lib/bluemap-$BLUEMAP-paper.jar"
-if [ ! -s "$bluemap_jar" ]; then
-  if [ -s "$root/mc/purpur/plugins/bluemap-$BLUEMAP-paper.jar" ]; then
-    cp "$root/mc/purpur/plugins/bluemap-$BLUEMAP-paper.jar" "$bluemap_jar"
-  else
-    curl -fsSL --retry 3 -o "$bluemap_jar.part" \
-      "https://github.com/BlueMap-Minecraft/BlueMap/releases/download/v$BLUEMAP/bluemap-$BLUEMAP-paper.jar"
-    mv "$bluemap_jar.part" "$bluemap_jar"
-  fi
 fi
 
 echo "build-plugin: building LinkBridge $version"

@@ -121,7 +121,7 @@ jobs:
         run: |
           curl --fail --silent --show-error --location \
             --retry 12 --retry-delay 5 --retry-all-errors \
-            --connect-timeout 10 --max-time 20 https://oasisaero.ru/ > /dev/null
+            --connect-timeout 10 --max-time 20 -o /dev/null https://oasisaero.ru/
       - name: Remove SSH credentials
         if: always()
         run: rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts
