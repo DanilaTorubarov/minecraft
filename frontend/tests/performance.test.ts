@@ -2,10 +2,16 @@ import assert from 'node:assert/strict'
 import { afterEach, beforeEach, test } from 'node:test'
 import {
   applyLowPerformanceClass,
+  AUTO_IN_GAME_LOW_PERFORMANCE_KEY,
+  autoLowPerformanceInGameEnabled,
+  isAutoLowPerformanceActive,
   LOW_PERFORMANCE_KEY,
   lowPerformanceEnabled,
   parseLowPerformanceSetting,
+  readAutoLowPerformanceInGame,
   readLowPerformanceEnabled,
+  setAutoLowPerformanceInGame,
+  setInGameDetected,
   setLowPerformanceEnabled,
   subscribeLowPerformanceSetting,
 } from '../src/lib/performanceSetting.ts'
@@ -41,6 +47,8 @@ beforeEach(() => {
 
 afterEach(() => {
   setLowPerformanceEnabled(false)
+  setAutoLowPerformanceInGame(true)
+  setInGameDetected(false)
   globalThis.localStorage = originalLocalStorage
   globalThis.document = originalDocument
 })
@@ -94,4 +102,37 @@ test('applyLowPerformanceClass sets or removes dataset attribute safely', () => 
 
   applyLowPerformanceClass(false)
   assert.equal(document.documentElement.dataset.lowPerformance, undefined)
+})
+
+test('auto low performance when in game defaults to enabled and switches dynamically', () => {
+  assert.equal(readAutoLowPerformanceInGame(), true)
+  assert.equal(autoLowPerformanceInGameEnabled(), true)
+  assert.equal(lowPerformanceEnabled(), false)
+  assert.equal(isAutoLowPerformanceActive(), false)
+
+  // Player joins Minecraft server: in-game detected
+  setInGameDetected(true)
+  assert.equal(lowPerformanceEnabled(), true)
+  assert.equal(isAutoLowPerformanceActive(), true)
+  assert.equal(document.documentElement.dataset.lowPerformance, 'true')
+
+  // Player leaves Minecraft server
+  setInGameDetected(false)
+  assert.equal(lowPerformanceEnabled(), false)
+  assert.equal(isAutoLowPerformanceActive(), false)
+  assert.equal(document.documentElement.dataset.lowPerformance, undefined)
+
+  // Disabling the auto in-game setting prevents auto switching
+  setAutoLowPerformanceInGame(false)
+  assert.equal(autoLowPerformanceInGameEnabled(), false)
+  assert.equal(localStorage.getItem(AUTO_IN_GAME_LOW_PERFORMANCE_KEY), 'off')
+
+  setInGameDetected(true)
+  assert.equal(lowPerformanceEnabled(), false)
+  assert.equal(isAutoLowPerformanceActive(), false)
+
+  // Manual override takes precedence even when auto setting is off
+  setLowPerformanceEnabled(true)
+  assert.equal(lowPerformanceEnabled(), true)
+  assert.equal(isAutoLowPerformanceActive(), false) // not auto-active, manual is on
 })

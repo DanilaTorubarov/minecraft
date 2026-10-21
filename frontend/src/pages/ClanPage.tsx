@@ -20,6 +20,7 @@ import { playSound } from '../lib/sounds'
 import coinIcon from '../assets/icons/coin.png'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
 import globeIcon from '../assets/icons/vista-search-globe.png'
+import StatusBadge from '../components/StatusBadge'
 
 interface Props {
   visible: boolean
@@ -608,26 +609,11 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                           {new Date(m.joined_at).toLocaleDateString()}
                         </td>
                         <td style={{ padding: '10px 10px' }}>
-                          <span
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              fontSize: 12,
-                              color: m.is_online ? '#16a34a' : 'var(--muted)',
-                              fontWeight: 500,
-                            }}
-                          >
-                            <span
-                              style={{
-                                width: 7,
-                                height: 7,
-                                borderRadius: '50%',
-                                background: m.is_online ? '#16a34a' : '#9ca3af',
-                              }}
-                            />
-                            {m.is_online ? 'In Game' : 'Offline'}
-                          </span>
+                          <StatusBadge
+                            status={m.status || (m.is_online ? 'in_game' : 'offline')}
+                            label={m.status_label}
+                            compact
+                          />
                         </td>
                         {isOfficerOrLeader && (
                           <td style={{ padding: '10px 10px', textAlign: 'right' }}>

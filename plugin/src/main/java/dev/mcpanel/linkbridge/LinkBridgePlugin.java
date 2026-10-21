@@ -5643,6 +5643,10 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             pObj.addProperty("z", loc.getBlockZ());
             pObj.addProperty("health", Math.round(p.getHealth() * 10.0) / 10.0);
             pObj.addProperty("is_muted", activeMutes.containsKey(p.getName().toLowerCase(Locale.ROOT)));
+            boolean isSleeping = p.isSleeping();
+            pObj.addProperty("is_sleeping", isSleeping);
+            String playerStatus = isSleeping ? "sleeping" : (p.isDead() || p.getHealth() <= 0.0 ? "dead" : "in_game");
+            pObj.addProperty("status", playerStatus);
             playersJson.add(pObj);
         }
 

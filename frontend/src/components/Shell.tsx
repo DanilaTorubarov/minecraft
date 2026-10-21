@@ -27,6 +27,7 @@ import MapPage from '../pages/MapPage'
 import ClanPage from '../pages/ClanPage'
 import LeaderboardsPage from '../pages/LeaderboardsPage'
 import { getTerritoryAlerts, markTerritoryAlertsRead, type TerritoryAlert } from '../lib/api'
+import { usePresence } from '../lib/usePresence'
 
 function Shell() {
   const { user, signOut } = useAuth()
@@ -65,6 +66,7 @@ function Shell() {
   const [territoryAlerts, setTerritoryAlerts] = useState<TerritoryAlert[]>([])
   const [alertDismissed, setAlertDismissed] = useState<Record<string, boolean>>({})
   const [lowPerf] = useLowPerformanceSetting()
+  const { presence } = usePresence(Boolean(user))
 
   useEffect(() => {
     if (!user || statsAccounts.length === 0) return
@@ -319,6 +321,60 @@ function Shell() {
           >
             <img src={firewallWarningIcon} alt="" style={{ width: '16px', height: '16px' }} />
             <span>{activeAlerts.length} Alert{activeAlerts.length === 1 ? '' : 's'}</span>
+          </button>
+        )}
+        {presence && user !== null && (
+          <button
+            type="button"
+            className="desktop-menu-presence-pill"
+            onClick={() => {
+              if (presence.in_game_account) {
+                openPlayer(presence.in_game_account.uuid)
+              } else {
+                openAccount()
+              }
+            }}
+            title={
+              presence.in_game_account
+                ? `${presence.in_game_account.username} is ${presence.in_game_account.status_label} (click to view)`
+                : `${presence.user_status_label} (click to view)`
+            }
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '2px 9px',
+              borderRadius: '12px',
+              background: 'var(--surface-soft)',
+              border: '1px solid var(--frame)',
+              fontSize: '11px',
+              fontWeight: 600,
+              color: 'var(--text)',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              marginRight: '6px',
+            }}
+          >
+            <span
+              style={{
+                width: '7px',
+                height: '7px',
+                borderRadius: '50%',
+                backgroundColor:
+                  presence.user_status === 'in_game'
+                    ? '#22c55e'
+                    : presence.user_status === 'sleeping'
+                      ? '#a855f7'
+                      : '#0284c7',
+                boxShadow:
+                  presence.user_status === 'in_game' ? '0 0 6px #22c55e' : undefined,
+              }}
+            />
+            <span>
+              {presence.in_game_account
+                ? `${presence.in_game_account.username}: ${presence.in_game_account.status_label}`
+                : presence.user_status_label}
+            </span>
           </button>
         )}
         <span className="desktop-menu-caption">Your world, connected.</span>

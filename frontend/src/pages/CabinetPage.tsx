@@ -16,6 +16,8 @@ import { useAuth } from '../lib/auth-context'
 import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 import { linkCommand } from '../lib/linkCommand'
+import { usePresence } from '../lib/usePresence'
+import StatusBadge from '../components/StatusBadge'
 
 const ACCOUNT_LIMIT = 4
 
@@ -31,6 +33,7 @@ function messageFor(error: unknown, fallback: string): string {
 
 function CabinetPage() {
   const { user } = useAuth()
+  const { presence } = usePresence(true)
 
   const [accounts, setAccounts] = useState<LinkedAccount[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -289,25 +292,39 @@ function CabinetPage() {
 
               <div className="panel">
                 <ul className="rows">
-                  {accounts.map((account) => (
-                    <li className="row" key={account.uuid}>
-                      <div>
-                        <span className="row-name">{account.username}</span>
-                        <span className="row-id" title={account.uuid}>
-                          {account.uuid}
-                        </span>
-                      </div>
-                      <span className="row-date">Linked {formatDate(account.linked_at)}</span>
-                      <button
-                        type="button"
-                        className="btn btn-quiet btn-danger"
-                        onClick={() => remove(account.uuid)}
-                        disabled={removing === account.uuid}
-                      >
-                        {removing === account.uuid ? 'Unlinking…' : 'Unlink'}
-                      </button>
-                    </li>
-                  ))}
+                  {accounts.map((account) => {
+                    const accPresence = presence?.accounts.find(
+                      (a) => a.uuid.toLowerCase() === account.uuid.toLowerCase()
+                    )
+                    return (
+                      <li className="row" key={account.uuid}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span className="row-name">{account.username}</span>
+                            <StatusBadge
+                              status={accPresence?.status ?? 'offline'}
+                              label={accPresence?.status_label}
+                              ping={accPresence?.ping}
+                              world={accPresence?.world}
+                              compact
+                            />
+                          </div>
+                          <span className="row-id" title={account.uuid}>
+                            {account.uuid}
+                          </span>
+                        </div>
+                        <span className="row-date">Linked {formatDate(account.linked_at)}</span>
+                        <button
+                          type="button"
+                          className="btn btn-quiet btn-danger"
+                          onClick={() => remove(account.uuid)}
+                          disabled={removing === account.uuid}
+                        >
+                          {removing === account.uuid ? 'Unlinking…' : 'Unlink'}
+                        </button>
+                      </li>
+                    )
+                  })}
                 </ul>
               </div>
             </section>

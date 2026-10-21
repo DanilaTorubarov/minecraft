@@ -113,6 +113,9 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/admin/moderation/list", get(admin_get_moderation_list))
         .route("/api/admin/chat/logs", get(admin_get_chat_logs))
         .route("/internal/admin/sync", post(internal_admin_sync))
+        .route("/api/presence", get(get_presence))
+        .route("/api/presence/lookup", post(lookup_presence))
+        .route("/api/presence/heartbeat", post(get_presence))
         .route("/api/clans", get(list_public_clans))
         .route("/api/clans/my", get(get_my_clan))
         .route("/api/clans/create", post(create_clan))
@@ -722,6 +725,24 @@ async fn current_user(
     )
 }
 
+// Web Presence tracking: stores last activity timestamp per user_id
+static GLOBAL_WEB_PRESENCE: std::sync::LazyLock<tokio::sync::RwLock<std::collections::HashMap<i64, std::time::Instant>>> =
+    std::sync::LazyLock::new(|| tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
+async fn record_web_presence(user_id: i64) {
+    let mut map = GLOBAL_WEB_PRESENCE.write().await;
+    map.insert(user_id, std::time::Instant::now());
+}
+
+async fn is_user_web_online(user_id: i64) -> bool {
+    let map = GLOBAL_WEB_PRESENCE.read().await;
+    if let Some(last) = map.get(&user_id) {
+        last.elapsed() < std::time::Duration::from_secs(90)
+    } else {
+        false
+    }
+}
+
 // A logged-in panel user, resolved from the session cookie. Any handler that takes
 // `SessionUser` is treated as protected by the compiler.
 struct SessionUser {
@@ -745,6 +766,7 @@ impl FromRequestParts<sqlx::PgPool> for SessionUser {
         let user_id: i64 = row
             .try_get("user_id")
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        record_web_presence(user_id).await;
         Ok(SessionUser { user_id })
     }
 }
@@ -6366,6 +6388,10 @@ struct AdminOnlinePlayerDto {
     z: Option<i32>,
     #[serde(default)]
     is_muted: bool,
+    #[serde(default)]
+    is_sleeping: bool,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -6569,6 +6595,187 @@ async fn admin_get_metrics(
         online_players: state.online_players.clone(),
         is_live: state.is_live(),
     }))
+}
+
+// --- Player & User Presence API ---
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+struct AccountPresenceView {
+    uuid: String,
+    username: String,
+    status: String, // "in_game", "sleeping", "online_web", "offline"
+    status_label: String, // "In Game", "Sleeping in Bed", "Online on Web", "Offline"
+    world: Option<String>,
+    ping: Option<i32>,
+    is_sleeping: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+struct UserPresenceResponse {
+    user_status: String, // "in_game", "sleeping", "online_web", "offline"
+    user_status_label: String,
+    in_game: bool,
+    in_game_account: Option<AccountPresenceView>,
+    accounts: Vec<AccountPresenceView>,
+}
+
+async fn get_presence(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<UserPresenceResponse>, StatusCode> {
+    record_web_presence(user_id).await;
+
+    let linked_rows = sqlx::query(
+        "SELECT uuid, username FROM minecraft_accounts WHERE user_id = $1 ORDER BY linked_at ASC"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let admin_state = GLOBAL_ADMIN_STATE.read().await;
+    let mut online_map: std::collections::HashMap<String, &AdminOnlinePlayerDto> = std::collections::HashMap::new();
+    for p in &admin_state.online_players {
+        online_map.insert(p.uuid.to_lowercase(), p);
+        online_map.insert(p.username.to_lowercase(), p);
+    }
+
+    let mut accounts = Vec::with_capacity(linked_rows.len());
+    let mut in_game = false;
+    let mut in_game_account: Option<AccountPresenceView> = None;
+    let mut has_sleeping = false;
+
+    for row in linked_rows {
+        let uuid: String = row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let username: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let online_entry = online_map.get(&uuid.to_lowercase()).or_else(|| online_map.get(&username.to_lowercase()));
+        let acc = if let Some(p) = online_entry {
+            in_game = true;
+            let is_sleeping = p.is_sleeping || p.status.as_deref() == Some("sleeping");
+            if is_sleeping {
+                has_sleeping = true;
+            }
+            let status = if is_sleeping { "sleeping".to_string() } else { "in_game".to_string() };
+            let status_label = if is_sleeping { "Sleeping in Bed".to_string() } else { "In Game".to_string() };
+            AccountPresenceView {
+                uuid,
+                username,
+                status,
+                status_label,
+                world: p.world.clone(),
+                ping: p.ping,
+                is_sleeping,
+            }
+        } else {
+            AccountPresenceView {
+                uuid,
+                username,
+                status: "offline".to_string(),
+                status_label: "Offline".to_string(),
+                world: None,
+                ping: None,
+                is_sleeping: false,
+            }
+        };
+
+        if (acc.status == "in_game" || acc.status == "sleeping")
+            && (in_game_account.is_none() || acc.status == "sleeping")
+        {
+            in_game_account = Some(acc.clone());
+        }
+        accounts.push(acc);
+    }
+    drop(admin_state);
+
+    let (user_status, user_status_label) = if has_sleeping {
+        ("sleeping".to_string(), "Sleeping in Bed".to_string())
+    } else if in_game {
+        ("in_game".to_string(), "In Game".to_string())
+    } else {
+        ("online_web".to_string(), "Online on Web".to_string())
+    };
+
+    Ok(Json(UserPresenceResponse {
+        user_status,
+        user_status_label,
+        in_game,
+        in_game_account,
+        accounts,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct PresenceLookupRequest {
+    uuids: Vec<String>,
+}
+
+async fn lookup_presence(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<PresenceLookupRequest>,
+) -> Result<Json<Vec<AccountPresenceView>>, StatusCode> {
+    record_web_presence(user_id).await;
+
+    let admin_state = GLOBAL_ADMIN_STATE.read().await;
+    let mut online_map: std::collections::HashMap<String, &AdminOnlinePlayerDto> = std::collections::HashMap::new();
+    for p in &admin_state.online_players {
+        online_map.insert(p.uuid.to_lowercase(), p);
+        online_map.insert(p.username.to_lowercase(), p);
+    }
+
+    let user_links: Vec<(String, String, i64)> = sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT uuid, username, user_id FROM minecraft_accounts WHERE uuid = ANY($1)"
+    )
+    .bind(&input.uuids)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    let mut link_map: std::collections::HashMap<String, (String, i64)> = std::collections::HashMap::new();
+    for (u, name, uid) in user_links {
+        link_map.insert(u.to_lowercase(), (name, uid));
+    }
+
+    let mut results = Vec::with_capacity(input.uuids.len());
+    for u in input.uuids {
+        if let Some(p) = online_map.get(&u.to_lowercase()) {
+            let is_sleeping = p.is_sleeping || p.status.as_deref() == Some("sleeping");
+            results.push(AccountPresenceView {
+                uuid: u,
+                username: p.username.clone(),
+                status: if is_sleeping { "sleeping".to_string() } else { "in_game".to_string() },
+                status_label: if is_sleeping { "Sleeping in Bed".to_string() } else { "In Game".to_string() },
+                world: p.world.clone(),
+                ping: p.ping,
+                is_sleeping,
+            });
+        } else if let Some((name, uid)) = link_map.get(&u.to_lowercase()) {
+            let is_web = is_user_web_online(*uid).await;
+            results.push(AccountPresenceView {
+                uuid: u,
+                username: name.clone(),
+                status: if is_web { "online_web".to_string() } else { "offline".to_string() },
+                status_label: if is_web { "Online on Web".to_string() } else { "Offline".to_string() },
+                world: None,
+                ping: None,
+                is_sleeping: false,
+            });
+        } else {
+            results.push(AccountPresenceView {
+                uuid: u,
+                username: String::new(),
+                status: "offline".to_string(),
+                status_label: "Offline".to_string(),
+                world: None,
+                ping: None,
+                is_sleeping: false,
+            });
+        }
+    }
+    drop(admin_state);
+
+    Ok(Json(results))
 }
 
 #[derive(serde::Deserialize)]
@@ -7158,6 +7365,10 @@ struct ClanMemberView {
     role: String,
     joined_at: String,
     is_online: bool,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    status_label: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -7346,20 +7557,55 @@ async fn get_my_clan(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let admin_state = GLOBAL_ADMIN_STATE.read().await;
-        let online_uuids: std::collections::HashSet<String> = admin_state.online_players.iter().map(|p| p.uuid.clone()).collect();
+        let mut online_map: std::collections::HashMap<String, (bool, String)> = std::collections::HashMap::new();
+        for p in &admin_state.online_players {
+            let is_sleeping = p.is_sleeping || p.status.as_deref() == Some("sleeping");
+            let status = if is_sleeping { "sleeping".to_string() } else { "in_game".to_string() };
+            online_map.insert(p.uuid.to_lowercase(), (is_sleeping, status));
+        }
         drop(admin_state);
 
-        let mut members = Vec::with_capacity(member_rows.len());
         let mut member_uuids = Vec::with_capacity(member_rows.len());
+        for mr in &member_rows {
+            let u: String = mr.get("uuid");
+            member_uuids.push(u);
+        }
+
+        let user_links: Vec<(String, i64)> = sqlx::query_as::<_, (String, i64)>(
+            "SELECT uuid, user_id FROM minecraft_accounts WHERE uuid = ANY($1)"
+        )
+        .bind(&member_uuids)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+        let mut user_link_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for (u, uid) in user_links {
+            user_link_map.insert(u.to_lowercase(), uid);
+        }
+
+        let mut members = Vec::with_capacity(member_rows.len());
         for mr in member_rows {
             let u: String = mr.get("uuid");
-            member_uuids.push(u.clone());
+            let (is_online, status, status_label) = if let Some((is_sleeping, st)) = online_map.get(&u.to_lowercase()) {
+                let label = if *is_sleeping { "Sleeping in Bed".to_string() } else { "In Game".to_string() };
+                (true, st.clone(), label)
+            } else if let Some(uid) = user_link_map.get(&u.to_lowercase()) {
+                if is_user_web_online(*uid).await {
+                    (true, "online_web".to_string(), "Online on Web".to_string())
+                } else {
+                    (false, "offline".to_string(), "Offline".to_string())
+                }
+            } else {
+                (false, "offline".to_string(), "Offline".to_string())
+            };
             members.push(ClanMemberView {
-                is_online: online_uuids.contains(&u),
+                is_online,
                 uuid: u,
                 username: mr.get("username"),
                 role: mr.get("role"),
                 joined_at: mr.get("joined_at"),
+                status,
+                status_label,
             });
         }
 
@@ -12567,6 +12813,78 @@ mod test {
         assert!(!is_valid_clan_name("A"));
         assert!(!is_valid_clan_name("This Clan Name Is Way Way Too Long To Be Accepted"));
         assert!(!is_valid_clan_name("Clan@Hack$"));
+    }
+
+    #[tokio::test]
+    async fn presence_returns_live_statuses_and_in_game_detection() -> TestResult {
+        let pool = connect().await?;
+        let (email, cookie) = fresh_user(&pool).await?;
+        let code = start_code(&pool, &cookie).await?;
+        let uuid = test_uuid(&email);
+        claim(&pool, &code, &uuid, "PresenceSteve").await?;
+
+        // 1. Initial presence without game report: user is online on web, account is offline
+        let res1 = get_with_cookie(&pool, "/api/presence", Some(&cookie)).await?;
+        assert_eq!(res1.status(), StatusCode::OK);
+        let json1 = body_json(res1).await?;
+        assert_eq!(json1["user_status"], "online_web");
+        assert_eq!(json1["in_game"], false);
+        let accs1 = json1["accounts"].as_array().expect("accounts array");
+        assert_eq!(accs1.len(), 1);
+        assert_eq!(accs1[0]["status"], "offline");
+        assert_eq!(accs1[0]["status_label"], "Offline");
+
+        // 2. Report server online player with sleeping status
+        {
+            let mut admin_state = GLOBAL_ADMIN_STATE.write().await;
+            admin_state.online_players = vec![AdminOnlinePlayerDto {
+                uuid: uuid.clone(),
+                username: "PresenceSteve".to_string(),
+                ping: Some(25),
+                world: Some("world".to_string()),
+                x: Some(100),
+                y: Some(64),
+                z: Some(200),
+                is_muted: false,
+                is_sleeping: true,
+                status: Some("sleeping".to_string()),
+            }];
+        }
+
+        // 3. User presence now reflects sleeping in bed, and in_game is true
+        let res2 = get_with_cookie(&pool, "/api/presence", Some(&cookie)).await?;
+        assert_eq!(res2.status(), StatusCode::OK);
+        let json2 = body_json(res2).await?;
+        assert_eq!(json2["user_status"], "sleeping");
+        assert_eq!(json2["in_game"], true);
+        assert_eq!(json2["in_game_account"]["status"], "sleeping");
+        assert_eq!(json2["in_game_account"]["is_sleeping"], true);
+        let accs2 = json2["accounts"].as_array().expect("accounts array");
+        assert_eq!(accs2[0]["status"], "sleeping");
+        assert_eq!(accs2[0]["status_label"], "Sleeping in Bed");
+
+        // 4. Presence lookup by UUID returns matching live status
+        let lookup_res = send(
+            &pool,
+            "POST",
+            "/api/presence/lookup",
+            Some(&cookie),
+            Some(serde_json::json!({ "uuids": [uuid] })),
+        )
+        .await?;
+        assert_eq!(lookup_res.status(), StatusCode::OK);
+        let lookup_json = body_json(lookup_res).await?;
+        let lookup_arr = lookup_json.as_array().expect("lookup array");
+        assert_eq!(lookup_arr.len(), 1);
+        assert_eq!(lookup_arr[0]["status"], "sleeping");
+
+        // Cleanup
+        {
+            let mut admin_state = GLOBAL_ADMIN_STATE.write().await;
+            admin_state.online_players.clear();
+        }
+        delete_user(&pool, &email).await?;
+        Ok(())
     }
 
     #[tokio::test]

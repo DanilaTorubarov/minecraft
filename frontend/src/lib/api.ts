@@ -811,6 +811,8 @@ export type ClanMember = {
   role: 'leader' | 'officer' | 'member'
   joined_at: string
   is_online: boolean
+  status?: string
+  status_label?: string
 }
 
 export type ClanInvite = {
@@ -953,4 +955,34 @@ export async function setClanRelation(
 ): Promise<void> {
   const response = await send('POST', '/api/clans/relation', { target_tag: targetTag, status })
   if (!response.ok) throw new ApiError(response.status)
+}
+
+export interface AccountPresence {
+  uuid: string
+  username: string
+  status: 'in_game' | 'sleeping' | 'online_web' | 'offline'
+  status_label: string
+  world: string | null
+  ping: number | null
+  is_sleeping: boolean
+}
+
+export interface UserPresence {
+  user_status: 'in_game' | 'sleeping' | 'online_web' | 'offline'
+  user_status_label: string
+  in_game: boolean
+  in_game_account: AccountPresence | null
+  accounts: AccountPresence[]
+}
+
+export async function getPresence(): Promise<UserPresence> {
+  const response = await send('GET', '/api/presence')
+  if (!response.ok) throw new ApiError(response.status)
+  return response.json()
+}
+
+export async function lookupPresence(uuids: string[]): Promise<AccountPresence[]> {
+  const response = await send('POST', '/api/presence/lookup', { uuids })
+  if (!response.ok) throw new ApiError(response.status)
+  return response.json()
 }

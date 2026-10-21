@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import type { StatsAccount, StatsView } from '../lib/api'
+import { usePresence } from '../lib/usePresence'
+import StatusBadge from './StatusBadge'
 import StatisticsPage from '../pages/StatisticsPage'
 import InventoryPage from '../pages/InventoryPage'
 import SkinPage from '../pages/SkinPage'
@@ -8,6 +10,8 @@ import MailPage from '../pages/MailPage'
 
 type Props = { account: StatsAccount; stats: StatsView | null; loadError: string; onRetry: () => void; onSelectAccount: (uuid: string) => void; onGoToAccount: () => void; open: boolean; inventoryLaunch?: number; onOpenMarketplace?: () => void }
 export default function PlayerApp({ account, stats, loadError, onRetry, onSelectAccount, onGoToAccount, open, inventoryLaunch = 0, onOpenMarketplace }: Props) {
+  const { presence } = usePresence(open)
+  const accPresence = presence?.accounts.find((a) => a.uuid.toLowerCase() === account.uuid.toLowerCase())
   const [seenLaunch, setSeenLaunch] = useState(inventoryLaunch)
   const [page, setPage] = useState<'statistics' | 'inventory' | 'privates' | 'mail' | 'skin'>(inventoryLaunch > 0 ? 'inventory' : 'statistics')
   const [inventoryVisited, setInventoryVisited] = useState(inventoryLaunch > 0)
@@ -19,7 +23,20 @@ export default function PlayerApp({ account, stats, loadError, onRetry, onSelect
     if (inventoryLaunch > 0) { setPage('inventory'); setInventoryVisited(true) }
   }
   return <>
-    <div className="account-toolbar player-toolbar"><span>{account.username}</span><nav className="nav" aria-label={`${account.username} pages`}>
+    <div className="account-toolbar player-toolbar">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <span>{account.username}</span>
+        {accPresence && (
+          <StatusBadge
+            status={accPresence.status}
+            label={accPresence.status_label}
+            ping={accPresence.ping}
+            world={accPresence.world}
+            compact
+          />
+        )}
+      </div>
+      <nav className="nav" aria-label={`${account.username} pages`}>
       <button className="btn btn-quiet" aria-current={page === 'statistics' ? 'page' : undefined} onClick={() => setPage('statistics')}>Statistics</button>
       <button className="btn btn-quiet" aria-current={page === 'inventory' ? 'page' : undefined} onClick={() => { setPage('inventory'); setInventoryVisited(true) }}>Inventory</button>
       <button className="btn btn-quiet" aria-current={page === 'privates' ? 'page' : undefined} onClick={() => { setPage('privates'); setPrivatesVisited(true) }}>Privates</button>
