@@ -675,7 +675,7 @@ export async function sendChatMessage(text: string): Promise<ChatMessage> {
   return (await response.json()) as ChatMessage
 }
 
-// --- Hall of Fame & Leaderboards -------------------------------------------
+// --- Leaderboard Tables -----------------------------------------------------
 
 export type LeaderboardEntry = {
   rank: number

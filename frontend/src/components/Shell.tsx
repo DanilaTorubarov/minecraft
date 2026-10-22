@@ -188,7 +188,7 @@ function Shell() {
     },
     {
       id: 'leaderboards',
-      title: 'Hall of Fame',
+      title: 'Leaderboard Tables',
       icon: <img src={perfCenterIcon} alt="" />,
       isOpen: leaderboardsOpen,
       windowId: 'leaderboards-window',
@@ -283,7 +283,7 @@ function Shell() {
         <nav className="desktop-menu" aria-label="Applications">
           <button onClick={openAccount} data-ui-sound={accountOpen ? 'click' : 'open'} aria-controls="account-window">Account</button>
           <button onClick={openStats} data-ui-sound={statsOpen ? 'click' : 'open'} aria-controls="stats-window">Global Statistics</button>
-          <button onClick={openLeaderboards} data-ui-sound={leaderboardsOpen ? 'click' : 'open'} aria-controls="leaderboards-window">Leaderboards</button>
+          <button onClick={openLeaderboards} data-ui-sound={leaderboardsOpen ? 'click' : 'open'} aria-controls="leaderboards-window">Leaderboard Tables</button>
           <button onClick={openCasino} data-ui-sound={casinoOpen ? 'click' : 'open'} aria-controls="casino-window">Minigames</button>
           <button onClick={openMarket} data-ui-sound={marketOpen ? 'click' : 'open'} aria-controls="marketplace-window">Marketplace</button>
           <button onClick={openClan} data-ui-sound={clanOpen ? 'click' : 'open'} aria-controls="clan-window">Clans & Factions</button>
@@ -534,14 +534,14 @@ function Shell() {
         <DesktopWindow id="clan-window" title="Clans & Factions" icon={firewallOnIcon} kind="clan" open={clanOpen} activation={clanActivation} active={active === 'clan'} onFocus={() => setActive('clan')} onClose={hideClan} onMinimize={hideClan}>
           <ClanPage visible={clanOpen} onOpenMap={openMap} />
         </DesktopWindow>
-        <DesktopWindow id="leaderboards-window" title="Hall of Fame & Leaderboards" icon={perfCenterIcon} kind="leaderboards" open={leaderboardsOpen} activation={leaderboardsActivation} active={active === 'leaderboards'} onFocus={() => setActive('leaderboards')} onClose={hideLeaderboards} onMinimize={hideLeaderboards}>
+        <DesktopWindow id="leaderboards-window" title="Leaderboard Tables" icon={perfCenterIcon} kind="leaderboards" open={leaderboardsOpen} activation={leaderboardsActivation} active={active === 'leaderboards'} onFocus={() => setActive('leaderboards')} onClose={hideLeaderboards} onMinimize={hideLeaderboards}>
           <LeaderboardsPage visible={leaderboardsOpen} onOpenPlayer={(uuid) => openPlayer(uuid)} linkedUuids={statsAccounts.map((a) => a.uuid)} />
         </DesktopWindow>
       </div>
       <nav className="desktop-dock" aria-label="Dock">
         <button ref={accountDock} className="dock-app" data-ui-sound={accountOpen ? active === 'account' ? 'close' : 'click' : 'open'} onClick={accountOpen && active === 'account' ? hideAccount : openAccount} aria-controls="account-window" aria-expanded={accountOpen} data-open={accountOpen}><img src={globeIcon} alt="" /><span>Account</span></button>
         <button ref={statsDock} className="dock-app" data-ui-sound={statsOpen ? active === 'stats' ? 'close' : 'click' : 'open'} onClick={statsOpen && active === 'stats' ? hideStats : openStats} aria-controls="stats-window" aria-expanded={statsOpen} data-open={statsOpen}><img src={perfCenterIcon} alt="" /><span>Global Statistics</span></button>
-        <button ref={leaderboardsDock} className="dock-app" data-ui-sound={leaderboardsOpen ? active === 'leaderboards' ? 'close' : 'click' : 'open'} onClick={leaderboardsOpen && active === 'leaderboards' ? hideLeaderboards : openLeaderboards} aria-controls="leaderboards-window" aria-expanded={leaderboardsOpen} data-open={leaderboardsOpen}><img src={perfCenterIcon} alt="" /><span>Hall of Fame</span></button>
+        <button ref={leaderboardsDock} className="dock-app" data-ui-sound={leaderboardsOpen ? active === 'leaderboards' ? 'close' : 'click' : 'open'} onClick={leaderboardsOpen && active === 'leaderboards' ? hideLeaderboards : openLeaderboards} aria-controls="leaderboards-window" aria-expanded={leaderboardsOpen} data-open={leaderboardsOpen}><img src={perfCenterIcon} alt="" /><span>Leaderboard Tables</span></button>
         <button ref={casinoDock} className="dock-app" data-ui-sound={casinoOpen ? active === 'casino' ? 'close' : 'click' : 'open'} onClick={casinoOpen && active === 'casino' ? hideCasino : openCasino} aria-controls="casino-window" aria-expanded={casinoOpen} data-open={casinoOpen}><img src={minigamesIcon} alt="" /><span>Minigames</span></button>
         <button ref={marketDock} className="dock-app" data-ui-sound={marketOpen ? active === 'market' ? 'close' : 'click' : 'open'} onClick={marketOpen && active === 'market' ? hideMarket : openMarket} aria-controls="marketplace-window" aria-expanded={marketOpen} data-open={marketOpen}><img src={globeIcon} alt="" /><span>Marketplace</span></button>
         <button ref={chatDock} className="dock-app" data-ui-sound={chatOpen ? active === 'chat' ? 'close' : 'click' : 'open'} onClick={chatOpen && active === 'chat' ? hideChat : openChat} aria-controls="chat-window" aria-expanded={chatOpen} data-open={chatOpen}><img src={globeIcon} alt="" /><span>Chat</span></button>

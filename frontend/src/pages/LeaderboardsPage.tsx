@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { getLeaderboards, type LeaderboardResponse } from '../lib/api'
 import PlayerHead from '../components/PlayerHead'
 import perfCenterIcon from '../assets/icons/vista-perf-center.png'
@@ -27,30 +27,52 @@ type Props = {
 }
 
 export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = [] }: Props) {
-  const [activeCategory, setActiveCategory] = useState('balance')
-  const [data, setData] = useState<LeaderboardResponse | null>(null)
+  const [activeCategory, setActiveCategory] = useState<string>('all')
+  const [singleData, setSingleData] = useState<LeaderboardResponse | null>(null)
+  const [allData, setAllData] = useState<Record<string, LeaderboardResponse>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     if (!visible) return
     let active = true
+
     const load = async () => {
       try {
-        const res = await getLeaderboards(activeCategory, 50)
-        if (active) {
-          setData(res)
-          setError(null)
-          setLoading(false)
+        if (activeCategory === 'all') {
+          const results = await Promise.all(
+            CATEGORIES.map(async (c) => {
+              const res = await getLeaderboards(c.id, 5)
+              return [c.id, res] as const
+            })
+          )
+          if (active) {
+            const map: Record<string, LeaderboardResponse> = {}
+            for (const [id, res] of results) {
+              map[id] = res
+            }
+            setAllData(map)
+            setError(null)
+            setLoading(false)
+          }
+        } else {
+          const res = await getLeaderboards(activeCategory, 50)
+          if (active) {
+            setSingleData(res)
+            setError(null)
+            setLoading(false)
+          }
         }
       } catch {
         if (active) {
-          setError('Could not load leaderboards from the realm server. Please check your connection.')
+          setError('Could not load leaderboard tables from the realm server. Please check your connection.')
           setLoading(false)
         }
       }
     }
+
     load()
     const timer = setInterval(load, 30000)
     return () => {
@@ -62,6 +84,7 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
   const selectCategory = (catId: string) => {
     if (catId === activeCategory) return
     setActiveCategory(catId)
+    setSearch('')
     setLoading(true)
   }
 
@@ -71,14 +94,30 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
     setReloadKey((k) => k + 1)
   }
 
-  const categoryMeta = CATEGORIES.find((c) => c.id === activeCategory) ?? CATEGORIES[0]
-  const entries = data?.entries ?? []
-  const top1 = entries.find((e) => e.rank === 1)
-  const top2 = entries.find((e) => e.rank === 2)
-  const top3 = entries.find((e) => e.rank === 3)
-  const runnersUp = entries.filter((e) => e.rank > 3)
-
   const isUserAccount = (uuid: string) => linkedUuids.includes(uuid)
+
+  const activeCategoryMeta = CATEGORIES.find((c) => c.id === activeCategory)
+
+  const filteredEntries = useMemo(() => {
+    if (!singleData?.entries) return []
+    const q = search.trim().toLowerCase()
+    if (!q) return singleData.entries
+    return singleData.entries.filter((e) => e.username.toLowerCase().includes(q))
+  }, [singleData, search])
+
+  const renderRankBadge = (rank: number) => {
+    if (rank === 1) return <span className="rank-badge rank-gold" title="Rank 1">🥇 #1</span>
+    if (rank === 2) return <span className="rank-badge rank-silver" title="Rank 2">🥈 #2</span>
+    if (rank === 3) return <span className="rank-badge rank-bronze" title="Rank 3">🥉 #3</span>
+    return <span className="rank-num">#{rank}</span>
+  }
+
+  const getAvatarRankClass = (rank: number) => {
+    if (rank === 1) return 'rank-avatar-gold'
+    if (rank === 2) return 'rank-avatar-silver'
+    if (rank === 3) return 'rank-avatar-bronze'
+    return ''
+  }
 
   return (
     <div className="leaderboards-container">
@@ -86,13 +125,27 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
         <div className="leaderboards-intro">
           <img src={perfCenterIcon} alt="" className="leaderboards-icon" />
           <div>
-            <h1 className="leaderboards-title">Hall of Fame & Leaderboards</h1>
-            <p className="leaderboards-sub">{categoryMeta.description}</p>
+            <h1 className="leaderboards-title">Leaderboard Tables</h1>
+            <p className="leaderboards-sub">
+              {activeCategory === 'all'
+                ? 'Server-wide rankings across wealth, activity, combat, and milestones'
+                : activeCategoryMeta?.description}
+            </p>
           </div>
         </div>
 
         {/* Category Navigation Tabs */}
         <nav className="leaderboards-nav" aria-label="Leaderboard categories">
+          <button
+            type="button"
+            className={`leaderboard-tab ${activeCategory === 'all' ? 'active' : ''}`}
+            onClick={() => selectCategory('all')}
+            data-ui-sound="click"
+            aria-current={activeCategory === 'all' ? 'page' : undefined}
+          >
+            <span className="tab-label">All Tables</span>
+            <span className="tab-badge">Overview</span>
+          </button>
           {CATEGORIES.map((cat) => {
             const isActive = cat.id === activeCategory
             return (
@@ -113,10 +166,10 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
       </div>
 
       <div className="leaderboards-body">
-        {loading && data === null ? (
+        {loading && (activeCategory === 'all' ? Object.keys(allData).length === 0 : singleData === null) ? (
           <div className="leaderboards-status">
             <div className="leaderboards-spinner" />
-            <p>Loading realm champion records…</p>
+            <p>Loading leaderboard tables…</p>
           </div>
         ) : error ? (
           <div className="leaderboards-error" role="alert">
@@ -129,141 +182,196 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
               Retry loading
             </button>
           </div>
-        ) : entries.length === 0 ? (
-          <div className="leaderboards-empty">
-            <p>No champion records yet in this category.</p>
-            <p className="empty-sub">Play on the realm to etch your name into the Hall of Fame!</p>
-          </div>
-        ) : (
-          <>
-            {/* The Hall of Fame Podium */}
-            <section className="podium-section" aria-label="Hall of fame champions">
-              <div className="podium-grid">
-                {/* 2nd Place - Silver (Left) */}
-                <div className={`podium-card podium-silver ${top2 && isUserAccount(top2.uuid) ? 'is-me' : ''}`}>
-                  <div className="podium-pedestal silver-step">
-                    <span className="podium-medal">#2</span>
-                  </div>
-                  {top2 ? (
-                    <div
-                      className="podium-player"
-                      onClick={() => onOpenPlayer?.(top2.uuid)}
-                      role={onOpenPlayer ? 'button' : undefined}
-                      tabIndex={onOpenPlayer ? 0 : undefined}
-                      title={onOpenPlayer ? `View ${top2.username} in Player Controls` : undefined}
-                    >
-                      <div className="podium-avatar-wrapper silver-ring">
-                        <PlayerHead username={top2.username} textureHash={top2.skin_hash} />
-                        {isUserAccount(top2.uuid) && <span className="you-pill">You</span>}
-                      </div>
-                      <span className="podium-name">{top2.username}</span>
-                      <span className="podium-score">{top2.formatted}</span>
+        ) : activeCategory === 'all' ? (
+          /* Multi-table Grid (All Tables Overview) */
+          <div className="leaderboard-tables-grid" aria-label="All leaderboard tables">
+            {CATEGORIES.map((cat) => {
+              const catData = allData[cat.id]
+              const entries = catData?.entries ?? []
+              return (
+                <section key={cat.id} className="category-table-card" aria-label={`${cat.label} leaderboard`}>
+                  <div className="category-card-header">
+                    <div className="category-card-title-wrap">
+                      <h2 className="category-card-title">{cat.label}</h2>
+                      <span className="category-card-badge">{cat.badge}</span>
                     </div>
-                  ) : (
-                    <div className="podium-vacant">Vacant</div>
-                  )}
-                </div>
-
-                {/* 1st Place - Gold (Center, Elevated) */}
-                <div className={`podium-card podium-gold ${top1 && isUserAccount(top1.uuid) ? 'is-me' : ''}`}>
-                  <div className="podium-crown-badge">Champion</div>
-                  <div className="podium-pedestal gold-step">
-                    <span className="podium-medal">#1</span>
+                    <p className="category-card-desc">{cat.description}</p>
                   </div>
-                  {top1 ? (
-                    <div
-                      className="podium-player"
-                      onClick={() => onOpenPlayer?.(top1.uuid)}
-                      role={onOpenPlayer ? 'button' : undefined}
-                      tabIndex={onOpenPlayer ? 0 : undefined}
-                      title={onOpenPlayer ? `View ${top1.username} in Player Controls` : undefined}
-                    >
-                      <div className="podium-avatar-wrapper gold-ring">
-                        <PlayerHead username={top1.username} textureHash={top1.skin_hash} />
-                        {isUserAccount(top1.uuid) && <span className="you-pill">You</span>}
-                      </div>
-                      <span className="podium-name">{top1.username}</span>
-                      <span className="podium-score">{top1.formatted}</span>
-                    </div>
-                  ) : (
-                    <div className="podium-vacant">Vacant</div>
-                  )}
-                </div>
 
-                {/* 3rd Place - Bronze (Right) */}
-                <div className={`podium-card podium-bronze ${top3 && isUserAccount(top3.uuid) ? 'is-me' : ''}`}>
-                  <div className="podium-pedestal bronze-step">
-                    <span className="podium-medal">#3</span>
-                  </div>
-                  {top3 ? (
-                    <div
-                      className="podium-player"
-                      onClick={() => onOpenPlayer?.(top3.uuid)}
-                      role={onOpenPlayer ? 'button' : undefined}
-                      tabIndex={onOpenPlayer ? 0 : undefined}
-                      title={onOpenPlayer ? `View ${top3.username} in Player Controls` : undefined}
-                    >
-                      <div className="podium-avatar-wrapper bronze-ring">
-                        <PlayerHead username={top3.username} textureHash={top3.skin_hash} />
-                        {isUserAccount(top3.uuid) && <span className="you-pill">You</span>}
-                      </div>
-                      <span className="podium-name">{top3.username}</span>
-                      <span className="podium-score">{top3.formatted}</span>
-                    </div>
-                  ) : (
-                    <div className="podium-vacant">Vacant</div>
-                  )}
-                </div>
-              </div>
-            </section>
-
-            {/* Leaderboard Table (#4 - #50) */}
-            {runnersUp.length > 0 && (
-              <section className="leaderboards-table-section" aria-label="Ranking list">
-                <div className="table-wrapper">
-                  <table className="leaderboards-table">
-                    <thead>
-                      <tr>
-                        <th className="th-rank">Rank</th>
-                        <th className="th-player">Player</th>
-                        <th className="th-score">{categoryMeta.label}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {runnersUp.map((entry) => {
-                        const isMe = isUserAccount(entry.uuid)
-                        return (
-                          <tr
-                            key={entry.uuid}
-                            className={`lb-row ${isMe ? 'lb-row-me' : ''}`}
-                            onClick={() => onOpenPlayer?.(entry.uuid)}
-                            role={onOpenPlayer ? 'button' : undefined}
-                            tabIndex={onOpenPlayer ? 0 : undefined}
-                          >
-                            <td className="td-rank">
-                              <span className="rank-num">#{entry.rank}</span>
-                            </td>
-                            <td className="td-player">
-                              <div className="player-meta">
-                                <span className="table-avatar">
-                                  <PlayerHead username={entry.username} textureHash={entry.skin_hash} />
-                                </span>
-                                <span className="player-name">{entry.username}</span>
-                                {isMe && <span className="you-badge">Your Account</span>}
-                              </div>
-                            </td>
-                            <td className="td-score">
-                              <span className="score-val">{entry.formatted}</span>
+                  <div className="table-wrapper">
+                    <table className="leaderboards-table compact-table">
+                      <thead>
+                        <tr>
+                          <th className="th-rank">Rank</th>
+                          <th className="th-player">Player</th>
+                          <th className="th-score">{cat.label}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {entries.length === 0 ? (
+                          <tr>
+                            <td colSpan={3} className="td-empty">
+                              No records yet
                             </td>
                           </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+                        ) : (
+                          entries.map((entry) => {
+                            const isMe = isUserAccount(entry.uuid)
+                            return (
+                              <tr
+                                key={entry.uuid}
+                                className={`lb-row ${isMe ? 'lb-row-me' : ''}`}
+                                onClick={() => onOpenPlayer?.(entry.uuid)}
+                                role={onOpenPlayer ? 'button' : undefined}
+                                tabIndex={onOpenPlayer ? 0 : undefined}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault()
+                                    onOpenPlayer?.(entry.uuid)
+                                  }
+                                }}
+                                title={onOpenPlayer ? `View ${entry.username} in Player Controls` : undefined}
+                              >
+                                <td className="td-rank">{renderRankBadge(entry.rank)}</td>
+                                <td className="td-player">
+                                  <div className="player-meta">
+                                    <span className={`table-avatar ${getAvatarRankClass(entry.rank)}`}>
+                                      <PlayerHead username={entry.username} textureHash={entry.skin_hash} />
+                                    </span>
+                                    <span className="player-name">{entry.username}</span>
+                                    {isMe && <span className="you-badge">You</span>}
+                                  </div>
+                                </td>
+                                <td className="td-score">
+                                  <span className="score-val">{entry.formatted}</span>
+                                </td>
+                              </tr>
+                            )
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="category-card-footer">
+                    <button
+                      type="button"
+                      className="btn-view-all"
+                      onClick={() => selectCategory(cat.id)}
+                      data-ui-sound="click"
+                    >
+                      View full {cat.label} table (50) →
+                    </button>
+                  </div>
+                </section>
+              )
+            })}
+          </div>
+        ) : (
+          /* Single Category Full Table (Top 50) */
+          <section className="leaderboards-table-section" aria-label={`${activeCategoryMeta?.label} leaderboard table`}>
+            <div className="table-controls-bar">
+              <div className="table-meta-info">
+                <button
+                  type="button"
+                  className="btn-back-overview"
+                  onClick={() => selectCategory('all')}
+                  data-ui-sound="click"
+                >
+                  ← All Tables
+                </button>
+                <span className="table-count-badge">
+                  {filteredEntries.length} {filteredEntries.length === 1 ? 'player' : 'players'}
+                </span>
+              </div>
+              <div className="table-search-box">
+                <input
+                  type="search"
+                  className="leaderboard-search-input"
+                  placeholder={`Search in ${activeCategoryMeta?.label}…`}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  aria-label={`Search players in ${activeCategoryMeta?.label} table`}
+                />
+                {search && (
+                  <button
+                    type="button"
+                    className="search-clear-btn"
+                    onClick={() => setSearch('')}
+                    aria-label="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {singleData?.entries.length === 0 ? (
+              <div className="leaderboards-empty">
+                <p>No player records yet in this category.</p>
+                <p className="empty-sub">Play on the realm to climb the leaderboard tables!</p>
+              </div>
+            ) : filteredEntries.length === 0 ? (
+              <div className="leaderboards-empty">
+                <p>No players matching &ldquo;{search}&rdquo; in {activeCategoryMeta?.label}.</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setSearch('')}
+                  style={{ marginTop: '8px' }}
+                >
+                  Clear search
+                </button>
+              </div>
+            ) : (
+              <div className="table-wrapper">
+                <table className="leaderboards-table">
+                  <thead>
+                    <tr>
+                      <th className="th-rank">Rank</th>
+                      <th className="th-player">Player</th>
+                      <th className="th-score">{activeCategoryMeta?.label}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredEntries.map((entry) => {
+                      const isMe = isUserAccount(entry.uuid)
+                      return (
+                        <tr
+                          key={entry.uuid}
+                          className={`lb-row ${isMe ? 'lb-row-me' : ''}`}
+                          onClick={() => onOpenPlayer?.(entry.uuid)}
+                          role={onOpenPlayer ? 'button' : undefined}
+                          tabIndex={onOpenPlayer ? 0 : undefined}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              onOpenPlayer?.(entry.uuid)
+                            }
+                          }}
+                          title={onOpenPlayer ? `View ${entry.username} in Player Controls` : undefined}
+                        >
+                          <td className="td-rank">{renderRankBadge(entry.rank)}</td>
+                          <td className="td-player">
+                            <div className="player-meta">
+                              <span className={`table-avatar ${getAvatarRankClass(entry.rank)}`}>
+                                <PlayerHead username={entry.username} textureHash={entry.skin_hash} />
+                              </span>
+                              <span className="player-name">{entry.username}</span>
+                              {isMe && <span className="you-badge">Your Account</span>}
+                            </div>
+                          </td>
+                          <td className="td-score">
+                            <span className="score-val">{entry.formatted}</span>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </>
+          </section>
         )}
       </div>
     </div>

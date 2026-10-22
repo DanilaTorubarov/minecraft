@@ -22,7 +22,7 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   chat: ['Server Chat', 'Live bidirectional Minecraft realm bridge'],
   map: ['Live World Map', '2000×2000 Core Terrain Radar'],
   clan: ['Clans & Factions', 'Alliances, treasury & joint private defense'],
-  leaderboards: ['Hall of Fame', 'Top server champions & rankings'],
+  leaderboards: ['Leaderboard Tables', 'Top server player rankings & statistics'],
 }
 
 type Gesture = {

@@ -3133,7 +3133,7 @@ async fn stats_for_user(
     Ok(Json(StatsView { accounts, summary }))
 }
 
-// --- Hall of Fame & Leaderboards -------------------------------------------
+// --- Leaderboard Tables -----------------------------------------------------
 
 #[derive(serde::Deserialize)]
 struct LeaderboardsQuery {
