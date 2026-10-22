@@ -1,6 +1,24 @@
 # Project checkpoint — 2026-10-21
 
 
+## Item wear reads as remaining/maximum uses — 2026-10-22
+
+- The inventory bubble drew a thin wear bar and the tooltip and marketplace printed a
+  rounded percentage (`75% durability left`). Both now show the pair the server reports:
+  `1171/1561` on the bubble pill (still coloured green → amber → red by what is left),
+  `1171/1561 durability` in the tooltip, aria-label and marketplace listing.
+- `durabilityParts()` / `durabilityText()` in `frontend/src/lib/inventory.ts` is the only
+  formatter: it clamps a stale snapshot at `0/max` instead of printing a negative count
+  and returns null for an item that cannot wear. A full-health item still shows nothing
+  on the bubble.
+- Narrow layout: a 9-column grid on a phone leaves ~34px bubbles, so at a ≤520px
+  container the bubble keeps only the remaining count (`1171`) via `.inv-durability-max`;
+  the tooltip always carries the pair. `DESIGN.md`'s inventory paragraph records the pill.
+- Verification: `npm run build`, `npm run lint` and `npm test` (87 tests) pass; the app
+  image was rebuilt, the served shell names the new bundle, and the bundle contains the
+  `inv-durability-max` markup with the old percent string gone.
+
+
 ## Admin console terminal restored — 2026-10-22
 
 - Symptom: the website's Admin Panel → Console Terminal stayed on "Connecting to server
