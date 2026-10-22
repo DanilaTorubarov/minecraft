@@ -6,6 +6,7 @@ export type Me = {
   email: string
   login_displayed: string
   is_admin?: boolean
+  bank_coins?: number
 }
 
 export type LinkedAccount = {
@@ -76,6 +77,7 @@ export type StatsSummary = {
 export type StatsView = {
   accounts: StatsAccount[]
   summary: StatsSummary
+  bank_coins?: number
 }
 
 export type LinkCode = {
@@ -490,6 +492,50 @@ export async function cashOutMines(roundId: string): Promise<MinesRound> {
   return await response.json() as MinesRound
 }
 
+// --- Bank Endpoints ---------------------------------------------------------
+
+export type BankTransferResponse = {
+  pocket_coins: number
+  bank_coins: number
+}
+
+export type BankLedgerEntry = {
+  id: number
+  player_uuid: string | null
+  delta: number
+  balance: number
+  reason: string
+  created_at: string
+}
+
+export async function depositBank(uuid: string, amount: number): Promise<BankTransferResponse> {
+  const response = await send('POST', '/api/bank/deposit', { uuid, amount })
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as BankTransferResponse
+}
+
+export async function withdrawBank(uuid: string, amount: number): Promise<BankTransferResponse> {
+  const response = await send('POST', '/api/bank/withdraw', { uuid, amount })
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as BankTransferResponse
+}
+
+export async function getBankLedger(): Promise<BankLedgerEntry[]> {
+  const response = await send('GET', '/api/bank/ledger')
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as BankLedgerEntry[]
+}
+
+export async function adjustAdminBankBalance(input: {
+  user_id: number
+  operation: 'set' | 'add' | 'subtract'
+  amount: number
+}): Promise<{ user_id: number; previous_coins: number; new_coins: number }> {
+  const response = await send('POST', '/api/admin/bank', input)
+  if (!response.ok) throw new ApiError(response.status)
+  return await response.json() as { user_id: number; previous_coins: number; new_coins: number }
+}
+
 // --- Admin Endpoints --------------------------------------------------------
 
 export type AdminAccount = {
@@ -497,6 +543,7 @@ export type AdminAccount = {
   username: string
   user_id: number | null
   coins: number
+  bank_coins?: number
   is_self: boolean
 }
 

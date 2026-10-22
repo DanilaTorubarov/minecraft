@@ -15,6 +15,6 @@ export default function GameBetControls({ id, bet, balance, rules, disabled, onC
       <button className="btn btn-quiet" type="button" onClick={() => set(bet * 2)} disabled={bet * 2 > balance || bet * 2 > rules.max_bet}>Double</button>
       <button className="btn btn-quiet" type="button" onClick={() => set(balance)} disabled={balance < rules.min_bet}>Max</button>
     </div>
-    <small id={`${id}-hint`} className="muted">{bet < rules.min_bet ? `Minimum stake: ${rules.min_bet} coins.` : bet > rules.max_bet ? `Maximum stake: ${rules.max_bet.toLocaleString()} coins.` : bet > balance ? 'This player does not have enough coins for this stake.' : `${rules.min_bet.toLocaleString()}–${rules.max_bet.toLocaleString()} coins per round. Stakes use your Minecraft balance.`}</small>
+    <small id={`${id}-hint`} className="muted">{bet < rules.min_bet ? `Minimum stake: ${rules.min_bet} coins.` : bet > rules.max_bet ? `Maximum stake: ${rules.max_bet.toLocaleString()} coins.` : bet > balance ? 'Not enough Web Bank coins. Deposit coins from your player pocket.' : `${rules.min_bet.toLocaleString()}–${rules.max_bet.toLocaleString()} coins per round. Staked from your Web Bank.`}</small>
   </fieldset>
 }

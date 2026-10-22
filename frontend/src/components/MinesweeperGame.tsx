@@ -16,11 +16,11 @@ import { ORE_LABELS, clampBet, formatBoost, formatCoins, formatMultiplier, forma
 const ITEMS: Record<OreContent, string> = { tnt, iron, gold, diamond }
 const PRESETS: Record<number, string> = { 8: 'Balanced', 10: 'Risky', 13: 'Hard', 16: 'Expert' }
 
-export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer, rules }: {
-  onBack: () => void; payer: Payer; accounts: Payer[]; onChoosePayer: (uuid: string) => void; rules: MinigameRules
+export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer, rules, bankCoins }: {
+  onBack: () => void; payer: Payer; accounts: Payer[]; onChoosePayer: (uuid: string) => void; rules: MinigameRules; bankCoins: number
 }) {
   const [round, setRound] = useState<MinesRound | null>(null)
-  const [bet, setBet] = useState(() => clampBet(50, rules.min_bet, rules.max_bet, payer.coins))
+  const [bet, setBet] = useState(() => clampBet(50, rules.min_bet, rules.max_bet, bankCoins))
   const [mines, setMines] = useState(rules.mines.presets[0].mines)
   const [loading, setLoading] = useState(true)
   const [restoreError, setRestoreError] = useState('')
@@ -33,7 +33,7 @@ export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer
   const playing = round?.status === 'active'
   const roundAccount = accounts.find((account) => account.uuid === round?.payer_uuid)
   const wallet = playing && round ? roundAccount ?? { uuid: round.payer_uuid, username: 'Unlinked player', coins: round.balance } : payer
-  const { balance, applySettled } = useStakedBalance(wallet.uuid, wallet.coins)
+  const { balance, applySettled } = useStakedBalance('bank', bankCoins)
   const cells = round ? revealedCells(round) : new Map<number, OreContent>()
   const opened = round ? safeCellsOpened(round) : 0
   const preset = rules.mines.presets.find((value) => value.mines === mines) ?? rules.mines.presets[0]
@@ -57,7 +57,7 @@ export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer
     try {
       const next = await action()
       setRound(next); setBet(next.bet); setMines(next.mines)
-      applySettled(next.balance, next.payer_uuid, accounts.find((account) => account.uuid === next.payer_uuid)?.coins ?? next.balance)
+      applySettled(next.balance, 'bank', bankCoins)
       if (accounts.some((account) => account.uuid === next.payer_uuid)) onChoosePayer(next.payer_uuid)
       invalidateServerData('stats')
       if (next.status === 'settled') {
@@ -86,7 +86,12 @@ export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer
   return <div className="minigame-workspace mines-workspace">
     <div className="game-toolbar">
       <button className="btn btn-quiet" onClick={onBack} disabled={busy}>All games</button>
-      <PayerSelect payer={{ ...wallet, coins: playing && round ? round.balance : balance }} accounts={roundAccount || !playing ? accounts : [wallet, ...accounts]} onChoose={onChoosePayer} disabled={playing || busy} />
+      <div className="chest-balance-pill casino-payer-pill" title="Web Bank Balance">
+        <span style={{ fontSize: '0.85em', opacity: 0.8 }}>Bank:</span>
+        <span className="chest-balance-num">{formatCoins(playing && round ? round.balance : balance)}</span>
+        <span className="chest-balance-label">coins</span>
+      </div>
+      <PayerSelect payer={wallet} accounts={roundAccount || !playing ? accounts : [wallet, ...accounts]} onChoose={onChoosePayer} disabled={playing || busy} />
       <button className="btn btn-quiet" aria-expanded={showTable} onClick={() => setShowTable(!showTable)}>Ore rewards</button>
     </div>
     <div className="page-head game-heading"><img src={icon} alt="" /><div><h1>Minesweeper</h1><p className="page-sub">Find the ore. Leave the TNT.</p></div></div>
@@ -113,7 +118,7 @@ export default function MinesweeperGame({ onBack, payer, accounts, onChoosePayer
         </div> : <div className="mine-ready"><img src={icon} alt="" /><h2>Your field is ready to deal</h2><p>Choose a stake and difficulty, then start. Find {rules.mines.min_safe} ores to unlock cash-out.</p></div>}
         <div className="game-result" role="status">
           {playing ? <p>{opened < round.min_safe ? `Find ${round.min_safe - opened} more ore to unlock cash-out.` : `Cash out ${formatCoins(round.cashout)} coins or open another cell.`}</p>
-            : round ? <p>{round.outcome === 'paid' ? `${formatCoins(round.payout)} coins returned to ${roundAccount?.username ?? 'the original payer'}.` : round.outcome === 'expired' ? 'The 15-minute deadline passed. The stake was forfeited.' : `TNT hit. The ${formatCoins(round.bet)}-coin stake was lost.`}</p>
+            : round ? <p>{round.outcome === 'paid' ? `${formatCoins(round.payout)} coins credited to Web Bank.` : round.outcome === 'expired' ? 'The 15-minute deadline passed. The stake was forfeited.' : `TNT hit. The ${formatCoins(round.bet)}-coin stake was lost.`}</p>
               : <p>TNT ends the round. Clear every safe cell to collect automatically.</p>}
         </div>
         {playing ? <button className="btn btn-primary game-primary" disabled={busy || opened < round.min_safe} onClick={() => { void act(() => cashOutMines(round.round_id)) }}>{busy ? 'Checking…' : `Cash out · ${formatCoins(round.cashout)} coins`}</button>

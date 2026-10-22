@@ -17,7 +17,9 @@ import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 import { linkCommand } from '../lib/linkCommand'
 import { usePresence } from '../lib/usePresence'
+import { useStatistics } from '../lib/useStatistics'
 import StatusBadge from '../components/StatusBadge'
+import BankTransferCard from '../components/BankTransferCard'
 
 const ACCOUNT_LIMIT = 4
 
@@ -34,6 +36,7 @@ function messageFor(error: unknown, fallback: string): string {
 function CabinetPage() {
   const { user } = useAuth()
   const { presence } = usePresence(true)
+  const { stats } = useStatistics(user?.id)
 
   const [accounts, setAccounts] = useState<LinkedAccount[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -327,6 +330,18 @@ function CabinetPage() {
                   })}
                 </ul>
               </div>
+            </section>
+          )}
+
+          {linked && (
+            <section className="section">
+              <div className="section-head">
+                <h2>Web Bank & Transfer</h2>
+              </div>
+              <BankTransferCard
+                accounts={stats?.accounts ?? []}
+                bankCoins={stats?.bank_coins ?? user.bank_coins ?? 0}
+              />
             </section>
           )}
 

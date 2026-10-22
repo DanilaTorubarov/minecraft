@@ -104,6 +104,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/api/players/{uuid}/privates/{block_index}/withdraw", post(withdraw_player_private_fuel))
         .route("/api/admin/accounts", get(admin_get_accounts))
         .route("/api/admin/balance", post(admin_adjust_balance))
+        .route("/api/admin/bank", post(admin_adjust_bank_balance))
         .route("/api/admin/metrics", get(admin_get_metrics))
         .route("/api/admin/console/logs", get(admin_get_console_logs))
         .route("/api/admin/console/execute", post(admin_execute_console_command))
@@ -158,6 +159,11 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/link/email", post(link_email))
         .route("/internal/stats/report", post(report_stats))
         .route("/internal/balance", post(balance_for_player))
+        .route("/api/bank/deposit", post(api_bank_deposit))
+        .route("/api/bank/withdraw", post(api_bank_withdraw))
+        .route("/api/bank/ledger", get(api_bank_ledger))
+        .route("/internal/bank/status", post(internal_bank_status))
+        .route("/internal/bank/action", post(internal_bank_action))
         .route("/api/parcels", get(get_parcels))
         .route("/api/parcels/send", post(send_parcel))
         .route("/api/marketplace/{id}/gift", post(gift_market_listing))
@@ -714,6 +720,7 @@ struct Me {
     email: String,
     login_displayed: String,
     is_admin: bool,
+    bank_coins: i64,
 }
 
 fn check_admin_env(email: &str, login: &str) -> bool {
@@ -751,7 +758,7 @@ async fn current_user(
     SessionUser { user_id }: SessionUser
 ) -> Result<Json<Me>, StatusCode> {
     let row = sqlx
-        ::query("SELECT id, displayed_nickname, email, login_displayed, is_admin, login FROM users WHERE id = $1")
+        ::query("SELECT id, displayed_nickname, email, login_displayed, is_admin, login, bank_coins FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_optional(&pool).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -760,6 +767,7 @@ async fn current_user(
     let email: String = row.try_get("email").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let login: String = row.try_get("login").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let is_admin = db_admin || check_admin_env(&email, &login);
+    let bank_coins: i64 = row.try_get("bank_coins").unwrap_or(0);
     Ok(
         Json(Me {
             id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
@@ -769,6 +777,7 @@ async fn current_user(
                 .try_get("login_displayed")
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
             is_admin,
+            bank_coins,
         })
     )
 }
@@ -1913,6 +1922,7 @@ async fn complete_inventory_deletion(State(pool): State<sqlx::PgPool>, headers: 
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
 }
+
 
 // --- Marketplace: confirmed item escrow and atomic coin trades --------------
 
@@ -3100,6 +3110,8 @@ impl StatsSummary {
 struct StatsView {
     accounts: Vec<StatsAccount>,
     summary: StatsSummary,
+    #[serde(default)]
+    bank_coins: i64,
 }
 
 /// Reads one non-null counter. Every column is `NOT NULL DEFAULT 0` from
@@ -3178,7 +3190,12 @@ async fn stats_for_user(
         summary.accounts += 1;
         accounts.push(StatsAccount { coins, uuid, username, linked_at, stats, skin_hash: row.try_get("skin_hash").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? });
     }
-    Ok(Json(StatsView { accounts, summary }))
+    let bank_coins: i64 = sqlx::query_scalar("SELECT bank_coins FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&pool).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .unwrap_or(0);
+    Ok(Json(StatsView { accounts, summary, bank_coins }))
 }
 
 // --- Leaderboard Tables -----------------------------------------------------
@@ -3879,6 +3896,7 @@ async fn credit_coins(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[allow(dead_code)]
 async fn payer_balance<'e, E>(executor: E, uuid: &str) -> Result<i64, StatusCode>
 where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
     let balance: Option<i64> = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1")
@@ -3887,6 +3905,68 @@ where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(balance.unwrap_or(0))
+}
+
+async fn debit_bank_coins(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: i64,
+    amount: i64,
+) -> Result<i64, StatusCode> {
+    let balance: Option<i64> = sqlx::query_scalar(
+        "UPDATE users SET bank_coins = bank_coins - $1 WHERE id = $2 AND bank_coins >= $1 RETURNING bank_coins",
+    )
+    .bind(amount)
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    balance.ok_or(StatusCode::CONFLICT)
+}
+
+async fn credit_bank_coins(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: i64,
+    amount: i64,
+) -> Result<i64, StatusCode> {
+    sqlx::query_scalar("UPDATE users SET bank_coins = bank_coins + $1 WHERE id = $2 RETURNING bank_coins")
+        .bind(amount)
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn user_bank_balance<'e, E>(executor: E, user_id: i64) -> Result<i64, StatusCode>
+where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
+    let balance: Option<i64> = sqlx::query_scalar("SELECT bank_coins FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(executor)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(balance.unwrap_or(0))
+}
+
+async fn record_bank_ledger(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: i64,
+    player_uuid: Option<&str>,
+    delta: i64,
+    balance: i64,
+    reason: &str,
+) -> Result<(), StatusCode> {
+    sqlx::query(
+        "INSERT INTO bank_ledger (user_id, player_uuid, delta, balance, reason) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(user_id)
+    .bind(player_uuid)
+    .bind(delta)
+    .bind(balance)
+    .bind(reason)
+    .execute(&mut **tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
 }
 
 /// The Minesweeper round this user already paid for, if any.
@@ -4049,9 +4129,9 @@ async fn return_chest_spin<'e, E>(
 where E: sqlx::Executor<'e, Database = sqlx::Postgres> {
     let row = sqlx::query(
         "SELECT r.id::text AS id, r.bet, r.payout, r.state::text AS state,
-                COALESCE(ps.coins, 0) AS balance
+                u.bank_coins AS balance
            FROM minigame_rounds r
-           LEFT JOIN player_stats ps ON ps.uuid = r.uuid
+           JOIN users u ON u.id = r.user_id
           WHERE r.user_id = $1 AND r.client_id = $2::uuid AND r.game = 'lucky_chest'",
     )
     .bind(user_id)
@@ -4118,11 +4198,11 @@ async fn spin_lucky_chest(
     if let Some(view) = return_chest_spin(&mut *tx, user_id, &client_id).await? {
         return Ok(Json(view));
     }
-    coin_reason(&mut tx, "minigame_stake", &round_id).await?;
-    let mut balance = debit_coins(&mut tx, &uuid, bet).await?;
+    let mut balance = debit_bank_coins(&mut tx, user_id, bet).await?;
+    record_bank_ledger(&mut tx, user_id, Some(&uuid), -bet, balance, "minigame_stake").await?;
     if payout > 0 {
-        coin_reason(&mut tx, "minigame_payout", &round_id).await?;
-        balance = credit_coins(&mut tx, &uuid, payout).await?;
+        balance = credit_bank_coins(&mut tx, user_id, payout).await?;
+        record_bank_ledger(&mut tx, user_id, Some(&uuid), payout, balance, "minigame_payout").await?;
     }
     let outcome = if payout > 0 { "paid" } else { "lost" };
     // `ON CONFLICT DO NOTHING` keeps a simultaneous duplicate from aborting the
@@ -4185,7 +4265,7 @@ async fn start_mines(
     // is the one the player gets back.
     if let Some(round) = active_mines_round(&pool, user_id).await? {
         let state = round.mines_state()?;
-        let balance = payer_balance(&pool, &round.uuid).await?;
+        let balance = user_bank_balance(&pool, user_id).await?;
         return Ok(Json(mines_view(&round, &state, balance)));
     }
     let policy = economy_policy(&pool).await?;
@@ -4201,11 +4281,11 @@ async fn start_mines(
         .fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(round) = active_mines_round(&mut *tx, user_id).await? {
         let state = round.mines_state()?;
-        let balance = payer_balance(&mut *tx, &round.uuid).await?;
+        let balance = user_bank_balance(&mut *tx, user_id).await?;
         return Ok(Json(mines_view(&round, &state, balance)));
     }
-    coin_reason(&mut tx, "minigame_stake", &round_id).await?;
-    let balance = debit_coins(&mut tx, &uuid, bet).await?;
+    let balance = debit_bank_coins(&mut tx, user_id, bet).await?;
+    record_bank_ledger(&mut tx, user_id, Some(&uuid), -bet, balance, "minigame_stake").await?;
     // The partial unique index allows one live round per game, so a second tab
     // resolves to the same round instead of staking money twice.
     let inserted = sqlx::query(
@@ -4228,7 +4308,7 @@ async fn start_mines(
             .await?
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         let state = round.mines_state()?;
-        let balance = payer_balance(&pool, &round.uuid).await?;
+        let balance = user_bank_balance(&pool, user_id).await?;
         return Ok(Json(mines_view(&round, &state, balance)));
     }
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -4267,7 +4347,7 @@ async fn reveal_mines(
     if round.status == "settled" || state.revealed.contains(&cell) {
         // A retried reveal is not a second reveal, and a settled round cannot change.
         tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let balance = payer_balance(&pool, &round.uuid).await?;
+        let balance = user_bank_balance(&pool, user_id).await?;
         return Ok(Json(mines_view(&round, &state, balance)));
     }
 
@@ -4279,7 +4359,7 @@ async fn reveal_mines(
         round.payout = 0;
         // Nothing is credited: the stake was taken when the round started.
         settle_round(&mut tx, &round_id, "lost", 0, &state).await?;
-        payer_balance(&mut *tx, &round.uuid).await?
+        user_bank_balance(&mut *tx, user_id).await?
     } else {
         let preset = mines_preset(state.mines).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         state.mult_x100 += mines_boost(preset, &content);
@@ -4289,8 +4369,8 @@ async fn reveal_mines(
             round.status = "settled".to_owned();
             round.outcome = Some("paid".to_owned());
             round.payout = payout;
-            coin_reason(&mut tx, "minigame_payout", &round_id).await?;
-            let balance = credit_coins(&mut tx, &round.uuid, payout).await?;
+            let balance = credit_bank_coins(&mut tx, user_id, payout).await?;
+            record_bank_ledger(&mut tx, user_id, Some(&round.uuid), payout, balance, "minigame_payout").await?;
             settle_round(&mut tx, &round_id, "paid", payout, &state).await?;
             balance
         } else {
@@ -4302,7 +4382,7 @@ async fn reveal_mines(
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            payer_balance(&mut *tx, &round.uuid).await?
+            user_bank_balance(&mut *tx, user_id).await?
         }
     };
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -4326,7 +4406,7 @@ async fn cash_out_mines(
     let state = round.mines_state()?;
     if round.status == "settled" {
         tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let balance = payer_balance(&pool, &round.uuid).await?;
+        let balance = user_bank_balance(&pool, user_id).await?;
         return Ok(Json(mines_view(&round, &state, balance)));
     }
     if (state.revealed.len() as i64) < MINES_MIN_SAFE {
@@ -4336,8 +4416,8 @@ async fn cash_out_mines(
     round.status = "settled".to_owned();
     round.outcome = Some("paid".to_owned());
     round.payout = payout;
-    coin_reason(&mut tx, "minigame_payout", &round_id).await?;
-    let balance = credit_coins(&mut tx, &round.uuid, payout).await?;
+    let balance = credit_bank_coins(&mut tx, user_id, payout).await?;
+    record_bank_ledger(&mut tx, user_id, Some(&round.uuid), payout, balance, "minigame_payout").await?;
     settle_round(&mut tx, &round_id, "paid", payout, &state).await?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(mines_view(&round, &state, balance)))
@@ -4353,7 +4433,7 @@ async fn minigame_state(
         return Ok(Json(MinigameStateView { active: None }));
     };
     let state = round.mines_state()?;
-    let balance = payer_balance(&pool, &round.uuid).await?;
+    let balance = user_bank_balance(&pool, user_id).await?;
     Ok(Json(MinigameStateView { active: Some(mines_view(&round, &state, balance)) }))
 }
 
@@ -6524,6 +6604,7 @@ struct AdminAccountView {
     username: String,
     user_id: Option<i64>,
     coins: i64,
+    bank_coins: i64,
     is_self: bool,
 }
 
@@ -6551,8 +6632,10 @@ async fn admin_get_accounts(
     }
 
     let rows = sqlx::query(
-        "SELECT ma.uuid, ma.username, ma.user_id, COALESCE(ps.coins, 0) AS coins
+        "SELECT ma.uuid, ma.username, ma.user_id, COALESCE(ps.coins, 0) AS coins,
+                COALESCE(u.bank_coins, 0) AS bank_coins
          FROM minecraft_accounts ma
+         LEFT JOIN users u ON u.id = ma.user_id
          LEFT JOIN player_stats ps ON ps.uuid = ma.uuid
          ORDER BY (ma.user_id = $1) DESC, ma.username ASC"
     )
@@ -6567,12 +6650,14 @@ async fn admin_get_accounts(
         let username: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let row_user_id: Option<i64> = row.try_get("user_id").ok();
         let coins: i64 = row.try_get("coins").unwrap_or(0);
+        let bank_coins: i64 = row.try_get("bank_coins").unwrap_or(0);
         let is_self = row_user_id == Some(user_id);
         accounts.push(AdminAccountView {
             uuid,
             username,
             user_id: row_user_id,
             coins,
+            bank_coins,
             is_self,
         });
     }
@@ -6671,6 +6756,83 @@ async fn admin_adjust_balance(
     Ok(Json(AdminBalanceResponse {
         uuid,
         username,
+        previous_coins: prev_coins,
+        new_coins,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct AdminBankRequest {
+    user_id: i64,
+    operation: String, // "set", "add", "subtract"
+    amount: i64,
+}
+
+#[derive(serde::Serialize)]
+struct AdminBankResponse {
+    user_id: i64,
+    previous_coins: i64,
+    new_coins: i64,
+}
+
+async fn admin_adjust_bank_balance(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    SessionUser { user_id: admin_id }: SessionUser,
+    Json(input): Json<AdminBankRequest>,
+) -> Result<Json<AdminBankResponse>, StatusCode> {
+    if !is_user_admin(&pool, admin_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if input.amount < 0 || input.amount > 1_000_000_000_000 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let op = input.operation.trim().to_lowercase();
+    if !matches!(op.as_str(), "set" | "add" | "subtract") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let prev_coins: Option<i64> = sqlx::query_scalar("SELECT bank_coins FROM users WHERE id = $1 FOR UPDATE")
+        .bind(input.user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let prev_coins = prev_coins.ok_or(StatusCode::NOT_FOUND)?;
+
+    let new_coins = match op.as_str() {
+        "set" => input.amount,
+        "add" => (prev_coins.saturating_add(input.amount)).min(1_000_000_000_000),
+        "subtract" => prev_coins.saturating_sub(input.amount).max(0),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let delta = new_coins - prev_coins;
+
+    sqlx::query("UPDATE users SET bank_coins = $1 WHERE id = $2")
+        .bind(new_coins)
+        .bind(input.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    record_bank_ledger(&mut tx, input.user_id, None, delta, new_coins, "admin_adjustment").await?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let ip = client_ip(&headers);
+    let _ = audit(
+        &pool,
+        "admin_bank_adjustment",
+        Some(admin_id),
+        Some(&format!("user_id {}: {} -> {} (op={})", input.user_id, prev_coins, new_coins, op)),
+        Some(&ip),
+    ).await;
+
+    Ok(Json(AdminBankResponse {
+        user_id: input.user_id,
         previous_coins: prev_coins,
         new_coins,
     }))
@@ -8306,6 +8468,7 @@ async fn accept_clan_invite(
     Ok(StatusCode::OK)
 }
 
+
 async fn decline_clan_invite(
     State(pool): State<sqlx::PgPool>,
     SessionUser { user_id }: SessionUser,
@@ -8595,6 +8758,7 @@ async fn promote_clan_member(
     Ok(StatusCode::OK)
 }
 
+
 #[derive(serde::Deserialize)]
 struct ClanBankAmountRequest {
     amount: i64,
@@ -8677,6 +8841,7 @@ async fn clan_bank_deposit(
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
 }
+
 
 async fn clan_bank_withdraw(
     State(pool): State<sqlx::PgPool>,
@@ -8761,6 +8926,331 @@ async fn clan_bank_withdraw(
 
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
+}
+
+// --- Web & In-Game Bank Account System ----------------------------------------
+
+#[derive(serde::Deserialize)]
+struct BankTransferRequest {
+    uuid: String,
+    amount: i64,
+}
+
+#[derive(serde::Serialize)]
+struct BankTransferResponse {
+    pocket_coins: i64,
+    bank_coins: i64,
+}
+
+async fn api_bank_deposit(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<BankTransferRequest>,
+) -> Result<Json<BankTransferResponse>, StatusCode> {
+    let uuid = input.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if input.amount <= 0 || input.amount > 1_000_000_000_000 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    owns_player(&pool, user_id, &uuid).await?;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let pocket: Option<i64> = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1 FOR UPDATE")
+        .bind(&uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let pocket = pocket.unwrap_or(0);
+    if pocket < input.amount {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    coin_reason(&mut tx, "bank_deposit", &uuid).await?;
+    let pocket_coins = debit_coins(&mut tx, &uuid, input.amount).await?;
+    let bank_coins = credit_bank_coins(&mut tx, user_id, input.amount).await?;
+    record_bank_ledger(&mut tx, user_id, Some(&uuid), input.amount, bank_coins, "web_deposit").await?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(BankTransferResponse { pocket_coins, bank_coins }))
+}
+
+async fn api_bank_withdraw(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<BankTransferRequest>,
+) -> Result<Json<BankTransferResponse>, StatusCode> {
+    let uuid = input.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if input.amount <= 0 || input.amount > 1_000_000_000_000 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    owns_player(&pool, user_id, &uuid).await?;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let bank: Option<i64> = sqlx::query_scalar("SELECT bank_coins FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let bank = bank.unwrap_or(0);
+    if bank < input.amount {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let username: String = sqlx::query_scalar("SELECT username FROM minecraft_accounts WHERE uuid = $1")
+        .bind(&uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .unwrap_or_else(|| "Player".to_string());
+
+    sqlx::query("INSERT INTO player_stats (uuid, username, coins) VALUES ($1, $2, 0) ON CONFLICT (uuid) DO NOTHING")
+        .bind(&uuid)
+        .bind(&username)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    coin_reason(&mut tx, "bank_withdraw", &uuid).await?;
+    let bank_coins = debit_bank_coins(&mut tx, user_id, input.amount).await?;
+    let pocket_coins = credit_coins(&mut tx, &uuid, input.amount).await?;
+    record_bank_ledger(&mut tx, user_id, Some(&uuid), -input.amount, bank_coins, "web_withdraw").await?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(BankTransferResponse { pocket_coins, bank_coins }))
+}
+
+#[derive(serde::Serialize)]
+struct BankLedgerEntryView {
+    id: i64,
+    player_uuid: Option<String>,
+    delta: i64,
+    balance: i64,
+    reason: String,
+    created_at: String,
+}
+
+async fn api_bank_ledger(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<Vec<BankLedgerEntryView>>, StatusCode> {
+    let rows = sqlx::query(
+        "SELECT id, player_uuid, delta, balance, reason, created_at::text AS created_at
+           FROM bank_ledger
+          WHERE user_id = $1
+          ORDER BY id DESC
+          LIMIT 50"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut entries = Vec::with_capacity(rows.len());
+    for row in rows {
+        entries.push(BankLedgerEntryView {
+            id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            player_uuid: row.try_get("player_uuid").ok(),
+            delta: row.try_get("delta").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            balance: row.try_get("balance").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            reason: row.try_get("reason").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            created_at: row.try_get("created_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        });
+    }
+    Ok(Json(entries))
+}
+
+#[derive(serde::Deserialize)]
+struct InternalBankStatusRequest {
+    uuid: String,
+}
+
+#[derive(serde::Serialize)]
+struct InternalBankStatusResponse {
+    linked: bool,
+    pocket_coins: i64,
+    bank_coins: i64,
+    username: Option<String>,
+}
+
+async fn internal_bank_status(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(input): Json<InternalBankStatusRequest>,
+) -> Result<Json<InternalBankStatusResponse>, StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = input.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let row = sqlx::query(
+        "SELECT ma.username, u.bank_coins, COALESCE(ps.coins, 0) AS pocket_coins
+           FROM minecraft_accounts ma
+           JOIN users u ON u.id = ma.user_id
+           LEFT JOIN player_stats ps ON ps.uuid = ma.uuid
+          WHERE ma.uuid = $1"
+    )
+    .bind(&uuid)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some(r) => {
+            let username: String = r.try_get("username").unwrap_or_default();
+            let bank_coins: i64 = r.try_get("bank_coins").unwrap_or(0);
+            let pocket_coins: i64 = r.try_get("pocket_coins").unwrap_or(0);
+            Ok(Json(InternalBankStatusResponse {
+                linked: true,
+                pocket_coins,
+                bank_coins,
+                username: Some(username),
+            }))
+        }
+        None => {
+            let pocket_coins: i64 = sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1")
+                .bind(&uuid)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .unwrap_or(0);
+            Ok(Json(InternalBankStatusResponse {
+                linked: false,
+                pocket_coins,
+                bank_coins: 0,
+                username: None,
+            }))
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct InternalBankActionRequest {
+    uuid: String,
+    action: String, // "deposit" or "withdraw"
+    amount: i64,
+}
+
+#[derive(serde::Serialize)]
+struct InternalBankActionResponse {
+    success: bool,
+    message: String,
+    pocket_coins: i64,
+    bank_coins: i64,
+}
+
+async fn internal_bank_action(
+    State(pool): State<sqlx::PgPool>,
+    headers: HeaderMap,
+    Json(input): Json<InternalBankActionRequest>,
+) -> Result<Json<InternalBankActionResponse>, StatusCode> {
+    require_service_token(&headers)?;
+    let uuid = input.uuid.trim().to_lowercase();
+    if !is_uuid(&uuid) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if input.amount <= 0 || input.amount > 1_000_000_000_000 {
+        return Ok(Json(InternalBankActionResponse {
+            success: false,
+            message: "Amount must be between 1 and 1,000,000,000,000.".into(),
+            pocket_coins: 0,
+            bank_coins: 0,
+        }));
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let account = sqlx::query(
+        "SELECT ma.user_id, ma.username, u.bank_coins, COALESCE(ps.coins, 0) AS pocket_coins
+           FROM minecraft_accounts ma
+           JOIN users u ON u.id = ma.user_id
+           LEFT JOIN player_stats ps ON ps.uuid = ma.uuid
+          WHERE ma.uuid = $1
+          FOR UPDATE OF ma, u"
+    )
+    .bind(&uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let Some(acc) = account else {
+        return Ok(Json(InternalBankActionResponse {
+            success: false,
+            message: "This Minecraft account is not linked to any web account. Use /website link <code> first!".into(),
+            pocket_coins: 0,
+            bank_coins: 0,
+        }));
+    };
+
+    let user_id: i64 = acc.try_get("user_id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let username: String = acc.try_get("username").unwrap_or_else(|_| "Player".to_string());
+    let current_bank: i64 = acc.try_get("bank_coins").unwrap_or(0);
+    let current_pocket: i64 = acc.try_get("pocket_coins").unwrap_or(0);
+
+    let action = input.action.trim().to_lowercase();
+    if action == "deposit" {
+        if current_pocket < input.amount {
+            return Ok(Json(InternalBankActionResponse {
+                success: false,
+                message: format!("Insufficient pocket money. You have {} coins in your pocket.", current_pocket),
+                pocket_coins: current_pocket,
+                bank_coins: current_bank,
+            }));
+        }
+        coin_reason(&mut tx, "bank_deposit", &uuid).await?;
+        let new_pocket = debit_coins(&mut tx, &uuid, input.amount).await?;
+        let new_bank = credit_bank_coins(&mut tx, user_id, input.amount).await?;
+        record_bank_ledger(&mut tx, user_id, Some(&uuid), input.amount, new_bank, "in_game_deposit").await?;
+        tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        Ok(Json(InternalBankActionResponse {
+            success: true,
+            message: format!("Deposited {} coins to your Web Bank account.", input.amount),
+            pocket_coins: new_pocket,
+            bank_coins: new_bank,
+        }))
+    } else if action == "withdraw" {
+        if current_bank < input.amount {
+            return Ok(Json(InternalBankActionResponse {
+                success: false,
+                message: format!("Insufficient bank balance. You have {} coins in your Web Bank.", current_bank),
+                pocket_coins: current_pocket,
+                bank_coins: current_bank,
+            }));
+        }
+        sqlx::query("INSERT INTO player_stats (uuid, username, coins) VALUES ($1, $2, 0) ON CONFLICT (uuid) DO NOTHING")
+            .bind(&uuid)
+            .bind(&username)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        coin_reason(&mut tx, "bank_withdraw", &uuid).await?;
+        let new_bank = debit_bank_coins(&mut tx, user_id, input.amount).await?;
+        let new_pocket = credit_coins(&mut tx, &uuid, input.amount).await?;
+        record_bank_ledger(&mut tx, user_id, Some(&uuid), -input.amount, new_bank, "in_game_withdraw").await?;
+        tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        Ok(Json(InternalBankActionResponse {
+            success: true,
+            message: format!("Withdrew {} coins to your pocket money.", input.amount),
+            pocket_coins: new_pocket,
+            bank_coins: new_bank,
+        }))
+    } else {
+        Err(StatusCode::BAD_REQUEST)
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -14925,6 +15415,11 @@ mod test {
             .bind(coins)
             .execute(pool)
             .await?;
+        sqlx::query("UPDATE users SET bank_coins = $1 WHERE email = $2")
+            .bind(coins)
+            .bind(&email)
+            .execute(pool)
+            .await?;
         Ok((email, cookie, uuid))
     }
 
@@ -14941,6 +15436,14 @@ mod test {
         Ok(
             sqlx::query_scalar("SELECT coins FROM player_stats WHERE uuid = $1")
                 .bind(uuid)
+                .fetch_one(pool).await?
+        )
+    }
+
+    async fn bank_coins_of(pool: &sqlx::PgPool, email: &str) -> Result<i64, Box<dyn std::error::Error>> {
+        Ok(
+            sqlx::query_scalar("SELECT bank_coins FROM users WHERE email = $1")
+                .bind(email)
                 .fetch_one(pool).await?
         )
     }
@@ -15026,7 +15529,7 @@ mod test {
         let multiplier = spin["multiplier_x100"].as_i64().unwrap_or(-1);
         let reported = spin["balance"].as_i64().unwrap_or(-1);
         let reels = spin["reels"].as_array().cloned().unwrap_or_default();
-        let after_spin = coins_of(&pool, &uuid).await?;
+        let after_spin = bank_coins_of(&pool, &email).await?;
         let row = round_row(&pool, &round_id).await?;
 
         // The same client id is the same spin: a retry must not buy a second one.
@@ -15038,7 +15541,8 @@ mod test {
         ).await?;
         let retry_status = retry.status();
         let retry = body_json(retry).await?;
-        let after_retry = coins_of(&pool, &uuid).await?;
+        let after_retry = bank_coins_of(&pool, &email).await?;
+        let pocket_after = coins_of(&pool, &uuid).await?;
         let unlinked = send(&pool, "DELETE", &format!("/api/link/{uuid}"), Some(&cookie), None).await?.status();
         let recovered = post_session(&pool, "/api/minigames/chest/spin", &cookie,
             serde_json::json!({"uuid":uuid,"bet":50,"client_id":client_id})).await?;
@@ -15055,7 +15559,8 @@ mod test {
         assert_eq!(reels.len(), 3, "a spin lands three reels");
         // The payout comes from the server's own roll, and the balance follows it.
         assert_eq!(payout, 50 * multiplier / 100, "the payout matches the multiplier");
-        assert_eq!(after_spin, 1_000 - 50 + payout, "stake out, winnings in");
+        assert_eq!(after_spin, 1_000 - 50 + payout, "stake out of bank, winnings in");
+        assert_eq!(pocket_after, 1_000, "pocket money is untouched by minigames");
         assert_eq!(reported, after_spin, "the reported balance is the stored balance");
         assert_eq!(row.0, "settled");
         assert_eq!(row.1, 50, "the round records the stake");
@@ -15114,7 +15619,7 @@ mod test {
             &broke_cookie,
             serde_json::json!({ "uuid": broke_uuid, "bet": 50, "client_id": client_id })
         ).await?.status();
-        let untouched = coins_of(&pool, &broke_uuid).await?;
+        let untouched = bank_coins_of(&pool, &broke_email).await?;
 
         delete_player_stats(&pool, &owner_uuid).await?;
         delete_user(&pool, &owner_email).await?;
@@ -15146,7 +15651,7 @@ mod test {
         let started_status = started.status();
         let started = body_json(started).await?;
         let round_id = started["round_id"].as_str().unwrap_or_default().to_owned();
-        let charged = coins_of(&pool, &uuid).await?;
+        let charged = bank_coins_of(&pool, &email).await?;
         let board = mines_board(&pool, &round_id).await?;
         let iron_cells: Vec<i64> = board
             .iter()
@@ -15187,7 +15692,7 @@ mod test {
         let cashout_status = cashout.status();
         let cashout = body_json(cashout).await?;
         let payout = cashout["payout"].as_i64().unwrap_or(-1);
-        let after_cashout = coins_of(&pool, &uuid).await?;
+        let after_cashout = bank_coins_of(&pool, &email).await?;
         // Repeating a successful cash-out returns the settled round and pays nothing.
         let again = post_session(
             &pool,
@@ -15197,7 +15702,7 @@ mod test {
         ).await?;
         let again_status = again.status();
         let again = body_json(again).await?;
-        let after_again = coins_of(&pool, &uuid).await?;
+        let after_again = bank_coins_of(&pool, &email).await?;
         let row = round_row(&pool, &round_id).await?;
         delete_player_stats(&pool, &uuid).await?;
         delete_user(&pool, &email).await?;
@@ -15254,7 +15759,7 @@ mod test {
         ).await?;
         let exploded_status = exploded.status();
         let exploded = body_json(exploded).await?;
-        let after = coins_of(&pool, &uuid).await?;
+        let after = bank_coins_of(&pool, &email).await?;
         let row = round_row(&pool, &round_id).await?;
         // The settled round no longer blocks the next one.
         let next = post_session(
@@ -15265,7 +15770,7 @@ mod test {
         ).await?;
         let next_status = next.status();
         let next = body_json(next).await?;
-        let after_next = coins_of(&pool, &uuid).await?;
+        let after_next = bank_coins_of(&pool, &email).await?;
         delete_player_stats(&pool, &uuid).await?;
         delete_user(&pool, &email).await?;
 
@@ -15310,7 +15815,7 @@ mod test {
         ).await?;
         let resumed_status = resumed.status();
         let resumed = body_json(resumed).await?;
-        let charged_once = coins_of(&pool, &uuid).await?;
+        let charged_once = bank_coins_of(&pool, &email).await?;
 
         let early_cashout = post_session(
             &pool,
@@ -15396,7 +15901,7 @@ mod test {
                     serde_json::json!({"round_id":id,"cell":cell_of(&board,"tnt")})).await?).await?;
                 answers.push(answer);
             }
-            Ok((answers, coins_of(&pool,&uuid).await?))
+            Ok((answers, bank_coins_of(&pool,&email).await?))
         }.await;
         delete_player_stats(&pool,&uuid).await?;
         delete_user(&pool,&email).await?;
@@ -15431,7 +15936,7 @@ mod test {
             let a=a?; let b=b?;
             let statuses=(a.status(),b.status());
             let a=body_json(a).await?; let b=body_json(b).await?;
-            Ok((statuses,extra_statuses,a,b,coins_of(&pool,&uuid).await?))
+            Ok((statuses,extra_statuses,a,b,bank_coins_of(&pool,&email).await?))
         }.await;
         delete_player_stats(&pool,&uuid).await?;
         delete_user(&pool,&email).await?;
@@ -15467,7 +15972,7 @@ mod test {
         let state = get_with_cookie(&pool, "/api/minigames/state", Some(&cookie)).await?;
         let state = body_json(state).await?;
         let row = round_row(&pool, &round_id).await?;
-        let after = coins_of(&pool, &uuid).await?;
+        let after = bank_coins_of(&pool, &email).await?;
         let restarted = post_session(
             &pool,
             "/api/minigames/mines/start",
@@ -15475,7 +15980,7 @@ mod test {
             serde_json::json!({ "uuid": uuid, "bet": 100, "mines": 8 })
         ).await?;
         let restarted = body_json(restarted).await?;
-        let after_restart = coins_of(&pool, &uuid).await?;
+        let after_restart = bank_coins_of(&pool, &email).await?;
         delete_player_stats(&pool, &uuid).await?;
         delete_user(&pool, &email).await?;
 
@@ -17675,6 +18180,7 @@ mod test {
         drop_budget_pool(admin, pool, schema).await
     }
 
+
     #[tokio::test]
     async fn offline_mail_parcel_send_and_claim() -> TestResult {
         let (admin, pool, schema) = isolated_budget_pool().await?;
@@ -17865,6 +18371,7 @@ mod test {
         drop_budget_pool(admin, pool, schema).await
     }
 
+
     #[tokio::test]
     async fn admin_panel_telemetry_console_and_moderation() -> TestResult {
         let (admin, pool, schema) = isolated_budget_pool().await?;
@@ -17983,6 +18490,133 @@ mod test {
         assert_eq!(pending_mods.len(), 1);
         assert_eq!(pending_mods[0]["action"], "ban");
         assert_eq!(pending_mods[0]["target_username"], "GrieferSteve");
+
+        delete_user(&pool, &email).await?;
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+    #[tokio::test]
+    async fn bank_account_deposit_withdraw_and_internal_actions() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let token = test_service_token();
+        let random = random_id();
+        let email = format!("bank_{random}@example.com").to_lowercase();
+        let login = format!("bank_{random}").to_lowercase();
+
+        register_request(&pool, "BankUser", &login, &email, "password12345").await?;
+        let cookie = login_cookie(&pool, &email, "password12345").await?;
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email).fetch_one(&pool).await?;
+
+        let uuid = test_uuid(&email);
+        let code = start_code(&pool, &cookie).await?;
+        claim(&pool, &code, &uuid, "BankPlayer").await?;
+
+        // Give the player 1,000 pocket coins
+        sqlx::query("INSERT INTO player_stats(uuid, username, coins) VALUES($1, 'BankPlayer', 1000)")
+            .bind(&uuid)
+            .execute(&pool)
+            .await?;
+
+        // Initial check: me has bank_coins = 0
+        let me = body_json(send(&pool, "GET", "/api/me", Some(&cookie), None).await?).await?;
+        assert_eq!(me["bank_coins"], 0);
+
+        // Stats has bank_coins = 0, pocket = 1000
+        let stats = body_json(send(&pool, "GET", "/api/stats", Some(&cookie), None).await?).await?;
+        assert_eq!(stats["bank_coins"], 0);
+        assert_eq!(stats["accounts"][0]["coins"], 1000);
+
+        // 1. Web Deposit 400 coins from pocket to bank
+        let deposit_res = post_session(&pool, "/api/bank/deposit", &cookie, serde_json::json!({
+            "uuid": uuid,
+            "amount": 400
+        })).await?;
+        assert_eq!(deposit_res.status(), StatusCode::OK);
+        let dep_body = body_json(deposit_res).await?;
+        assert_eq!(dep_body["pocket_coins"], 600);
+        assert_eq!(dep_body["bank_coins"], 400);
+
+        // Verify database directly
+        let pocket = coins_of(&pool, &uuid).await?;
+        let bank = bank_coins_of(&pool, &email).await?;
+        assert_eq!(pocket, 600);
+        assert_eq!(bank, 400);
+
+        // Over-deposit fails with conflict
+        let over_dep = post_session(&pool, "/api/bank/deposit", &cookie, serde_json::json!({
+            "uuid": uuid,
+            "amount": 700
+        })).await?;
+        assert_eq!(over_dep.status(), StatusCode::CONFLICT);
+
+        // 2. Web Withdraw 150 coins from bank to pocket
+        let withdraw_res = post_session(&pool, "/api/bank/withdraw", &cookie, serde_json::json!({
+            "uuid": uuid,
+            "amount": 150
+        })).await?;
+        assert_eq!(withdraw_res.status(), StatusCode::OK);
+        let with_body = body_json(withdraw_res).await?;
+        assert_eq!(with_body["pocket_coins"], 750);
+        assert_eq!(with_body["bank_coins"], 250);
+
+        // 3. Bank Ledger
+        let ledger_res = send(&pool, "GET", "/api/bank/ledger", Some(&cookie), None).await?;
+        assert_eq!(ledger_res.status(), StatusCode::OK);
+        let ledger_arr = body_json(ledger_res).await?;
+        let ledger = ledger_arr.as_array().expect("ledger array");
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[0]["delta"], -150);
+        assert_eq!(ledger[0]["balance"], 250);
+        assert_eq!(ledger[0]["reason"], "web_withdraw");
+        assert_eq!(ledger[1]["delta"], 400);
+        assert_eq!(ledger[1]["balance"], 400);
+        assert_eq!(ledger[1]["reason"], "web_deposit");
+
+        // 4. In-Game Internal Status
+        let status_res = post_internal(&pool, "/internal/bank/status", Some(&token), serde_json::json!({
+            "uuid": uuid
+        }), &random_ip()).await?;
+        assert_eq!(status_res.status(), StatusCode::OK);
+        let status_body = body_json(status_res).await?;
+        assert_eq!(status_body["linked"], true);
+        assert_eq!(status_body["pocket_coins"], 750);
+        assert_eq!(status_body["bank_coins"], 250);
+
+        // 5. In-Game Internal Action (deposit 200 via /bank deposit)
+        let in_game_dep = post_internal(&pool, "/internal/bank/action", Some(&token), serde_json::json!({
+            "uuid": uuid,
+            "action": "deposit",
+            "amount": 200
+        }), &random_ip()).await?;
+        assert_eq!(in_game_dep.status(), StatusCode::OK);
+        let in_game_dep_body = body_json(in_game_dep).await?;
+        assert_eq!(in_game_dep_body["success"], true);
+        assert_eq!(in_game_dep_body["pocket_coins"], 550);
+        assert_eq!(in_game_dep_body["bank_coins"], 450);
+
+        // 6. In-Game Internal Action (withdraw 100 via /bank withdraw)
+        let in_game_with = post_internal(&pool, "/internal/bank/action", Some(&token), serde_json::json!({
+            "uuid": uuid,
+            "action": "withdraw",
+            "amount": 100
+        }), &random_ip()).await?;
+        assert_eq!(in_game_with.status(), StatusCode::OK);
+        let in_game_with_body = body_json(in_game_with).await?;
+        assert_eq!(in_game_with_body["success"], true);
+        assert_eq!(in_game_with_body["pocket_coins"], 650);
+        assert_eq!(in_game_with_body["bank_coins"], 350);
+
+        // 7. Admin adjustment
+        sqlx::query("UPDATE users SET is_admin = true WHERE id = $1").bind(user_id).execute(&pool).await?;
+        let admin_res = post_session(&pool, "/api/admin/bank", &cookie, serde_json::json!({
+            "user_id": user_id,
+            "operation": "add",
+            "amount": 650
+        })).await?;
+        assert_eq!(admin_res.status(), StatusCode::OK);
+        let admin_body = body_json(admin_res).await?;
+        assert_eq!(admin_body["previous_coins"], 350);
+        assert_eq!(admin_body["new_coins"], 1000);
 
         delete_user(&pool, &email).await?;
         drop_budget_pool(admin, pool, schema).await

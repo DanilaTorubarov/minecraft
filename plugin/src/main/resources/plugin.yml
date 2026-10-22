@@ -63,7 +63,15 @@ commands:
         usage: /clan [create|invite|join|leave|home|sethome|bank|info|ally|enemy|neutral|disband]
         aliases: [f, faction, clans]
         permission: linkbridge.clan
+    bank:
+        description: Open the Web Bank GUI or deposit/withdraw coins between pocket and web bank.
+        usage: /bank [gui|deposit <amount>|withdraw <amount>|bal]
+        aliases: [ebank, webbank]
+        permission: linkbridge.bank
 permissions:
+    linkbridge.bank:
+        description: Use bank commands and access the bank GUI after authentication.
+        default: true
     linkbridge.clan:
         description: Create, join, and manage your clan after authentication.
         default: true

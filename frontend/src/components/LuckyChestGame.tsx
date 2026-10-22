@@ -84,12 +84,12 @@ function BubbleReel({ symbol, phase, index }: { symbol: string; phase: 'idle' | 
 
 function tabStorage(): Storage | null { try { return sessionStorage } catch { return null } }
 
-export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer, rules, userId }: {
-  onBack: () => void; payer: Payer; accounts: Payer[]; onChoosePayer: (uuid: string) => void; rules: MinigameRules; userId: number
+export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer, rules, userId, bankCoins }: {
+  onBack: () => void; payer: Payer; accounts: Payer[]; onChoosePayer: (uuid: string) => void; rules: MinigameRules; userId: number; bankCoins: number
 }) {
   const requestKey = `minecraft-chest-pending:${userId}`
   const [pending, setPending] = useState<ChestRequest | null>(() => readChestRequest(tabStorage(), requestKey))
-  const [bet, setBet] = useState(() => clampBet(50, rules.min_bet, rules.max_bet, payer.coins))
+  const [bet, setBet] = useState(() => clampBet(50, rules.min_bet, rules.max_bet, bankCoins))
   const [phase, setPhase] = useState<'idle' | 'spinning' | 'settling'>('idle')
   const [error, setError] = useState('')
   const [result, setResult] = useState<(ChestSpin & { payerName: string }) | null>(null)
@@ -99,7 +99,7 @@ export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer,
   const mounted = useRef(false)
   const sending = useRef(false)
   const selectedPayer = pending ? accounts.find((account) => account.uuid === pending.uuid) ?? payer : payer
-  const { balance, applySettled } = useStakedBalance(selectedPayer.uuid, selectedPayer.coins)
+  const { balance, applySettled } = useStakedBalance('bank', bankCoins)
   const busy = phase !== 'idle'
   const validBet = Number.isSafeInteger(bet) && bet >= rules.min_bet && bet <= rules.max_bet && bet <= balance
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
@@ -121,12 +121,13 @@ export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer,
       if (!mounted.current) return
       setPending(null)
       const paidAccount = accounts.find((account) => account.uuid === request.uuid)
-      if (paidAccount) { onChoosePayer(request.uuid); applySettled(next.balance, request.uuid, paidAccount.coins) }
+      if (paidAccount) { onChoosePayer(request.uuid) }
+      applySettled(next.balance, 'bank', bankCoins)
       setSymbols(next.reels)
       setPhase('settling')
       if (!reduced) await wait(1600)
       if (!mounted.current) return
-      setResult({ ...next, payerName: paidAccount?.username ?? 'the original payer' }); setHistory((old) => [next, ...old.slice(0, 4)])
+      setResult({ ...next, payerName: paidAccount?.username ?? 'Web Bank' }); setHistory((old) => [next, ...old.slice(0, 4)])
       playSound(next.payout > 0 ? 'done' : 'click')
     } catch (failure) {
       if (!mounted.current) return
@@ -147,7 +148,12 @@ export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer,
   return <div className="minigame-workspace">
     <div className="game-toolbar">
       <button className="btn btn-quiet" onClick={onBack} disabled={busy}>All games</button>
-      {pending && !accounts.some((account) => account.uuid === pending.uuid) ? <span>Recovering a spin for an unlinked player</span> : <PayerSelect payer={{ ...selectedPayer, coins: balance }} accounts={accounts} onChoose={onChoosePayer} disabled={busy || pending !== null} />}
+      <div className="chest-balance-pill casino-payer-pill" title="Web Bank Balance">
+        <span style={{ fontSize: '0.85em', opacity: 0.8 }}>Bank:</span>
+        <span className="chest-balance-num">{formatCoins(balance)}</span>
+        <span className="chest-balance-label">coins</span>
+      </div>
+      {pending && !accounts.some((account) => account.uuid === pending.uuid) ? <span>Recovering a spin for an unlinked player</span> : <PayerSelect payer={selectedPayer} accounts={accounts} onChoose={onChoosePayer} disabled={busy || pending !== null} />}
       <button className="btn btn-quiet" aria-expanded={showTable} onClick={() => setShowTable(!showTable)}>Paytable</button>
     </div>
     <div className="page-head game-heading"><img src={icon} alt="" /><div><h1>Lucky Chest</h1><p className="page-sub">Three bubbles. A little ocean luck.</p></div></div>
@@ -160,7 +166,7 @@ export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer,
         </div>
         <div className="game-result" role="status">
           {busy ? <p>{phase === 'spinning' ? 'Opening your chest…' : 'Finding your treasures…'}</p>
-            : result ? <><strong>{result.payout > 0 ? 'Treasure found' : 'No winning combination'}</strong><p>{result.payout > 0 ? `${formatCoins(result.payout)} coins returned to ${result.payerName} · ${formatMultiplier(result.multiplier_x100)}` : `Stake: ${formatCoins(result.bet)} coins. No payout this time.`}</p></>
+            : result ? <><strong>{result.payout > 0 ? 'Treasure found' : 'No winning combination'}</strong><p>{result.payout > 0 ? `${formatCoins(result.payout)} coins credited to Web Bank · ${formatMultiplier(result.multiplier_x100)}` : `Stake: ${formatCoins(result.bet)} coins from Web Bank. No payout this time.`}</p></>
               : <p>Match a pair or three of a kind. A lone diamond pays too.</p>}
         </div>
         <button className="btn btn-primary game-primary" disabled={busy || (!pending && !validBet)} onClick={() => { void spin() }}>

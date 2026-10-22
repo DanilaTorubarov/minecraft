@@ -206,6 +206,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private String inventoryDeletesUrl = "";
     private final java.util.concurrent.atomic.AtomicBoolean inventoryFlushRunning = new java.util.concurrent.atomic.AtomicBoolean();
     private String iconsUrl = "";
+    private String bankStatusUrl = "";
+    private String bankActionUrl = "";
     private final java.util.concurrent.atomic.AtomicBoolean skinSyncRunning = new java.util.concurrent.atomic.AtomicBoolean();
     private String pendingBody;
     private List<Delta> pendingBatch = List.of();
@@ -397,6 +399,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         inventoryUrl = base + "/internal/inventory/report";
         inventoryDeletesUrl = base + "/internal/inventory/deletions";
         iconsUrl = base + "/internal/items/icons";
+        bankStatusUrl = base + "/internal/bank/status";
+        bankActionUrl = base + "/internal/bank/action";
 
         String panel = getConfig().getString("panel-url", "");
         panelUrl = panel == null ? "" : panel.trim();
@@ -525,6 +529,14 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 return true;
             }
             handleClanCommand(player, args);
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("bank") || command.getName().equalsIgnoreCase("ebank") || command.getName().equalsIgnoreCase("webbank")) {
+            if (!allowAttempt(player.getUniqueId())) {
+                player.sendMessage("[Bank] Wait a few seconds and try again.");
+                return true;
+            }
+            handleBankCommand(player, args);
             return true;
         }
 
@@ -8139,6 +8151,332 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 }
             } catch (Exception e) {
                 getLogger().warning("Mail claim failed: " + e.getMessage());
+            }
+        });
+    }
+
+    static final class BankGuiHolder implements org.bukkit.inventory.InventoryHolder {
+        private org.bukkit.inventory.Inventory inventory;
+        private final long pocketCoins;
+        private final long bankCoins;
+        private final boolean linked;
+        private final String webAccount;
+
+        BankGuiHolder(long pocketCoins, long bankCoins, boolean linked, String webAccount) {
+            this.pocketCoins = pocketCoins;
+            this.bankCoins = bankCoins;
+            this.linked = linked;
+            this.webAccount = webAccount;
+        }
+
+        public void setInventory(org.bukkit.inventory.Inventory inventory) { this.inventory = inventory; }
+        @Override public org.bukkit.inventory.Inventory getInventory() { return inventory; }
+        public long getPocketCoins() { return pocketCoins; }
+        public long getBankCoins() { return bankCoins; }
+        public boolean isLinked() { return linked; }
+        public String getWebAccount() { return webAccount; }
+    }
+
+    @EventHandler
+    public void onBankGuiClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        org.bukkit.inventory.InventoryHolder holder = event.getInventory().getHolder();
+        if (!(holder instanceof BankGuiHolder bankHolder)) return;
+
+        event.setCancelled(true);
+        if (event.getClickedInventory() != event.getInventory()) return;
+
+        int slot = event.getSlot();
+        if (!bankHolder.isLinked()) {
+            player.sendMessage("§c[Bank] Your Minecraft account is not linked to the web! Use /website link <code> first.");
+            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+            player.closeInventory();
+            return;
+        }
+
+        if (slot == 10) {
+            performBankAction(player, "deposit", 100);
+        } else if (slot == 11) {
+            performBankAction(player, "deposit", 1000);
+        } else if (slot == 12) {
+            if (bankHolder.getPocketCoins() > 0) {
+                performBankAction(player, "deposit", bankHolder.getPocketCoins());
+            } else {
+                player.sendMessage("§c[Bank] You have no pocket coins to deposit.");
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+            }
+        } else if (slot == 14) {
+            performBankAction(player, "withdraw", 100);
+        } else if (slot == 15) {
+            performBankAction(player, "withdraw", 1000);
+        } else if (slot == 16) {
+            if (bankHolder.getBankCoins() > 0) {
+                performBankAction(player, "withdraw", bankHolder.getBankCoins());
+            } else {
+                player.sendMessage("§c[Bank] You have no web bank coins to withdraw.");
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+            }
+        }
+    }
+
+    private void handleBankCommand(Player player, String[] args) {
+        if (args.length == 0 || (args.length == 1 && (args[0].equalsIgnoreCase("gui") || args[0].equalsIgnoreCase("menu")))) {
+            openBankGui(player);
+            return;
+        }
+        if (args[0].equalsIgnoreCase("bal") || args[0].equalsIgnoreCase("balance") || args[0].equalsIgnoreCase("info")) {
+            showBankBalance(player);
+            return;
+        }
+        if (args[0].equalsIgnoreCase("deposit")) {
+            if (args.length < 2) {
+                player.sendMessage("§e[Bank] Usage: /bank deposit <amount|all>");
+                return;
+            }
+            if (args[1].equalsIgnoreCase("all")) {
+                openBankGui(player);
+                return;
+            }
+            try {
+                long amount = Long.parseLong(args[1].trim());
+                if (amount <= 0) throw new NumberFormatException();
+                performBankAction(player, "deposit", amount);
+            } catch (NumberFormatException e) {
+                player.sendMessage("§c[Bank] Please provide a valid positive amount.");
+            }
+            return;
+        }
+        if (args[0].equalsIgnoreCase("withdraw")) {
+            if (args.length < 2) {
+                player.sendMessage("§e[Bank] Usage: /bank withdraw <amount|all>");
+                return;
+            }
+            if (args[1].equalsIgnoreCase("all")) {
+                openBankGui(player);
+                return;
+            }
+            try {
+                long amount = Long.parseLong(args[1].trim());
+                if (amount <= 0) throw new NumberFormatException();
+                performBankAction(player, "withdraw", amount);
+            } catch (NumberFormatException e) {
+                player.sendMessage("§c[Bank] Please provide a valid positive amount.");
+            }
+            return;
+        }
+        player.sendMessage("§e[Bank] Usage: /bank (opens GUI) or /bank [deposit <amount>|withdraw <amount>|bal]");
+    }
+
+    private void showBankBalance(Player player) {
+        UUID uuid = player.getUniqueId();
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("uuid", uuid.toString());
+                var resp = post(bankStatusUrl, body.toString(), requestTimeout);
+                if (resp != null && resp.statusCode() == 200) {
+                    var obj = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+                    boolean linked = obj.has("linked") && obj.get("linked").getAsBoolean();
+                    long pocket = obj.has("pocket_coins") ? obj.get("pocket_coins").getAsLong() : 0;
+                    long bank = obj.has("bank_coins") ? obj.get("bank_coins").getAsLong() : 0;
+                    String username = obj.has("username") && !obj.get("username").isJsonNull() ? obj.get("username").getAsString() : "";
+
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (!player.isOnline()) return;
+                        player.sendMessage("§6§l═══════════════════[ §eWeb Bank §6§l]═══════════════════");
+                        player.sendMessage("§7 Pocket Coins: §a" + pocket + " §7(in-game trading & shops)");
+                        player.sendMessage("§7 Web Bank: §b" + bank + " §7(web minigames & staking)");
+                        if (linked) {
+                            player.sendMessage("§7 Web Account: §f" + username + " §a(Linked)");
+                        } else {
+                            player.sendMessage("§7 Web Account: §cNot Linked §7(Link via /website link <code>)");
+                        }
+                        player.sendMessage("§6§l═════════════════════════════════════════════════");
+                    });
+                } else {
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (player.isOnline()) player.sendMessage("§c[Bank] Bank status is currently unavailable.");
+                    });
+                }
+            } catch (Exception e) {
+                getLogger().warning("Failed to show bank balance: " + e.getMessage());
+            }
+        });
+    }
+
+    private void openBankGui(Player player) {
+        UUID uuid = player.getUniqueId();
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("uuid", uuid.toString());
+                var resp = post(bankStatusUrl, body.toString(), requestTimeout);
+                if (resp != null && resp.statusCode() == 200) {
+                    var obj = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+                    boolean linked = obj.has("linked") && obj.get("linked").getAsBoolean();
+                    long pocket = obj.has("pocket_coins") ? obj.get("pocket_coins").getAsLong() : 0;
+                    long bank = obj.has("bank_coins") ? obj.get("bank_coins").getAsLong() : 0;
+                    String username = obj.has("username") && !obj.get("username").isJsonNull() ? obj.get("username").getAsString() : "";
+
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (!player.isOnline()) return;
+                        BankGuiHolder holder = new BankGuiHolder(pocket, bank, linked, username);
+                        org.bukkit.inventory.Inventory inv = org.bukkit.Bukkit.createInventory(holder, 27, net.kyori.adventure.text.Component.text("§1§lWeb Bank & Pocket"));
+                        holder.setInventory(inv);
+
+                        ItemStack bg = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+                        ItemMeta bgMeta = bg.getItemMeta();
+                        if (bgMeta != null) {
+                            bgMeta.displayName(net.kyori.adventure.text.Component.text(" "));
+                            bg.setItemMeta(bgMeta);
+                        }
+                        for (int i = 0; i < 27; i++) {
+                            inv.setItem(i, bg);
+                        }
+
+                        // Slot 13: Overview
+                        ItemStack overview = new ItemStack(Material.NETHER_STAR);
+                        ItemMeta ovm = overview.getItemMeta();
+                        if (ovm != null) {
+                            ovm.displayName(net.kyori.adventure.text.Component.text("§e§lBank & Pocket Overview"));
+                            List<net.kyori.adventure.text.Component> lore = new ArrayList<>();
+                            lore.add(net.kyori.adventure.text.Component.text("§7Pocket Money: §a" + pocket + " coins §8(in-game)"));
+                            lore.add(net.kyori.adventure.text.Component.text("§7Web Bank: §b" + bank + " coins §8(minigames)"));
+                            lore.add(net.kyori.adventure.text.Component.text(linked ? ("§7Linked Account: §f" + username) : "§cAccount Not Linked (/website link)"));
+                            ovm.lore(lore);
+                            overview.setItemMeta(ovm);
+                        }
+                        inv.setItem(13, overview);
+
+                        // Slot 10: Deposit 100
+                        ItemStack dep100 = new ItemStack(Material.GOLD_NUGGET);
+                        ItemMeta d100m = dep100.getItemMeta();
+                        if (d100m != null) {
+                            d100m.displayName(net.kyori.adventure.text.Component.text("§a§lDeposit 100 Coins"));
+                            d100m.lore(List.of(
+                                net.kyori.adventure.text.Component.text("§7Move §f100 coins §7from pocket"),
+                                net.kyori.adventure.text.Component.text("§7into your Web Bank account.")
+                            ));
+                            dep100.setItemMeta(d100m);
+                        }
+                        inv.setItem(10, dep100);
+
+                        // Slot 11: Deposit 1,000
+                        ItemStack dep1k = new ItemStack(Material.GOLD_INGOT);
+                        ItemMeta d1km = dep1k.getItemMeta();
+                        if (d1km != null) {
+                            d1km.displayName(net.kyori.adventure.text.Component.text("§a§lDeposit 1,000 Coins"));
+                            d1km.lore(List.of(
+                                net.kyori.adventure.text.Component.text("§7Move §f1,000 coins §7from pocket"),
+                                net.kyori.adventure.text.Component.text("§7into your Web Bank account.")
+                            ));
+                            dep1k.setItemMeta(d1km);
+                        }
+                        inv.setItem(11, dep1k);
+
+                        // Slot 12: Deposit All
+                        ItemStack depAll = new ItemStack(Material.CHEST);
+                        ItemMeta dallm = depAll.getItemMeta();
+                        if (dallm != null) {
+                            dallm.displayName(net.kyori.adventure.text.Component.text("§2§lDeposit ALL Coins"));
+                            dallm.lore(List.of(
+                                net.kyori.adventure.text.Component.text("§7Move all §a" + pocket + " coins §7from"),
+                                net.kyori.adventure.text.Component.text("§7pocket into your Web Bank account.")
+                            ));
+                            depAll.setItemMeta(dallm);
+                        }
+                        inv.setItem(12, depAll);
+
+                        // Slot 14: Withdraw 100
+                        ItemStack with100 = new ItemStack(Material.EMERALD);
+                        ItemMeta w100m = with100.getItemMeta();
+                        if (w100m != null) {
+                            w100m.displayName(net.kyori.adventure.text.Component.text("§b§lWithdraw 100 Coins"));
+                            w100m.lore(List.of(
+                                net.kyori.adventure.text.Component.text("§7Move §f100 coins §7from Web Bank"),
+                                net.kyori.adventure.text.Component.text("§7into your pocket money.")
+                            ));
+                            with100.setItemMeta(w100m);
+                        }
+                        inv.setItem(14, with100);
+
+                        // Slot 15: Withdraw 1,000
+                        ItemStack with1k = new ItemStack(Material.EMERALD_BLOCK);
+                        ItemMeta w1km = with1k.getItemMeta();
+                        if (w1km != null) {
+                            w1km.displayName(net.kyori.adventure.text.Component.text("§b§lWithdraw 1,000 Coins"));
+                            w1km.lore(List.of(
+                                net.kyori.adventure.text.Component.text("§7Move §f1,000 coins §7from Web Bank"),
+                                net.kyori.adventure.text.Component.text("§7into your pocket money.")
+                            ));
+                            with1k.setItemMeta(w1km);
+                        }
+                        inv.setItem(15, with1k);
+
+                        // Slot 16: Withdraw All
+                        ItemStack withAll = new ItemStack(Material.DISPENSER);
+                        ItemMeta wallm = withAll.getItemMeta();
+                        if (wallm != null) {
+                            wallm.displayName(net.kyori.adventure.text.Component.text("§3§lWithdraw ALL Coins"));
+                            wallm.lore(List.of(
+                                net.kyori.adventure.text.Component.text("§7Move all §b" + bank + " coins §7from"),
+                                net.kyori.adventure.text.Component.text("§7Web Bank into your pocket.")
+                            ));
+                            withAll.setItemMeta(wallm);
+                        }
+                        inv.setItem(16, withAll);
+
+                        player.openInventory(inv);
+                        player.playSound(player.getLocation(), Sound.BLOCK_CHEST_OPEN, 0.8f, 1.2f);
+                    });
+                }
+            } catch (Exception e) {
+                getLogger().warning("Failed to open bank GUI: " + e.getMessage());
+            }
+        });
+    }
+
+    private void performBankAction(Player player, String action, long amount) {
+        UUID uuid = player.getUniqueId();
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("uuid", uuid.toString());
+                body.addProperty("action", action);
+                body.addProperty("amount", amount);
+                var resp = post(bankActionUrl, body.toString(), requestTimeout);
+                if (resp != null && resp.statusCode() == 200) {
+                    var obj = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+                    boolean success = obj.has("success") && obj.get("success").getAsBoolean();
+                    String msg = obj.has("message") ? obj.get("message").getAsString() : "";
+                    long pocket = obj.has("pocket_coins") ? obj.get("pocket_coins").getAsLong() : 0;
+                    long bank = obj.has("bank_coins") ? obj.get("bank_coins").getAsLong() : 0;
+
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (!player.isOnline()) return;
+                        if (success) {
+                            player.sendMessage("§a[Bank] " + msg);
+                            player.sendMessage(String.format(Locale.ROOT, "§7 Pocket: §a%d coins §7| Web Bank: §b%d coins", pocket, bank));
+                            player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
+                            // Refresh GUI if open
+                            if (player.getOpenInventory().getTopInventory().getHolder() instanceof BankGuiHolder) {
+                                openBankGui(player);
+                            }
+                        } else {
+                            player.sendMessage("§c[Bank] " + msg);
+                            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                        }
+                    });
+                } else {
+                    getServer().getScheduler().runTask(this, () -> {
+                        if (player.isOnline()) {
+                            player.sendMessage("§c[Bank] Bank service unavailable. Try again shortly.");
+                            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                getLogger().warning("Failed bank action: " + e.getMessage());
             }
         });
     }
