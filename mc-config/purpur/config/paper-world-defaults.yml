@@ -1,0 +1,65 @@
+# World default settings for Paper / Purpur.
+# Keys that are absent fall back to Paper's defaults.
+
+_version: 31
+anticheat:
+  anti-xray:
+    # Built-in asynchronous chunk obfuscation engine (Anti-Xray)
+    enabled: true
+    # Engine Mode 2: Obfuscator mode (hides real ores as stone and scatters fake ores in unexposed blocks)
+    engine-mode: 2
+    # Obfuscate all underground layers from bedrock up to mountain peaks
+    max-block-height: 180
+    # Obscure blocks adjacent to lava until cleared
+    lava-obscures: true
+    # Radius of block updates sent to client on block break
+    update-radius: 2
+    use-permission: false
+    hidden-blocks:
+    # Overworld & Mining Dimension Fuel Ores
+    - copper_ore
+    - deepslate_copper_ore
+    - raw_copper_block
+    - lapis_ore
+    - deepslate_lapis_ore
+    - redstone_ore
+    - deepslate_redstone_ore
+    - emerald_ore
+    - deepslate_emerald_ore
+    - amethyst_block
+    - budding_amethyst
+    # Precious Vanilla Ores
+    - diamond_ore
+    - deepslate_diamond_ore
+    - gold_ore
+    - deepslate_gold_ore
+    - raw_gold_block
+    - iron_ore
+    - deepslate_iron_ore
+    - raw_iron_block
+    - coal_ore
+    - deepslate_coal_ore
+    # Nether Ores
+    - ancient_debris
+    - nether_gold_ore
+    - nether_quartz_ore
+    # Containers & Valuables
+    - chest
+    - trapped_chest
+    - ender_chest
+    - spawner
+    - tnt
+    replacement-blocks:
+    - stone
+    - deepslate
+    - andesite
+    - diorite
+    - granite
+    - tuff
+    - netherrack
+    - basalt
+    - blackstone
+    - cobbled_deepslate
+    - dirt
+    - gravel
+    - oak_planks

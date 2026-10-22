@@ -32,7 +32,8 @@ compose.override.yaml
 /plugin/build/
 /plugin/.gradle/
 
-# Export bundles
+# Local test binaries
+/phantom*
 /project-export-*.tar.gz
 
 # Local visual verification captures (the design brief remains tracked).

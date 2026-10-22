@@ -112,6 +112,13 @@
   - Caddy (`Caddyfile`): Slowloris mitigation via strict HTTP server timeouts (`read_body 10s`, `read_header 5s`, `write 15s`, `idle 120s`), `max_header_size 16KB`, `request_body max_size 10MB`, and automated scanner User-Agent blocking (`sqlmap`, `nikto`, `masscan`, `zgrab`, `nmap`, `dirbuster`, `acunetix`, etc.) returning 403 Forbidden.
   - Axum API burst rate limiter (`rate_limit_global_api` in `src/main.rs`): In-memory sliding window rate limiter on `/api/*` rejecting abusive floods (>25 req/sec sustained per IP) with HTTP 429 immediately without database load.
 
+## Anti-Xray (Engine Mode 2 Obfuscator)
+- Purpur/Paper built-in asynchronous block obfuscation engine configured in `mc-config/purpur/config/paper-world-defaults.yml`.
+- `engine-mode: 2` (obfuscation): hides real hidden ores from X-ray texture packs, cheat client ESP/Freecam (Meteor, Wurst, Aristois), and fills unexposed solid stone/deepslate/netherrack with randomized fake ores in chunk packets sent to clients. Blocks legitimately exposed to air/transparent blocks update dynamically to their real state.
+- `max-block-height: 180` covers diamond/ancient debris layers through high mountain mineral peaks.
+- Covers diamonds, ancient debris, emeralds, gold, iron, copper, lapis, redstone, coal, fuel crystals, amethyst, and valuable containers (chests, trapped chests, ender chests, spawners, TNT).
+- Runs fully off-thread during chunk packet serialization with zero main-thread TPS degradation and full crossplay (Java & Bedrock) support.
+
 ## Player skin uploads
 - `GET /api/players/{uuid}/skin` and multipart `POST` are session-protected and owner-only (`404` otherwise), with `Cache-Control: no-store`. POST requires `X-Player-Skin: upload`, `file` and `model` (`classic`/`slim`). Fully decode the PNG, enforce ≤256 KiB and 64×64/64×32, then re-encode to strip metadata. Accepted uploads return `202`; active uploads `409`, accepted-upload cooldown (30 s) `429`.
 - Migration `0009` stores observed `player_skins` separately (no link FK; survives unlink) and durable `skin_uploads` (FK cascades on unlink). Preserve `queued → signing → ready → saved` and `failed`; the SQL worker resumes after restart, retries network/server/rate-limit errors, has a ten-minute signing deadline and discards PNG bytes after success/failure. MineSkin receives unlisted images; optional `MINESKIN_API_KEY` comes from `.env.docker` and must never be committed.

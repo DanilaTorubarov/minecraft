@@ -556,6 +556,15 @@ Multi-layered protection secures both the web panel and the Minecraft network ag
    - **Caddy**: HTTP timeouts (`read_body 10s`, `read_header 5s`, `write 15s`, `idle 120s`) mitigate Slowloris / slow HTTP attacks. Request bodies are capped at 10MB to block buffer exhaustion attacks. Automated scanner user-agents (sqlmap, nikto, masscan, zgrab, etc.) are immediately rejected with 403 Forbidden.
    - **Axum**: An in-memory sliding-window burst limiter on `/api/*` (`rate_limit_global_api`) enforces a 25 req/sec ceiling per IP, returning 429 Too Many Requests immediately without taxing PostgreSQL.
 
+### Anti-Xray (Engine Mode 2 Obfuscator)
+
+Purpur's native Paper-based asynchronous Anti-Xray engine is enabled with **Engine Mode 2** (`mc-config/purpur/config/paper-world-defaults.yml`).
+- **Mode 2 Obfuscation**: Rather than simply hiding ores as stone (which naive raytracers can still bypass), Mode 2 populates unexposed underground stone, deepslate, and netherrack with randomized fake ores in chunk data packets sent to clients. X-ray texture packs, cheat client ESP, and Freecam (Meteor, Wurst, Aristois, etc.) see an impenetrable sea of fake ores everywhere.
+- **Dynamic Unveiling**: When a block is legitimately mined or exposed to air or transparent blocks, the server immediately sends the authentic block state within a 2-block radius.
+- **Protected Blocks**: Diamonds, ancient debris, emeralds, gold, iron, copper, lapis, redstone, coal, fuel crystals, amethyst clusters, and valuable block entities (chests, trapped chests, ender chests, mob spawners, TNT).
+- **Height Bounds**: Active up to Y=180 (`max-block-height: 180`), protecting both deep underground mining (down to Y=-64) and high mountain emerald/coal seams.
+- **Zero TPS degradation**: Obfuscation runs asynchronously off the server thread during chunk packet serialization, maintaining 20.0 TPS even during heavy player exploration. Full compatibility with Bedrock (Geyser) clients.
+
 That file is **partial** — AuthMe fills in every other key from its own defaults, so it stays small and survives AuthMe upgrades.
 
 > Two things to know. `ProtectInventoryBeforeLogIn` is silently disabled without the PacketEvents plugin; what actually keeps a registered player out of the world until they log in is AuthMe's Paper **pre-join dialog**. And `/website` must stay **out** of `allowCommands` — that list is the pre-login whitelist, and linking must be impossible before authenticating.
