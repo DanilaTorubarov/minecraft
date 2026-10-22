@@ -134,6 +134,7 @@ services:
         https://github.com/SkinsRestorer/SkinsRestorer/releases/download/15.12.6/SkinsRestorer.jar
         https://github.com/BlueMap-Minecraft/BlueMap/releases/download/v5.29/bluemap-5.29-paper.jar
         https://cdn.modrinth.com/data/LJNGWSvH/versions/X7350Avd/grimac-bukkit-2.3.75-8baa16f.jar
+        https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
       # Consumed by paper-global.yml's ${CFG_VELOCITY_SECRET} placeholder.
       CFG_VELOCITY_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
       # Consumed by the link plugin's config.yml placeholder.

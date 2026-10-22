@@ -50,6 +50,14 @@ mkdir -p "$root/mc/velocity" "$root/mc/purpur"
 printf '%s' "$secret" > "$root/mc/velocity/forwarding.secret"
 chmod 644 "$root/mc/velocity/forwarding.secret"
 
+# Floodgate encryption key: shared between Velocity proxy and Purpur backend for Bedrock skins & auth
+mkdir -p "$root/mc/velocity/plugins/floodgate" "$root/mc/purpur/plugins/floodgate"
+if [ ! -f "$root/mc/velocity/plugins/floodgate/key.pem" ]; then
+  openssl rand 16 > "$root/mc/velocity/plugins/floodgate/key.pem"
+fi
+cp "$root/mc/velocity/plugins/floodgate/key.pem" "$root/mc/purpur/plugins/floodgate/key.pem"
+chmod 644 "$root/mc/velocity/plugins/floodgate/key.pem" "$root/mc/purpur/plugins/floodgate/key.pem"
+
 echo "data directories ready under mc/"
 echo
 echo "next: docker compose --env-file .env.docker up -d --build"

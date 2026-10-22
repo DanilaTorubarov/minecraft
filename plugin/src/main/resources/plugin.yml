@@ -5,7 +5,7 @@ description: Links a Minecraft account to a web panel account and reports per-pl
 api-version: '1.21'
 # Hard dependency: the plugin calls AuthMeApi, and AuthMe must be enabled first.
 depend: [AuthMe, SkinsRestorer]
-softdepend: [BlueMap]
+softdepend: [BlueMap, floodgate]
 commands:
     services:
         description: Quote or confirm an optional iron-item repair after login.

@@ -3429,6 +3429,22 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         });
                     } else {
                         property = skins.getPlayerStorage().getSkinForPlayer(uuid, username, false).orElse(null);
+                        if (property == null) {
+                            Player online = getServer().getPlayer(uuid);
+                            if (online != null && online.isOnline()) {
+                                try {
+                                    for (var prop : online.getPlayerProfile().getProperties()) {
+                                        if ("textures".equalsIgnoreCase(prop.getName()) && prop.getValue() != null && !prop.getValue().isEmpty()) {
+                                            property = net.skinsrestorer.api.property.SkinProperty.of(
+                                                prop.getValue(),
+                                                prop.getSignature() != null ? prop.getSignature() : ""
+                                            );
+                                            break;
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        }
                     }
                     String body = "{\"uuid\":\"" + uuid + "\",\"value\":"
                         + (property == null ? "null" : "\"" + jsonEscape(property.getValue()) + "\"")
