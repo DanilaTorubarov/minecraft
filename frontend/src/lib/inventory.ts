@@ -1,9 +1,16 @@
 import type { InventorySlot } from './api'
 
+/**
+ * Strips Minecraft color codes (§0-§f, §k-§r) and clean up raw string brackets.
+ */
+export function cleanItemName(name: string): string {
+  return name.replace(/§[0-9a-fk-or]/gi, '').replace(/^\[|\]$/g, '').trim()
+}
+
 /** The plain name a bubble talks about: the rename, or the item key with `minecraft:` and underscores tidied. */
 export function itemName(slot: NonNullable<InventorySlot>): string {
   if (slot.display_name) {
-    return slot.display_name
+    return cleanItemName(slot.display_name)
   }
   const bare = slot.key.replace(/^minecraft:/, '').replace(/_/g, ' ')
   return bare.charAt(0).toUpperCase() + bare.slice(1)

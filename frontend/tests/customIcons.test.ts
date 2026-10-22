@@ -109,4 +109,30 @@ describe('custom item and fuel crystal icons', () => {
     assert.equal(isProtectionCoreItem(vanillaDiamond), false)
     assert.equal(getCustomItemIcon(vanillaDiamond), null)
   })
+
+  it('resolves dedicated custom icons for Raid TNT and Breach Charges', () => {
+    const raidTnt: InventorySlot = {
+      key: 'minecraft:tnt',
+      amount: 10,
+      damage: null,
+      max_damage: null,
+      display_name: '[§c§lRaid TNT]',
+      enchantments: {},
+      icon: null,
+      fingerprint: 'tnt-1',
+    }
+    assert.notEqual(getCustomItemIcon(raidTnt), null)
+
+    const breachCharge: InventorySlot = {
+      key: 'minecraft:tnt',
+      amount: 1,
+      damage: null,
+      max_damage: null,
+      display_name: '[§c§lBreach Charge]',
+      enchantments: {},
+      icon: null,
+      fingerprint: 'charge-1',
+    }
+    assert.notEqual(getCustomItemIcon(breachCharge), null)
+  })
 })

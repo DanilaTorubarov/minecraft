@@ -279,6 +279,117 @@ export const FUEL_TIER_4_ICON =
   <circle cx="48" cy="38" r="1.2" fill="#ffffff"/>
 </svg>`)
 
+export const RAID_TNT_ICON =
+  `data:image/svg+xml;utf8,` +
+  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <radialGradient id="tnt-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff4444" stop-opacity="0.8"/>
+      <stop offset="60%" stop-color="#cc0000" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#880000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="tnt-top" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f87171"/>
+      <stop offset="50%" stop-color="#dc2626"/>
+      <stop offset="100%" stop-color="#991b1b"/>
+    </linearGradient>
+    <linearGradient id="tnt-side-left" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ef4444"/>
+      <stop offset="100%" stop-color="#b91c1c"/>
+    </linearGradient>
+    <linearGradient id="tnt-side-right" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#dc2626"/>
+      <stop offset="100%" stop-color="#7f1d1d"/>
+    </linearGradient>
+    <linearGradient id="tnt-band" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fef08a"/>
+      <stop offset="50%" stop-color="#eab308"/>
+      <stop offset="100%" stop-color="#ca8a04"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Ambient Glow -->
+  <circle cx="32" cy="34" r="26" fill="url(#tnt-glow)"/>
+
+  <!-- Isometric TNT Block -->
+  <!-- Top Face -->
+  <polygon points="32,8 52,18 32,28 12,18" fill="url(#tnt-top)" stroke="#7f1d1d" stroke-width="1.2"/>
+  
+  <!-- Left Face -->
+  <polygon points="12,18 32,28 32,52 12,42" fill="url(#tnt-side-left)" stroke="#7f1d1d" stroke-width="1.2"/>
+  <!-- Right Face -->
+  <polygon points="32,28 52,18 52,42 32,52" fill="url(#tnt-side-right)" stroke="#7f1d1d" stroke-width="1.2"/>
+
+  <!-- Warning Yellow Caution Band -->
+  <!-- Left Face Band -->
+  <polygon points="12,27 32,37 32,43 12,33" fill="url(#tnt-band)"/>
+  <!-- Right Face Band -->
+  <polygon points="32,37 52,27 52,33 32,43" fill="url(#tnt-band)"/>
+
+  <!-- Fuse on top -->
+  <path d="M32,18 Q34,12 36,9 Q38,6 37,3" fill="none" stroke="#d4d4d8" stroke-width="2" stroke-linecap="round"/>
+  <!-- Spark -->
+  <circle cx="37" cy="3" r="2" fill="#fef08a"/>
+  <circle cx="37" cy="3" r="1.2" fill="#ef4444"/>
+
+  <!-- Hazard Stripes on Caution Band -->
+  <line x1="16" y1="29" x2="21" y2="33.5" stroke="#1c1917" stroke-width="2" stroke-linecap="round"/>
+  <line x1="24" y1="33" x2="29" y2="37.5" stroke="#1c1917" stroke-width="2" stroke-linecap="round"/>
+  <line x1="35" y1="37.5" x2="40" y2="33" stroke="#1c1917" stroke-width="2" stroke-linecap="round"/>
+  <line x1="43" y1="33.5" x2="48" y2="29" stroke="#1c1917" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Specular sheen on top -->
+  <polygon points="32,10 48,18 32,26 16,18" fill="white" opacity="0.25"/>
+</svg>`)
+
+export const BREACH_CHARGE_ICON =
+  `data:image/svg+xml;utf8,` +
+  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <radialGradient id="bc-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.8"/>
+      <stop offset="60%" stop-color="#b45309" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#78350f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bc-metal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#71717a"/>
+      <stop offset="50%" stop-color="#3f3f46"/>
+      <stop offset="100%" stop-color="#18181b"/>
+    </linearGradient>
+    <linearGradient id="bc-core" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#dc2626"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Ambient Glow -->
+  <circle cx="32" cy="32" r="28" fill="url(#bc-glow)"/>
+
+  <!-- Heavy Armored Frame -->
+  <rect x="12" y="14" width="40" height="36" rx="6" fill="url(#bc-metal)" stroke="#a1a1aa" stroke-width="1.5"/>
+
+  <!-- Energy Chamber -->
+  <rect x="18" y="20" width="28" height="24" rx="4" fill="url(#bc-core)" stroke="#fef08a" stroke-width="1.2"/>
+
+  <!-- Warning Stripes -->
+  <line x1="22" y1="20" x2="30" y2="44" stroke="#18181b" stroke-width="2.5" opacity="0.75"/>
+  <line x1="34" y1="20" x2="42" y2="44" stroke="#18181b" stroke-width="2.5" opacity="0.75"/>
+
+  <!-- Flashing Alarm Light on top -->
+  <rect x="27" y="8" width="10" height="7" rx="2" fill="#ef4444" stroke="#fee2e2" stroke-width="1"/>
+  <circle cx="32" cy="11.5" r="2.5" fill="#ffffff" opacity="0.9"/>
+
+  <!-- Corner Reinforcement Bolts -->
+  <circle cx="16" cy="18" r="1.5" fill="#d4d4d8"/>
+  <circle cx="48" cy="18" r="1.5" fill="#d4d4d8"/>
+  <circle cx="16" cy="46" r="1.5" fill="#d4d4d8"/>
+  <circle cx="48" cy="46" r="1.5" fill="#d4d4d8"/>
+
+  <!-- Specular highlight -->
+  <rect x="14" y="16" width="36" height="3" rx="1.5" fill="#ffffff" opacity="0.35"/>
+</svg>`)
+
 /**
  * Checks if a slot holds a Protection Core.
  */
@@ -313,6 +424,15 @@ export function getCustomItemIcon(slot: InventorySlot | null | undefined): strin
   }
   if (name.includes('tier 4 fuel') || name.includes('astral void crystal')) {
     return FUEL_TIER_4_ICON
+  }
+  if (name.includes('raid tnt') || (slot.key === 'minecraft:tnt' && name.includes('raid'))) {
+    return RAID_TNT_ICON
+  }
+  if (name.includes('breach charge') || (slot.key === 'minecraft:tnt' && name.includes('breach'))) {
+    return BREACH_CHARGE_ICON
+  }
+  if (slot.key === 'minecraft:tnt') {
+    return RAID_TNT_ICON
   }
   return null
 }

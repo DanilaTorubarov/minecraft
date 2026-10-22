@@ -3498,10 +3498,12 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
         String display = null;
         try {
-            var displayComponent = item.displayName();
-            display = displayComponent == null
-                ? null
-                : net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(displayComponent);
+            var displayComponent = item.getItemMeta() != null && item.getItemMeta().hasDisplayName()
+                ? item.getItemMeta().displayName()
+                : null;
+            if (displayComponent != null) {
+                display = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(displayComponent);
+            }
         } catch (Exception error) {
             display = null;
         }
@@ -3871,6 +3873,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             "assets/minecraft/textures/block/" + name + "_top.png",
             "assets/minecraft/textures/block/" + name + "_side.png",
             "assets/minecraft/textures/block/" + name + "_front.png",
+            "assets/minecraft/textures/block/" + name + "_side0.png",
             "assets/minecraft/textures/item/armor/" + name + ".png")) {
             try (InputStream stream = getResource(path)) {
                 if (stream == null) {
