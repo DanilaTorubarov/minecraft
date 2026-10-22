@@ -27,6 +27,9 @@
 
 settings:
     restrictions:
+        # Regex pattern of allowed characters in the player name.
+        # Floodgate prepends '.' to Bedrock usernames (e.g. .Kokochi7232), so '.' must be allowed.
+        allowedNicknameCharacters: '[a-zA-Z0-9_.]*'
         # Up to four in-game registrations may share one IP address.
         maxRegPerIp: 4
         # A single IP may only have this many players logged in at once.
