@@ -22,7 +22,7 @@ general:
   # Should Sonar log players' IP addresses in console?
   log-player-addresses: true
   # Maximum number of players online with the same IP address
-  max-online-per-ip: 3
+  max-online-per-ip: 50
 
 # Sensitivity settings for the attack tracker
 # Only edit this if you know what you're doing

@@ -30,13 +30,15 @@ settings:
         # Regex pattern of allowed characters in the player name.
         # Floodgate prepends '.' to Bedrock usernames (e.g. .Kokochi7232), so '.' must be allowed.
         allowedNicknameCharacters: '[a-zA-Z0-9_.]*'
-        # Up to four in-game registrations may share one IP address.
-        maxRegPerIp: 4
-        # A single IP may only have this many players logged in at once.
-        # 0 means unlimited, which lets one host drive a credential-stuffing run.
-        maxLoginPerIp: 4
+        # Up to 100 in-game registrations may share one IP address (supports LAN, multi-account, and console players).
+        maxRegPerIp: 100
+        # A single IP may have up to 100 players logged in at once.
+        maxLoginPerIp: 100
         # Same, for accounts allowed to join (registered or not).
-        maxJoinPerIp: 4
+        maxJoinPerIp: 100
+        # Time in seconds players have to log in or register (300s / 5min for console/Xbox controller typing).
+        loginTimeout: 300
+        registerTimeout: 300
         # AuthMe can tell a player which other accounts share their IP. On a
         # cracked server that is free reconnaissance for an attacker.
         displayOtherAccounts: false
@@ -49,13 +51,10 @@ settings:
         minPasswordLength: 6
 
     protection:
-        # Enable backend AntiBot protection against automated login/register floods
+        # Sonar at the Velocity proxy handles bot mitigation and attack detection.
+        # Disable AuthMe's secondary antiBot gate to avoid blocking console/Xbox reconnects.
         enableProtection: true
-        enableAntiBot: true
-        antiBotInterval: 5
-        antiBotSensibility: 10
-        antiBotDuration: 10
-        antiBotDelay: 30
+        enableAntiBot: false
         geoIpDatabase:
             enabled: false
         quickCommands:

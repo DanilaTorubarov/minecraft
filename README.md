@@ -124,9 +124,9 @@ only a successful login clears that escalation history.
 The defaults, all overridable in `.env.docker`:
 
 ```dotenv
-LOGIN_IP_LIMIT=20              # login attempts per IP per window
+LOGIN_IP_LIMIT=60              # login attempts per IP per window
 LOGIN_IP_WINDOW_SECONDS=900    # 15 minutes
-REGISTER_IP_LIMIT=10           # registrations per IP per window
+REGISTER_IP_LIMIT=60           # registrations per IP per window
 REGISTER_IP_WINDOW_SECONDS=3600
 LOCKOUT_THRESHOLD=10           # failures before an account backs off
 LOCKOUT_WINDOW_SECONDS=900     # failures older than this stop counting
@@ -530,8 +530,9 @@ It is configured for a hostile environment out of the box (`allowChat: false`, `
 | --- | --- | --- | --- |
 | `passwordHash` | `SHA256` | `BCRYPT` | SHA-256 is fast; cheap to brute-force if `authme.db` leaks |
 | `minPasswordLength` | `5` | `6` | Matches the website minimum for new/changed passwords |
-| `maxRegPerIp` | `1` | `4` | Up to four Minecraft registrations from one IP |
-| `maxLoginPerIp` / `maxJoinPerIp` | `0` (unlimited) | `4` | Allows those four accounts to join/log in while retaining a per-IP limit |
+| `maxRegPerIp` | `1` | `100` | Up to 100 Minecraft registrations from one IP (supports LAN & console/Xbox players) |
+| `maxLoginPerIp` / `maxJoinPerIp` | `0` (unlimited) | `100` | Allows those accounts to join/log in while retaining a per-IP limit |
+| `loginTimeout` / `registerTimeout` | `30` | `300` | 5 minutes to enter credentials (essential for Xbox / controller keyboard typing) |
 | `displayOtherAccounts` | `true` | `false` | Otherwise it tells a player which other accounts share their IP |
 
 ### Anticheat (GrimAC)
@@ -548,8 +549,8 @@ The server runs **GrimAC** (`2.3.75-8baa16f`), an asynchronous, predictive 1:1 p
 Multi-layered protection secures both the web panel and the Minecraft network against DDoS, automated bots, and connection floods:
 
 1. **Velocity Proxy Hardening & AntiBot**:
-   - **Sonar AntiBot** (`v2.1.53` on Velocity): Detects bot join floods via automated attack tracking (`attack-tracker`). When bot waves occur, verification mode (`timing: DURING_ATTACK`) activates, while normal players connect seamlessly during peace time. Bedrock players (`check-geyser-players: false`) bypass verification to preserve frictionless crossplay. Maximum of 3 online players per IP address.
-   - **Network & Packet Limiting** (`mc-config/velocity/velocity.toml`): Rapid login attempts from the same IP are throttled (`login-ratelimit = 2000` ms). Connection and read timeouts (5s) prevent slowloris TCP exhaustion. `[packet-limiter]` drops packet-flooding clients (350 packets/s, 1 MB/s wire throughput, 5 MB/s decompression bomb protection).
+   - **Sonar AntiBot** (`v2.1.53` on Velocity): Detects bot join floods via automated attack tracking (`attack-tracker`). When bot waves occur, verification mode (`timing: DURING_ATTACK`) activates, while normal players connect seamlessly during peace time. Bedrock players (`check-geyser-players: false`) bypass verification to preserve frictionless crossplay. Maximum of 50 online players per IP address.
+   - **Network & Packet Limiting** (`mc-config/velocity/velocity.toml`): Rapid login attempts from the same IP are throttled (`login-ratelimit = 500` ms). Connection and read timeouts (15s) prevent slowloris TCP exhaustion. `[packet-limiter]` drops packet-flooding clients (350 packets/s, 1 MB/s wire throughput, 5 MB/s decompression bomb protection).
 2. **Backend Server Protection (AuthMe)**:
    - AuthMe anti-bot is enabled (`enableProtection: true`, `enableAntiBot: true`) to throttle the authentication gate during join spikes, and kicks bots issuing instant commands on join (`denyCommandsBeforeMilliseconds: 1000`).
 3. **Web Proxy & API Rate Limiting (Caddy & Axum)**:

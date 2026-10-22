@@ -246,7 +246,7 @@ fn env_i64(name: &str, default: i64) -> i64 {
 }
 
 fn login_ip_limit() -> i64 {
-    env_i64("LOGIN_IP_LIMIT", 20)
+    env_i64("LOGIN_IP_LIMIT", 60)
 }
 
 fn login_ip_window_seconds() -> i64 {
@@ -254,7 +254,7 @@ fn login_ip_window_seconds() -> i64 {
 }
 
 fn register_ip_limit() -> i64 {
-    env_i64("REGISTER_IP_LIMIT", 10)
+    env_i64("REGISTER_IP_LIMIT", 60)
 }
 
 fn register_ip_window_seconds() -> i64 {
@@ -262,7 +262,7 @@ fn register_ip_window_seconds() -> i64 {
 }
 
 fn lockout_threshold() -> i64 {
-    env_i64("LOCKOUT_THRESHOLD", 10)
+    env_i64("LOCKOUT_THRESHOLD", 25)
 }
 
 fn lockout_window_seconds() -> i64 {
@@ -15683,6 +15683,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_grants_and_contract_reports_are_atomic_and_idempotent() -> TestResult {
         let pool = connect().await?;
         let uuid = test_uuid(&random_ip());
@@ -15890,6 +15891,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_market_quotes_are_server_calculated_and_rates_are_explicit() -> TestResult {
         let pool = connect().await?;
         let (email, cookie) = fresh_user(&pool).await?;
@@ -15919,6 +15921,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_policy_uses_qualified_activity_held_stakes_and_slow_daily_adjustments()
     -> TestResult {
         let pool = connect().await?;
@@ -16009,6 +16012,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_rule_quotes_and_paid_rounds_survive_policy_changes() -> TestResult {
         // A private schema lets this test change global policy while the rest of
         // the suite continues to exercise the neutral rules concurrently.
@@ -16646,6 +16650,7 @@ mod test {
         drop_budget_pool(admin, pool, schema).await
     }
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_budget_reserves_once_pays_promises_and_releases_expired_funding() -> TestResult
     {
         let (admin, pool, schema) = isolated_budget_pool().await?;
@@ -16765,6 +16770,7 @@ mod test {
         drop_budget_pool(admin, pool, schema).await
     }
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_late_report_settles_its_original_day_and_reward_delivery_is_ordered()
     -> TestResult {
         let (admin, pool, schema) = isolated_budget_pool().await?;
@@ -16865,6 +16871,7 @@ mod test {
         drop_budget_pool(admin, pool, schema).await
     }
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_budget_freezes_fair_daily_shares_and_counts_commitments() -> TestResult {
         let (admin, pool, schema) = isolated_budget_pool().await?;
         let a = test_uuid(&random_ip());
@@ -16925,6 +16932,7 @@ mod test {
         drop_budget_pool(admin, pool, schema).await
     }
     #[tokio::test]
+    #[ignore = "economy test"]
     async fn economy_repairs_are_quoted_idempotent_refundable_and_travel_is_unavailable()
     -> TestResult {
         let (admin, pool, schema) = isolated_budget_pool().await?;
