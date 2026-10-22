@@ -219,8 +219,19 @@ test('damaged items preserve damage values and format durability correctly', asy
     icon: null,
   }
   const desc = slotDescription(damagedSword)
-  assert.match(desc, /75% durability left/)
+  assert.match(desc, /1171\/1561 durability/)
   assert.match(desc, /sharpness 5/)
+})
+
+test('durability reads as remaining uses out of the maximum, never a rounded percent', async () => {
+  const { durabilityText } = await import('../src/lib/inventory.ts')
+  const sword = { key: 'minecraft:diamond_sword', amount: 1, display_name: null, enchantments: {}, damage: 390, max_damage: 1561, icon: null }
+  assert.equal(durabilityText(sword), '1171/1561')
+  assert.equal(durabilityText({ ...sword, damage: 0 }), '1561/1561')
+  assert.equal(durabilityText({ ...sword, damage: 1561 }), '0/1561')
+  // Wear beyond the maximum (a stale snapshot) must not print a negative count.
+  assert.equal(durabilityText({ ...sword, damage: 1700 }), '0/1561')
+  assert.equal(durabilityText({ ...sword, max_damage: null }), null)
 })
 
 test('getLeaderboards fetches category rankings and parses entries', async () => {

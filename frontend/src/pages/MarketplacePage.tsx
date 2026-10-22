@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError, buyMarketListing, cancelMarketListing, getMarketplace, giftMarketListing, type MarketListing, type MarketPurchase, type MarketView, type StatsAccount } from '../lib/api'
 import ItemBubble from '../components/ItemBubble'
-import { itemName, slotDescription } from '../lib/inventory'
+import { durabilityText, itemName, slotDescription } from '../lib/inventory'
 import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 
@@ -179,8 +179,8 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
         <div className="market-listing-copy">
           <button className="market-item-name" onClick={() => choose(listing)}>
             {itemName(listing.item)}
-            {listing.item.damage !== null && listing.item.max_damage !== null && listing.item.damage > 0 && (
-              <span className="market-durability-pill"> ({Math.max(0, Math.round(((listing.item.max_damage - listing.item.damage) / listing.item.max_damage) * 100))}% durability)</span>
+            {listing.item.damage !== null && listing.item.damage > 0 && durabilityText(listing.item) !== null && (
+              <span className="market-durability-pill"> ({durabilityText(listing.item)} durability)</span>
             )}
           </button>
           <span>{listing.remaining} available · {listing.mine ? 'Your listing' : listing.seller}</span>

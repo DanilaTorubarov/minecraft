@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { itemName, slotDescription } from '../lib/inventory'
+import { durabilityParts, itemName, slotDescription } from '../lib/inventory'
 import type { InventorySlot } from '../lib/api'
 import perfCenterIcon from '../assets/icons/vista-perf-center.png'
 
@@ -51,10 +51,10 @@ export default function ItemBubble({ slot, label, onSelect }: { slot: InventoryS
   }
   const description = slotDescription(slot)
   const enchanted = Object.keys(slot.enchantments).length > 0
-  const durability = slot.damage !== null && slot.max_damage !== null && slot.max_damage > 0
-    ? Math.max(0, Math.min(1, (slot.max_damage - slot.damage) / slot.max_damage))
-    : null
-  const worn = durability !== null && slot.damage !== null && slot.damage > 0
+  const wear = durabilityParts(slot)
+  const worn = wear !== null && slot.damage !== null && slot.damage > 0
+  // The pill prints exact numbers; the level only decides how loudly to colour them.
+  const durabilityLeft = wear === null ? 0 : Math.min(1, wear.remaining / wear.max)
   return (
     <div className="inv-cell">
       <button
@@ -80,12 +80,13 @@ export default function ItemBubble({ slot, label, onSelect }: { slot: InventoryS
           onError={() => setFailedIcon(slot.icon)}
         />
         {slot.amount > 1 && <span className="inv-amount">{slot.amount}</span>}
-        {worn && (
+        {worn && wear && (
           <span
             className="inv-durability"
-            data-level={durability > 0.5 ? 'ok' : durability > 0.25 ? 'warn' : 'low'}
-            style={{ width: `${Math.round(durability * 100)}%` }}
-          />
+            data-level={durabilityLeft > 0.5 ? 'ok' : durabilityLeft > 0.25 ? 'warn' : 'low'}
+          >
+            {wear.remaining}<span className="inv-durability-max">/{wear.max}</span>
+          </span>
         )}
       </button>
       {label && <span className="inv-label">{label}</span>}

@@ -15,14 +15,35 @@ function enchantmentNames(slot: NonNullable<InventorySlot>): string {
     .join(', ')
 }
 
+/**
+ * Remaining uses out of the item's maximum wear, or null when the item cannot wear.
+ * The exact pair is what a player trading a tool actually needs; a percentage rounded
+ * to a whole number hides too much.
+ */
+export function durabilityParts(slot: NonNullable<InventorySlot>): { remaining: number; max: number } | null {
+  if (slot.damage === null || slot.max_damage === null || slot.max_damage <= 0) {
+    return null
+  }
+  return {
+    remaining: Math.max(0, slot.max_damage - Math.max(0, slot.damage)),
+    max: slot.max_damage,
+  }
+}
+
+/** The same pair as text, e.g. `1171/1561`. */
+export function durabilityText(slot: NonNullable<InventorySlot>): string | null {
+  const parts = durabilityParts(slot)
+  return parts === null ? null : `${parts.remaining}/${parts.max}`
+}
+
 export function slotDescription(slot: NonNullable<InventorySlot>): string {
   const parts = [itemName(slot)]
   if (slot.amount > 1) {
     parts.push(`× ${slot.amount}`)
   }
-  if (slot.damage !== null && slot.max_damage !== null && slot.max_damage > 0) {
-    const left = Math.max(0, Math.round(((slot.max_damage - slot.damage) / slot.max_damage) * 100))
-    parts.push(`${left}% durability left`)
+  const durability = durabilityText(slot)
+  if (durability !== null) {
+    parts.push(`${durability} durability`)
   }
   const enchantments = enchantmentNames(slot)
   if (enchantments !== '') {
