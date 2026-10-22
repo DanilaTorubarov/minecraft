@@ -1762,6 +1762,104 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
     }
 
+    // --- Dynamic Chest GUI Holders -------------------------------------------
+
+    public static final class PsMenuHolder implements InventoryHolder {
+        private final com.google.gson.JsonArray blocks;
+        private final long coinBalance;
+        private Inventory inventory;
+
+        public PsMenuHolder(com.google.gson.JsonArray blocks, long coinBalance) {
+            this.blocks = blocks;
+            this.coinBalance = coinBalance;
+        }
+
+        public com.google.gson.JsonArray getBlocks() { return blocks; }
+        public long getCoinBalance() { return coinBalance; }
+        public void setInventory(Inventory inventory) { this.inventory = inventory; }
+        @Override public Inventory getInventory() { return inventory; }
+    }
+
+    public static final class MinerShopHolder implements InventoryHolder {
+        private final long coinBalance;
+        private Inventory inventory;
+
+        public MinerShopHolder(long coinBalance) {
+            this.coinBalance = coinBalance;
+        }
+
+        public long getCoinBalance() { return coinBalance; }
+        public void setInventory(Inventory inventory) { this.inventory = inventory; }
+        @Override public Inventory getInventory() { return inventory; }
+    }
+
+    public static final class RaidShopHolder implements InventoryHolder {
+        private final long coinBalance;
+        private Inventory inventory;
+
+        public RaidShopHolder(long coinBalance) {
+            this.coinBalance = coinBalance;
+        }
+
+        public long getCoinBalance() { return coinBalance; }
+        public void setInventory(Inventory inventory) { this.inventory = inventory; }
+        @Override public Inventory getInventory() { return inventory; }
+    }
+
+    public static final class MailboxHolder implements InventoryHolder {
+        private final com.google.gson.JsonArray pendingList;
+        private Inventory inventory;
+
+        public MailboxHolder(com.google.gson.JsonArray pendingList) {
+            this.pendingList = pendingList;
+        }
+
+        public com.google.gson.JsonArray getPendingList() { return pendingList; }
+        public void setInventory(Inventory inventory) { this.inventory = inventory; }
+        @Override public Inventory getInventory() { return inventory; }
+    }
+
+    @EventHandler
+    public void onDynamicGuiClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        InventoryHolder holder = event.getInventory().getHolder();
+
+        if (holder instanceof PsMenuHolder psHolder) {
+            event.setCancelled(true);
+            if (event.getClickedInventory() != event.getInventory()) return;
+            handlePsMenuClick(player, psHolder, event.getSlot());
+            return;
+        }
+        if (holder instanceof MinerShopHolder shopHolder) {
+            event.setCancelled(true);
+            if (event.getClickedInventory() != event.getInventory()) return;
+            handleMinerShopClick(player, shopHolder, event.getSlot());
+            return;
+        }
+        if (holder instanceof RaidShopHolder raidHolder) {
+            event.setCancelled(true);
+            if (event.getClickedInventory() != event.getInventory()) return;
+            handleRaidShopClick(player, raidHolder, event.getSlot());
+            return;
+        }
+        if (holder instanceof MailboxHolder mailHolder) {
+            event.setCancelled(true);
+            if (event.getClickedInventory() != event.getInventory()) return;
+            handleMailboxClick(player, mailHolder, event.getSlot());
+            return;
+        }
+    }
+
+    @EventHandler
+    public void onDynamicGuiDrag(InventoryDragEvent event) {
+        InventoryHolder holder = event.getInventory().getHolder();
+        if (holder instanceof PsMenuHolder || holder instanceof MinerShopHolder
+                || holder instanceof RaidShopHolder || holder instanceof MailboxHolder) {
+            event.setCancelled(true);
+        }
+    }
+
+
     // --- Telling unlinked players where to go ---------------------------------
 
     /**
@@ -4611,8 +4709,217 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         });
     }
 
+    private void openPsMenuGui(Player player) {
+        UUID uuid = player.getUniqueId();
+        player.sendMessage("§e[Private] Opening protection manager...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            var listResp = get(internalBase + "/private/list?uuid=" + uuid, requestTimeout);
+            long coins = 0L;
+            var balResp = post(internalBase + "/balance", "{\"uuid\":\"" + uuid + "\"}", requestTimeout);
+            if (balResp != null && balResp.statusCode() == 200) {
+                try {
+                    coins = com.google.gson.JsonParser.parseString(balResp.body()).getAsJsonObject().get("coins").getAsLong();
+                } catch (Exception ignored) {}
+            }
+            long finalCoins = coins;
+            com.google.gson.JsonArray array = new com.google.gson.JsonArray();
+            if (listResp != null && listResp.statusCode() == 200) {
+                try {
+                    array = com.google.gson.JsonParser.parseString(listResp.body()).getAsJsonArray();
+                } catch (Exception ignored) {}
+            }
+            com.google.gson.JsonArray finalArray = array;
+
+            getServer().getScheduler().runTask(this, () -> {
+                if (!player.isOnline()) return;
+
+                PsMenuHolder holder = new PsMenuHolder(finalArray, finalCoins);
+                Inventory inv = org.bukkit.Bukkit.createInventory(holder, 27, Component.text("§8Protection Cores & Travel"));
+                holder.setInventory(inv);
+
+                ItemStack pane = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+                ItemMeta pm = pane.getItemMeta();
+                if (pm != null) {
+                    pm.displayName(Component.text(" "));
+                    pane.setItemMeta(pm);
+                }
+                for (int i = 0; i < 27; i++) {
+                    inv.setItem(i, pane.clone());
+                }
+
+                Map<Integer, com.google.gson.JsonObject> owned = new HashMap<>();
+                for (var elem : finalArray) {
+                    var obj = elem.getAsJsonObject();
+                    owned.put(obj.get("block_index").getAsInt(), obj);
+                }
+
+                // Slots for cores 1, 2, 3: 11, 13, 15
+                int[] coreSlots = {11, 13, 15};
+                for (int idx = 1; idx <= 3; idx++) {
+                    int slot = coreSlots[idx - 1];
+                    if (owned.containsKey(idx)) {
+                        var obj = owned.get(idx);
+                        boolean placed = obj.get("placed").getAsBoolean();
+                        long fuel = obj.get("fuel_seconds").getAsLong();
+                        int size = obj.get("size").getAsInt();
+                        int chunks = PrivateRules.radiusToChunks(PrivateRules.sizeToRadius(size));
+
+                        ItemStack coreItem = new ItemStack(placed ? (fuel > 0 ? Material.BEACON : Material.LODESTONE) : Material.RESPAWN_ANCHOR);
+                        ItemMeta meta = coreItem.getItemMeta();
+                        if (meta != null) {
+                            meta.displayName(Component.text(String.format(Locale.ROOT, "§6§lProtection Core #%d", idx)));
+                            List<Component> lore = new ArrayList<>();
+                            if (placed) {
+                                String loc = String.format(Locale.ROOT, "%s (%d, %d, %d)",
+                                    obj.get("world").getAsString(), obj.get("x").getAsInt(), obj.get("y").getAsInt(), obj.get("z").getAsInt());
+                                lore.add(Component.text("§7Status: §aPlaced & Active"));
+                                lore.add(Component.text("§7Location: §f" + loc));
+                                lore.add(Component.text(String.format(Locale.ROOT, "§7Size: §e%dx%d blocks §7(%dx%d chunks)", size, size, chunks, chunks)));
+                                lore.add(Component.text("§7Fuel remaining: " + (fuel > 0 ? "§a" + ExpeditionRules.formatDuration(fuel) : "§cDormant (No Fuel)")));
+                                lore.add(Component.text(""));
+                                if (fuel > 0) {
+                                    lore.add(Component.text("§a§l▶ Click to Fast-Travel §7(25 coins)"));
+                                } else {
+                                    lore.add(Component.text("§cCannot fast-travel: Core needs fuel crystals"));
+                                }
+                            } else {
+                                boolean inInv = hasCoreItemInInventory(player, idx);
+                                lore.add(Component.text("§7Status: §ePurchased (Not Placed)"));
+                                if (inInv) {
+                                    lore.add(Component.text("§a✔ Currently in your inventory (Place down to activate)"));
+                                } else {
+                                    lore.add(Component.text("§cMissing / Not in inventory"));
+                                    lore.add(Component.text(""));
+                                    lore.add(Component.text("§e§l▶ Click to Reclaim for Free"));
+                                }
+                            }
+                            meta.lore(lore);
+                            coreItem.setItemMeta(meta);
+                        }
+                        inv.setItem(slot, coreItem);
+                    } else {
+                        // Not purchased yet
+                        long price = PrivateRules.nextBlockPrice(idx - 1);
+                        boolean canAfford = finalCoins >= price + 1000L;
+                        boolean isNextInQueue = (idx == owned.size() + 1);
+
+                        ItemStack lockItem = new ItemStack(isNextInQueue ? Material.NETHER_STAR : Material.BARRIER);
+                        ItemMeta meta = lockItem.getItemMeta();
+                        if (meta != null) {
+                            meta.displayName(Component.text(String.format(Locale.ROOT, "§7Protection Core #%d §8[Locked]", idx)));
+                            List<Component> lore = new ArrayList<>();
+                            lore.add(Component.text(String.format(Locale.ROOT, "§7Purchase Cost: §6%,d coins", price)));
+                            lore.add(Component.text("§7Territory: 2x2 up to 16x16 chunks, full world height"));
+                            lore.add(Component.text(""));
+                            if (isNextInQueue) {
+                                if (canAfford) {
+                                    lore.add(Component.text("§a§l▶ Click to Purchase!"));
+                                } else {
+                                    lore.add(Component.text("§cInsufficient coins (1,000c reserve required)"));
+                                }
+                            } else {
+                                lore.add(Component.text("§8Purchase Core #" + (idx - 1) + " first"));
+                            }
+                            meta.lore(lore);
+                            lockItem.setItemMeta(meta);
+                        }
+                        inv.setItem(slot, lockItem);
+                    }
+                }
+
+                // Balance info at slot 4
+                ItemStack bal = new ItemStack(Material.GOLD_INGOT);
+                ItemMeta bm = bal.getItemMeta();
+                if (bm != null) {
+                    bm.displayName(Component.text("§6§lYour Coin Balance"));
+                    bm.lore(List.of(
+                        Component.text(String.format(Locale.ROOT, "§7Available: §6%,d coins", finalCoins)),
+                        Component.text("§7Fast-travel fee: §e25 coins"),
+                        Component.text("§7Minimum required reserve: §e1,000 coins")
+                    ));
+                    bal.setItemMeta(bm);
+                }
+                inv.setItem(4, bal);
+
+                // Reclaim all button at slot 22
+                ItemStack reclaim = new ItemStack(Material.HOPPER);
+                ItemMeta rm = reclaim.getItemMeta();
+                if (rm != null) {
+                    rm.displayName(Component.text("§e§lReclaim All Missing Cores"));
+                    rm.lore(List.of(
+                        Component.text("§7Recover any unplaced cores that were lost"),
+                        Component.text("§7or destroyed back into your inventory."),
+                        Component.text(""),
+                        Component.text("§e▶ Click to Reclaim")
+                    ));
+                    reclaim.setItemMeta(rm);
+                }
+                inv.setItem(22, reclaim);
+
+                player.openInventory(inv);
+                player.playSound(player.getLocation(), Sound.BLOCK_CHEST_OPEN, 0.8f, 1.2f);
+            });
+        });
+    }
+
+    private void handlePsMenuClick(Player player, PsMenuHolder holder, int slot) {
+        if (slot == 22) {
+            player.closeInventory();
+            reclaimPrivateBlocks(player);
+            return;
+        }
+
+        int targetIdx = switch (slot) {
+            case 11 -> 1;
+            case 13 -> 2;
+            case 15 -> 3;
+            default -> 0;
+        };
+        if (targetIdx == 0) return;
+
+        Map<Integer, com.google.gson.JsonObject> owned = new HashMap<>();
+        for (var elem : holder.getBlocks()) {
+            var obj = elem.getAsJsonObject();
+            owned.put(obj.get("block_index").getAsInt(), obj);
+        }
+
+        if (owned.containsKey(targetIdx)) {
+            var obj = owned.get(targetIdx);
+            boolean placed = obj.get("placed").getAsBoolean();
+            if (placed) {
+                player.closeInventory();
+                handlePrivateTeleport(player, targetIdx);
+            } else {
+                boolean inInv = hasCoreItemInInventory(player, targetIdx);
+                if (inInv) {
+                    player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_YES, 0.8f, 1.0f);
+                    player.sendMessage("§e[Private] Protection Core #" + targetIdx + " is already in your inventory! Place it on the ground.");
+                } else {
+                    player.closeInventory();
+                    player.getInventory().addItem(createProtectionCoreItem(targetIdx));
+                    player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+                    player.sendMessage(String.format(Locale.ROOT,
+                        "§a[Private] Recovered Protection Core #%d for free into your inventory!", targetIdx));
+                }
+            }
+        } else {
+            // Check if it's the next purchasable core
+            if (targetIdx == owned.size() + 1) {
+                player.closeInventory();
+                psCommand(player, new String[]{"buy"});
+            } else {
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
+                player.sendMessage("§c[Private] You must purchase Core #" + (targetIdx - 1) + " first!");
+            }
+        }
+    }
+
     private void psCommand(Player player, String[] args) {
-        if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+        if (args.length == 0 || args[0].equalsIgnoreCase("gui") || args[0].equalsIgnoreCase("menu")) {
+            openPsMenuGui(player);
+            return;
+        }
+        if (args[0].equalsIgnoreCase("help")) {
             player.sendMessage("§6=== Private Block System ===");
             player.sendMessage("§e/ps buy §7— Buy next private block (1/3: 500c, 2/3: 20k, 3/3: 50k)");
             player.sendMessage("§e/ps tp [1|2|3] §7— Fast travel to your placed & fueled core (25c, 3s warmup)");
@@ -5135,8 +5442,171 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
     }
 
+    private void openRaidShopGui(Player player) {
+        UUID uuid = player.getUniqueId();
+        player.sendMessage("§e[Raid] Opening Siege & Armory Depot...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            long coins = 0L;
+            var balResp = post(internalBase + "/balance", "{\"uuid\":\"" + uuid + "\"}", requestTimeout);
+            if (balResp != null && balResp.statusCode() == 200) {
+                try {
+                    coins = com.google.gson.JsonParser.parseString(balResp.body()).getAsJsonObject().get("coins").getAsLong();
+                } catch (Exception ignored) {}
+            }
+            long finalCoins = coins;
+
+            getServer().getScheduler().runTask(this, () -> {
+                if (!player.isOnline()) return;
+
+                RaidShopHolder holder = new RaidShopHolder(finalCoins);
+                Inventory inv = org.bukkit.Bukkit.createInventory(holder, 27, Component.text("§8Siege & Raiding Armory"));
+                holder.setInventory(inv);
+
+                ItemStack pane = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+                ItemMeta pm = pane.getItemMeta();
+                if (pm != null) {
+                    pm.displayName(Component.text(" "));
+                    pane.setItemMeta(pm);
+                }
+                for (int i = 0; i < 27; i++) {
+                    inv.setItem(i, pane.clone());
+                }
+
+                // Balance info header at slot 4
+                ItemStack bal = new ItemStack(Material.GOLD_INGOT);
+                ItemMeta bm = bal.getItemMeta();
+                if (bm != null) {
+                    bm.displayName(Component.text("§6§lYour Coin Balance"));
+                    bm.lore(List.of(
+                        Component.text(String.format(Locale.ROOT, "§7Available: §6%,d coins", finalCoins)),
+                        Component.text("§7Required reserve: §e1,000 coins"),
+                        Component.text("§7Blasted breaches auto-restore when raid expires!")
+                    ));
+                    bal.setItemMeta(bm);
+                }
+                inv.setItem(4, bal);
+
+                // Slot 11: Breach Charge (20,000c)
+                ItemStack charge = createBreachChargeItem(1);
+                ItemMeta cm = charge.getItemMeta();
+                if (cm != null) {
+                    List<Component> lore = new ArrayList<>();
+                    if (cm.hasLore() && cm.lore() != null) {
+                        lore.addAll(cm.lore());
+                    }
+                    lore.add(Component.text("§8-----------------------------"));
+                    lore.add(Component.text(String.format(Locale.ROOT, "§7Price: §6%,d coins", RaidRules.CHARGE_PRICE)));
+                    lore.add(Component.text("§7Unlocks enemy chests for 5 minutes."));
+                    lore.add(Component.text(""));
+                    if (finalCoins >= RaidRules.CHARGE_PRICE + 1000L) {
+                        lore.add(Component.text("§a§l▶ Click to Purchase!"));
+                    } else {
+                        lore.add(Component.text("§cInsufficient coins (1,000c reserve required)"));
+                    }
+                    cm.lore(lore);
+                    charge.setItemMeta(cm);
+                }
+                inv.setItem(11, charge);
+
+                // Slot 13: 1x Raid TNT (5,000c)
+                ItemStack tnt1 = createRaidTntItem(1);
+                ItemMeta t1m = tnt1.getItemMeta();
+                if (t1m != null) {
+                    List<Component> lore = new ArrayList<>();
+                    if (t1m.hasLore() && t1m.lore() != null) {
+                        lore.addAll(t1m.lore());
+                    }
+                    lore.add(Component.text("§8-----------------------------"));
+                    lore.add(Component.text(String.format(Locale.ROOT, "§7Price: §6%,d coins §7(1 TNT)", RaidRules.TNT_PRICE)));
+                    lore.add(Component.text("§7Breaches enemy perimeter walls & doors."));
+                    lore.add(Component.text(""));
+                    if (finalCoins >= RaidRules.TNT_PRICE + 1000L) {
+                        lore.add(Component.text("§a§l▶ Click to Purchase 1x TNT"));
+                    } else {
+                        lore.add(Component.text("§cInsufficient coins (1,000c reserve required)"));
+                    }
+                    t1m.lore(lore);
+                    tnt1.setItemMeta(t1m);
+                }
+                inv.setItem(13, tnt1);
+
+                // Slot 15: 5x Raid TNT (25,000c)
+                ItemStack tnt5 = createRaidTntItem(5);
+                ItemMeta t5m = tnt5.getItemMeta();
+                if (t5m != null) {
+                    List<Component> lore = new ArrayList<>();
+                    if (t5m.hasLore() && t5m.lore() != null) {
+                        lore.addAll(t5m.lore());
+                    }
+                    lore.add(Component.text("§8-----------------------------"));
+                    lore.add(Component.text(String.format(Locale.ROOT, "§7Price: §6%,d coins §7(5 TNT bundle)", RaidRules.TNT_PRICE * 5)));
+                    lore.add(Component.text("§7Siege bundle to tear through fortified bases."));
+                    lore.add(Component.text(""));
+                    if (finalCoins >= (RaidRules.TNT_PRICE * 5) + 1000L) {
+                        lore.add(Component.text("§a§l▶ Click to Purchase 5x TNT"));
+                    } else {
+                        lore.add(Component.text("§cInsufficient coins (1,000c reserve required)"));
+                    }
+                    t5m.lore(lore);
+                    tnt5.setItemMeta(t5m);
+                }
+                inv.setItem(15, tnt5);
+
+                player.openInventory(inv);
+                player.playSound(player.getLocation(), Sound.ENTITY_TNT_PRIMED, 0.8f, 1.4f);
+            });
+        });
+    }
+
+    private void handleRaidShopClick(Player player, RaidShopHolder holder, int slot) {
+        if (slot == 11) {
+            if (holder.getCoinBalance() < RaidRules.CHARGE_PRICE + 1000L) {
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
+                player.sendMessage(String.format(Locale.ROOT,
+                    "§c[Raid] You need %,d coins (including 1,000c reserve) to purchase a Breach Charge!",
+                    RaidRules.CHARGE_PRICE + 1000L));
+                return;
+            }
+            player.closeInventory();
+            raidCommand(player, new String[]{"buy"});
+            return;
+        }
+
+        if (slot == 13) {
+            long price = RaidRules.TNT_PRICE;
+            if (holder.getCoinBalance() < price + 1000L) {
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
+                player.sendMessage(String.format(Locale.ROOT,
+                    "§c[Raid] You need %,d coins (including 1,000c reserve) to purchase Raid TNT!",
+                    price + 1000L));
+                return;
+            }
+            player.closeInventory();
+            raidCommand(player, new String[]{"tnt", "1"});
+            return;
+        }
+
+        if (slot == 15) {
+            long price = RaidRules.TNT_PRICE * 5;
+            if (holder.getCoinBalance() < price + 1000L) {
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
+                player.sendMessage(String.format(Locale.ROOT,
+                    "§c[Raid] You need %,d coins (including 1,000c reserve) to purchase 5x Raid TNT bundle!",
+                    price + 1000L));
+                return;
+            }
+            player.closeInventory();
+            raidCommand(player, new String[]{"tnt", "5"});
+            return;
+        }
+    }
+
     private void raidCommand(Player player, String[] args) {
-        if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+        if (args.length == 0 || args[0].equalsIgnoreCase("gui") || args[0].equalsIgnoreCase("menu")) {
+            openRaidShopGui(player);
+            return;
+        }
+        if (args[0].equalsIgnoreCase("help")) {
             player.sendMessage("§6=== Base Raiding & Explosives ===");
             player.sendMessage(String.format(Locale.ROOT, "§e/raid buy §7— Buy a Breach Charge (%,d coins)", RaidRules.CHARGE_PRICE));
             player.sendMessage(String.format(Locale.ROOT, "§e/raid tnt [amount] §7— Buy TNT for breaching walls (%,d coins each)", RaidRules.TNT_PRICE));
@@ -5349,14 +5819,110 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         player.sendMessage("[Mine] Usage: /mine [enter|time|leave|shop]");
     }
 
+    private void openMinerShopGui(Player player) {
+        UUID uuid = player.getUniqueId();
+        player.sendMessage("§e[Miners] Opening Prospector Equipment shop...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            long coins = 0L;
+            var balResp = post(internalBase + "/balance", "{\"uuid\":\"" + uuid + "\"}", requestTimeout);
+            if (balResp != null && balResp.statusCode() == 200) {
+                try {
+                    coins = com.google.gson.JsonParser.parseString(balResp.body()).getAsJsonObject().get("coins").getAsLong();
+                } catch (Exception ignored) {}
+            }
+            long finalCoins = coins;
+
+            getServer().getScheduler().runTask(this, () -> {
+                if (!player.isOnline()) return;
+
+                MinerShopHolder holder = new MinerShopHolder(finalCoins);
+                Inventory inv = org.bukkit.Bukkit.createInventory(holder, 27, Component.text("§8Prospector Pickaxe Workshop"));
+                holder.setInventory(inv);
+
+                ItemStack pane = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+                ItemMeta pm = pane.getItemMeta();
+                if (pm != null) {
+                    pm.displayName(Component.text(" "));
+                    pane.setItemMeta(pm);
+                }
+                for (int i = 0; i < 27; i++) {
+                    inv.setItem(i, pane.clone());
+                }
+
+                // Balance info header at slot 4
+                ItemStack bal = new ItemStack(Material.GOLD_INGOT);
+                ItemMeta bm = bal.getItemMeta();
+                if (bm != null) {
+                    bm.displayName(Component.text("§6§lYour Coin Balance"));
+                    bm.lore(List.of(
+                        Component.text(String.format(Locale.ROOT, "§7Available: §6%,d coins", finalCoins)),
+                        Component.text("§7Required reserve: §e1,000 coins"),
+                        Component.text("§7Pickaxes mine Fuel Crystals inside §e/mine§7!")
+                    ));
+                    bal.setItemMeta(bm);
+                }
+                inv.setItem(4, bal);
+
+                // 4 Tiers: slots 10, 12, 14, 16
+                int[] slots = {10, 12, 14, 16};
+                for (int tier = 1; tier <= 4; tier++) {
+                    int slot = slots[tier - 1];
+                    ItemStack pickaxe = createProspectorPickaxeItem(tier);
+                    long price = PickaxeRules.pickaxePrice(tier);
+                    boolean canAfford = finalCoins >= price + 1000L;
+
+                    ItemMeta meta = pickaxe.getItemMeta();
+                    if (meta != null) {
+                        List<Component> lore = new ArrayList<>();
+                        if (meta.hasLore() && meta.lore() != null) {
+                            lore.addAll(meta.lore());
+                        }
+                        lore.add(Component.text("§8-----------------------------"));
+                        lore.add(Component.text(String.format(Locale.ROOT, "§7Price: §6%,d coins", price)));
+                        lore.add(Component.text(""));
+                        if (canAfford) {
+                            lore.add(Component.text("§a§l▶ Click to Purchase!"));
+                        } else {
+                            lore.add(Component.text("§cInsufficient coins (1,000c reserve required)"));
+                        }
+                        meta.lore(lore);
+                        pickaxe.setItemMeta(meta);
+                    }
+                    inv.setItem(slot, pickaxe);
+                }
+
+                player.openInventory(inv);
+                player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_USE, 0.8f, 1.2f);
+            });
+        });
+    }
+
+    private void handleMinerShopClick(Player player, MinerShopHolder holder, int slot) {
+        int tier = switch (slot) {
+            case 10 -> 1;
+            case 12 -> 2;
+            case 14 -> 3;
+            case 16 -> 4;
+            default -> 0;
+        };
+        if (tier == 0) return;
+
+        long price = PickaxeRules.pickaxePrice(tier);
+        if (holder.getCoinBalance() < price + 1000L) {
+            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 0.8f);
+            player.sendMessage(String.format(Locale.ROOT,
+                "§c[Miners] You need at least %,d coins (including 1,000c reserve) to purchase %s!",
+                price + 1000L, PickaxeRules.pickaxeName(tier)));
+            return;
+        }
+
+        player.closeInventory();
+        minershopCommand(player, new String[]{"buy", String.valueOf(tier)});
+    }
+
     private void minershopCommand(Player player, String[] args) {
-        if (args.length == 0) {
-            player.sendMessage("§6=== Miner's Pickaxe Shop ===");
-            player.sendMessage("§eTier 1: §fApprentice Prospector Pickaxe §7(§6150 coins§7) — Mines Ember Shards (T1)");
-            player.sendMessage("§eTier 2: §bSurveyor Prospector Pickaxe §7(§61,000 coins§7) — Mines Cobalt Crystals (T2)");
-            player.sendMessage("§eTier 3: §cExcavator Prospector Pickaxe §7(§65,000 coins§7) — Mines Crimson Cores (T3)");
-            player.sendMessage("§eTier 4: §dMaster Core Drill §7(§620,000 coins§7) — Mines Astral Void Crystals (T4)");
-            player.sendMessage("§7Type §e/minershop buy <1-4> §7to purchase with coins.");
+        if (args.length == 0 || args[0].equalsIgnoreCase("gui") || args[0].equalsIgnoreCase("menu")) {
+            openMinerShopGui(player);
             return;
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("buy")) {
@@ -7227,12 +7793,129 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }, 30L);
     }
 
+    private void openMailboxGui(Player player) {
+        UUID uuid = player.getUniqueId();
+        String uuidStr = uuid.toString();
+        player.sendMessage("§e[Mail] Opening your postal inbox...");
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var body = new com.google.gson.JsonObject();
+                body.addProperty("uuid", uuidStr);
+                var resp = post(internalBase + "/mail/pending", body.toString(), requestTimeout);
+                com.google.gson.JsonArray senders = new com.google.gson.JsonArray();
+                int count = 0;
+                if (resp != null && resp.statusCode() == 200) {
+                    var json = com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+                    count = json.get("count").getAsInt();
+                    if (json.has("senders") && json.get("senders").isJsonArray()) {
+                        senders = json.getAsJsonArray("senders");
+                    }
+                }
+                int finalCount = count;
+                com.google.gson.JsonArray finalSenders = senders;
+
+                getServer().getScheduler().runTask(this, () -> {
+                    if (!player.isOnline()) return;
+
+                    MailboxHolder holder = new MailboxHolder(finalSenders);
+                    Inventory inv = org.bukkit.Bukkit.createInventory(holder, 27, Component.text("§8Postal Mailbox & Deliveries"));
+                    holder.setInventory(inv);
+
+                    ItemStack pane = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+                    ItemMeta pm = pane.getItemMeta();
+                    if (pm != null) {
+                        pm.displayName(Component.text(" "));
+                        pane.setItemMeta(pm);
+                    }
+                    for (int i = 0; i < 27; i++) {
+                        inv.setItem(i, pane.clone());
+                    }
+
+                    // Slot 4: Mail status overview
+                    ItemStack letter = new ItemStack(finalCount > 0 ? Material.WRITTEN_BOOK : Material.BOOK);
+                    ItemMeta lm = letter.getItemMeta();
+                    if (lm != null) {
+                        lm.displayName(Component.text(finalCount > 0 ? "§6§l📬 Incoming Deliveries (" + finalCount + ")" : "§7📭 Mailbox is Empty"));
+                        List<Component> lore = new ArrayList<>();
+                        lore.add(Component.text("§7Player: §f" + player.getName()));
+                        lore.add(Component.text("§7Pending deliveries: §e" + finalCount));
+                        if (finalCount > 0 && finalSenders.size() > 0) {
+                            lore.add(Component.text("§7From:"));
+                            for (int s = 0; s < Math.min(finalSenders.size(), 3); s++) {
+                                lore.add(Component.text("  §b• " + finalSenders.get(s).getAsString()));
+                            }
+                            if (finalSenders.size() > 3) {
+                                lore.add(Component.text("  §7...and " + (finalSenders.size() - 3) + " more"));
+                            }
+                        } else {
+                            lore.add(Component.text("§8No parcels waiting right now."));
+                        }
+                        lm.lore(lore);
+                        letter.setItemMeta(lm);
+                    }
+                    inv.setItem(4, letter);
+
+                    // Slot 13: Main action button (Claim All or Refresh)
+                    if (finalCount > 0) {
+                        ItemStack claimBox = new ItemStack(Material.CHEST);
+                        ItemMeta cbm = claimBox.getItemMeta();
+                        if (cbm != null) {
+                            cbm.displayName(Component.text("§a§l▶ Claim All Deliveries (" + finalCount + ")"));
+                            cbm.lore(List.of(
+                                Component.text("§7Click to collect all pending parcels,"),
+                                Component.text("§7items, and coins into your inventory."),
+                                Component.text(""),
+                                Component.text("§a§l[Click to Claim All]")
+                            ));
+                            claimBox.setItemMeta(cbm);
+                        }
+                        inv.setItem(13, claimBox);
+                    } else {
+                        ItemStack emptyBox = new ItemStack(Material.BARRIER);
+                        ItemMeta ebm = emptyBox.getItemMeta();
+                        if (ebm != null) {
+                            ebm.displayName(Component.text("§cNo Deliveries to Claim"));
+                            ebm.lore(List.of(
+                                Component.text("§7You can receive parcels and gifts"),
+                                Component.text("§7sent from the website or other players."),
+                                Component.text(""),
+                                Component.text("§e[Click to Refresh]")
+                            ));
+                            emptyBox.setItemMeta(ebm);
+                        }
+                        inv.setItem(13, emptyBox);
+                    }
+
+                    player.openInventory(inv);
+                    player.playSound(player.getLocation(), Sound.ITEM_ARMOR_EQUIP_GENERIC, 0.8f, 1.2f);
+                });
+            } catch (Exception e) {
+                getLogger().warning("[Mail] Failed to load mailbox GUI: " + e.getMessage());
+            }
+        });
+    }
+
+    private void handleMailboxClick(Player player, MailboxHolder holder, int slot) {
+        if (slot == 13) {
+            player.closeInventory();
+            if (holder.getPendingList().size() > 0) {
+                handleMailCommand(player, new String[]{"claim"});
+            } else {
+                openMailboxGui(player);
+            }
+        }
+    }
+
     private void handleMailCommand(Player player, String[] args) {
-        boolean claim = args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("claim"));
-        boolean list = args.length == 1 && args[0].equalsIgnoreCase("list");
+        if (args.length == 0 || (args.length == 1 && (args[0].equalsIgnoreCase("gui") || args[0].equalsIgnoreCase("menu")))) {
+            openMailboxGui(player);
+            return;
+        }
+        boolean claim = (args.length == 1 && args[0].equalsIgnoreCase("claim"));
+        boolean list = (args.length == 1 && args[0].equalsIgnoreCase("list"));
 
         if (!claim && !list) {
-            player.sendMessage("§6§l[Mail] §eUsage: §a/mail claim §eor §a/mail list");
+            player.sendMessage("§6§l[Mail] §eUsage: §a/mail (opens visual inbox), §a/mail claim§e, or §a/mail list");
             return;
         }
 

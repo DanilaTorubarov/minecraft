@@ -35,7 +35,7 @@ commands:
         permission: linkbridge.link
     ps:
         description: Purchase, place, manage, fuel, and fast-travel to your private protection cores.
-        usage: /ps [buy|list|tp <1-3>|add <player>|remove <player>|info]
+        usage: /ps [gui|buy|list|tp <1-3>|add <player>|remove <player>|info]
         aliases: [private, protection]
         permission: linkbridge.ps
     home:
@@ -48,15 +48,15 @@ commands:
         permission: linkbridge.mine
     minershop:
         description: Buy Prospector Pickaxes to mine tiered fuel crystals.
-        usage: /minershop [buy <tier 1-4>]
+        usage: /minershop (opens GUI) or /minershop buy <tier 1-4>
         permission: linkbridge.mine
     raid:
         description: Purchase and manage siege breach charges for raiding private zones.
-        usage: /raid [buy|help]
+        usage: /raid (opens GUI) or /raid [buy|tnt|help]
         permission: linkbridge.ps
     mail:
         description: Check and claim deliveries and parcels sent from the website or other players.
-        usage: /mail [claim|list]
+        usage: /mail (opens GUI) or /mail [claim|list]
         permission: linkbridge.mail
     clan:
         description: Manage your clan, allies, wars, clan home, and shared treasury.
