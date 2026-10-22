@@ -78,13 +78,19 @@ services:
     tty: true
     environment:
       TYPE: VELOCITY
+      MEMORY: ${VELOCITY_MEMORY:-1G}
       REPLACE_ENV_VARIABLES: "true"
       # Same secret as the backend, from a single source in .env.docker.
       VELOCITY_FORWARDING_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
       PUID: "1000"
       PGID: "1000"
+      # Geyser + Floodgate for Minecraft Bedrock (crossplay on UDP 19132).
+      PLUGINS: |
+        https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/velocity
+        https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/velocity
     ports:
       - "25565:25565"
+      - "19132:19132/udp"
     volumes:
       - ./mc/velocity:/server
       - ./mc-config/velocity:/config:ro

@@ -406,8 +406,9 @@ The 54 frontend tests cover successful logout, server errors, connection failure
 The stack runs a **Velocity** proxy and a **Purpur** backend (a Paper fork; Paper plugins run unchanged). It is an offline ("cracked") server: players authenticate with an in-game password, not a Mojang account.
 
 ```
-internet ──▶ velocity :25565 ──▶ purpur :25565   (internal only, no published port)
-             (only public MC port)
+internet (Java)    ──▶ velocity :25565 (TCP) ──▶ purpur :25565   (internal only, no published port)
+internet (Bedrock) ──▶ velocity :19132 (UDP) ──▶
+                       (only public MC ports)
 ```
 
 Only `velocity` publishes a port. `purpur` has none, so it can be reached *only* through the proxy — that is what makes the proxy's word trustworthy.
@@ -610,7 +611,7 @@ docker compose --env-file .env.docker up -d --build
 docker compose --env-file .env.docker exec -T db psql -U postgres -d project_db < db.sql
 ```
 
-The archive contains the compose file, source, `.env.docker` (secrets), `mc/` (world, plugins, forwarding secret) and `db.sql`. It does **not** include the `pgdata`/`caddy_data` volumes or TLS certificates — Caddy re-issues those on the new host. Make sure the new host's firewall allows `80`, `443` and `25565`.
+The archive contains the compose file, source, `.env.docker` (secrets), `mc/` (world, plugins, forwarding secret) and `db.sql`. It does **not** include the `pgdata`/`caddy_data` volumes or TLS certificates — Caddy re-issues those on the new host. Make sure the new host's firewall allows `80`, `443`, `25565` (TCP) and `19132` (UDP).
 
 ## Everyday commands
 

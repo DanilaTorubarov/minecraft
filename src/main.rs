@@ -1084,8 +1084,10 @@ fn is_uuid(value: &str) -> bool {
 
 fn is_minecraft_username(value: &str) -> bool {
     let length = value.chars().count();
-    (3..=16).contains(&length) &&
-        value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    (3..=20).contains(&length)
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -12519,8 +12521,10 @@ mod test {
         assert!(!is_uuid("abcdefabcdefabcdefabcdefabcdefabcd"));
         assert!(is_minecraft_username("Notch"));
         assert!(is_minecraft_username("a_b_1"));
+        assert!(is_minecraft_username(".Notch"));
+        assert!(is_minecraft_username(".Bedrock_Player"));
         assert!(!is_minecraft_username("ab"));
-        assert!(!is_minecraft_username("thisnameiswaytoolong"));
+        assert!(!is_minecraft_username("thisnameiswaytoolongforbedrockorjava"));
         assert!(!is_minecraft_username("bad name"));
     }
 
