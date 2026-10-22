@@ -1,0 +1,10 @@
+# Paper world overrides for the End.
+#
+# Paper's own recommendation is to turn Anti-Xray off for the End: its ores are
+# in the outer islands and the end-stone economy here does not need fakes.
+# Follow it rather than leaving the overworld's fake-ore pool in the end sky.
+
+_version: 31
+anticheat:
+  anti-xray:
+    enabled: false

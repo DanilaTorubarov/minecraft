@@ -1,0 +1,32 @@
+# Paper world overrides for the Nether.
+#
+# Same engine as the overworld (mode 3, see config/paper-world-defaults.yml),
+# with the nether's own fake-ore pool so overworld ores do not appear in nether
+# walls. Nether ores sit below y=64 and the ceiling is a solid bedrock layer;
+# 128 covers the accessible caverns Paper can hide anything in.
+
+_version: 31
+anticheat:
+  anti-xray:
+    enabled: true
+    engine-mode: 3
+    hidden-blocks:
+    - ancient_debris
+    - nether_gold_ore
+    - nether_quartz_ore
+    - basalt
+    - blackstone
+    max-block-height: 128
+    lava-obscures: false
+    replacement-blocks:
+    - netherrack
+    - basalt
+    - blackstone
+    - soul_sand
+    - soul_soil
+    - gravel
+    - magma_block
+    - nether_bricks
+    - polished_blackstone_bricks
+    update-radius: 2
+    use-permission: false

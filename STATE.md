@@ -1,6 +1,39 @@
 # Project checkpoint — 2026-10-21
 
 
+## Bedrock players froze and mined nothing — anti-xray mode 2 — 2026-10-22
+
+- Report from the Bedrock player `.Kokochi7232` (Floodgate UUID `00000000-0000-0000-0009-01f835f39efb`): blocks in
+  `/mine` could not be broken, no fuel crystals could be found, and at the spawn blocks broke client-side but stayed
+  on the server, then the player got stuck in them.
+- Root cause 1 (freeze + ghost blocks): **Paper anti-xray `engine-mode: 2` is broken for Geyser clients** (Geyser
+  issue #6650). Seconds after joining, the Bedrock client stops receiving clientbound block/entity updates; its own
+  actions still reach the Java server, so broken blocks stay server-side, new chunks stop loading and the client
+  eventually freezes or times out. Engine mode 3 (or 1/off) is unaffected.
+- Root cause 2 (no fuel): the mine's reward is **real** copper/lapis/redstone/emerald/amethyst ores, and every one of
+  those was in `hidden-blocks`. With mode 2/3 the client receives fake ores in the hidden-block pool, so a real crystal
+  looks like a random stone block and every stone wall looks like a crystal. The player could not identify a single
+  real vein. `/minershop buy 4` had actually succeeded at 18:28:55 (ledger `minershop_pickaxe -20000`, tier 4), so the
+  tool was never the problem.
+- Fix: `engine-mode: 3`, Paper's recommended fake-ore/replacement lists, `max-block-height: 64` (spawn is ~Y=123, and a
+  higher ceiling fakes walls at build height), `lava-obscures: false`; per-dimension overrides now live at
+  `mc-config/purpur/world/dimensions/minecraft/{mine_world,the_nether,the_end}/paper-world.yml` — **anti-xray is off in
+  the mining dimension and the end**, the nether keeps mode 3 with a nether-ore pool and height 128.
+- LinkBridge 1.14.1 adds `resyncBlockForClient()` / `resyncBlockNextTick()`: a refused break or placement (missing
+  Prospector Pickaxe, mine bedrock, private-zone denial, block placement in the mine) now sends the authoritative block
+  back, so a Bedrock client does not keep a ghost hole and rubber-band inside it.
+- Not changed: `spawn-protection=16` in the runtime `server.properties` still refuses breaks within 16 blocks of the
+  world spawn for non-operators (the reported spawn is `[0,145,0]`, joins land around `1.5,123,9.5`). That is vanilla
+  behaviour; operators bypass it, and the plugin's own private-block zones are the server's protection system.
+- Verification: plugin built (`LinkBridge-1.14.1.jar` installed, 1.14.0 disabled), purpur restarted with the synced
+  configs; `world/dimensions/minecraft/mine_world/paper-world.yml` carries `enabled: false`, the defaults file carries
+  `engine-mode: 3`, and the boot log shows no anti-xray configuration warning. Bedrock retest by the reporting player
+  is still required.
+- Also observed, not fixed: the player was in creative for most of the session and the report arrived after a long
+  admin test sequence (op/de-op, gamemode changes, 1,000,000-coin grant), so the exact play session is hard to replay;
+  the two root causes above are configuration, not session-specific.
+
+
 ## Item wear reads as remaining/maximum uses — 2026-10-22
 
 - The inventory bubble drew a thin wear bar and the tooltip and marketplace printed a
