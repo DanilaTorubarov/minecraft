@@ -68,6 +68,12 @@ dependencies {
     compileOnly 'de.bluecolored:bluemap-api:2.8.2'
     compileOnly 'com.flowpowered:flow-math:1.0.3'
 
+    // The server's own logging backend (2.26.0 ships in Purpur 26.3). The panel's
+    // console terminal mirrors this stream; compiling against it keeps the appender
+    // typed instead of reflective. Provided by the server at runtime.
+    compileOnly 'org.apache.logging.log4j:log4j-api:2.26.0'
+    compileOnly 'org.apache.logging.log4j:log4j-core:2.26.0'
+
     // AuthMe and SkinsRestorer APIs
     compileOnly fileTree('../.plugin-build/lib') { include 'AuthMe-*.jar', 'SkinsRestorer-*.jar' }
 }

@@ -876,7 +876,11 @@ async fn send_account_mail(to: &str, subject: &str, body: String) -> Result<(), 
     let default_port = if tls == "none" { 1025 } else if tls == "tls" { 465 } else { 587 };
     let mut builder = builder.port(env_i64("SMTP_PORT", default_port) as u16)
         .timeout(Some(std::time::Duration::from_secs(10)));
-    if let Ok(username) = std::env::var("SMTP_USERNAME") {
+    let username = std::env::var("SMTP_USERNAME")
+        .map(|value| value.trim().to_owned())
+        .ok()
+        .filter(|value| !value.is_empty());
+    if let Some(username) = username {
         let password = std::env::var("SMTP_PASSWORD").map_err(|_| unavailable())?;
         builder = builder.credentials(Credentials::new(username, password));
     }
@@ -6685,7 +6689,7 @@ struct AdminState {
     next_log_id: u64,
     console_logs: std::collections::VecDeque<ConsoleLogEntry>,
     pending_console_commands: Vec<PendingConsoleCommand>,
-    completed_commands: std::collections::HashMap<String, (Vec<String>, bool)>,
+    completed_commands: std::collections::HashMap<String, (Vec<String>, bool, std::time::Instant)>,
     pending_moderation_actions: Vec<PendingModerationAction>,
 }
 
@@ -6699,7 +6703,13 @@ impl Default for AdminState {
             server_version: "Minecraft Server".to_string(),
             online_players: Vec::new(),
             last_metrics_at: None,
-            next_log_id: 1,
+            // The dashboard polls with "give me lines newer than id N", and the state is
+            // memory-only. Seeding from the clock keeps ids moving forward across a
+            // panel restart, so an open terminal resumes instead of going quiet forever.
+            next_log_id: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
             console_logs: std::collections::VecDeque::with_capacity(500),
             pending_console_commands: Vec::new(),
             completed_commands: std::collections::HashMap::new(),
@@ -6723,7 +6733,9 @@ static GLOBAL_ADMIN_STATE: std::sync::LazyLock<tokio::sync::RwLock<AdminState>> 
 
 #[derive(serde::Deserialize)]
 struct InternalAdminSyncRequest {
-    tps: Option<[f64; 3]>,
+    // The number of TPS windows is the game server's detail, not the dashboard's: a
+    // fork that reports a fourth window must not have its whole report rejected.
+    tps: Option<Vec<f64>>,
     ram_used_mb: Option<i64>,
     ram_total_mb: Option<i64>,
     ram_max_mb: Option<i64>,
@@ -6761,7 +6773,13 @@ async fn internal_admin_sync(
     let mut state = GLOBAL_ADMIN_STATE.write().await;
 
     if let Some(tps) = input.tps {
-        state.tps = tps;
+        // The dashboard draws the classic 1m/5m/15m trio; a fourth (or shorter) window
+        // is an extra sample we do not need, and a missing one keeps the neutral 20.
+        let mut windows = [20.0f64; 3];
+        for (slot, value) in windows.iter_mut().zip(tps.iter().take(3)) {
+            *slot = *value;
+        }
+        state.tps = windows;
     }
     if let Some(used) = input.ram_used_mb {
         state.ram_used_mb = used;
@@ -6802,8 +6820,12 @@ async fn internal_admin_sync(
     }
 
     for res in input.command_results {
-        state.completed_commands.insert(res.request_id, (res.output, res.success));
+        state.completed_commands.insert(res.request_id, (res.output, res.success, std::time::Instant::now()));
     }
+    // The dashboard stops waiting after 2.5s and the browser may be gone by then, so
+    // anything older is an orphan. Dropping it keeps the map from growing with every
+    // command whose tab was closed mid-run.
+    state.completed_commands.retain(|_, (_, _, at)| at.elapsed() < std::time::Duration::from_secs(60));
 
     let pending_commands = std::mem::take(&mut state.pending_console_commands);
     let pending_moderations = std::mem::take(&mut state.pending_moderation_actions);
@@ -7109,7 +7131,7 @@ async fn admin_execute_console_command(
     while start.elapsed() < std::time::Duration::from_millis(2500) {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let mut state = GLOBAL_ADMIN_STATE.write().await;
-        if let Some((output, success)) = state.completed_commands.remove(&request_id) {
+        if let Some((output, success, _)) = state.completed_commands.remove(&request_id) {
             return Ok(Json(AdminConsoleExecuteResponse {
                 request_id,
                 output,
@@ -17830,6 +17852,28 @@ mod test {
         assert_eq!(logs_res.status(), StatusCode::OK);
         let logs_arr = body_json(logs_res).await?;
         assert!(logs_arr.as_array().unwrap().len() >= 2);
+
+        // 5b. A fourth TPS window (Purpur reports 1m/5m/15m plus its own) must not cost
+        // the whole report — a rejected sync is exactly what left the dashboard blank.
+        let four_windows = serde_json::json!({
+            "tps": [19.5, 19.7, 19.9, 20.0],
+            "ram_used_mb": 1500,
+            "server_version": "Purpur 26.3",
+            "online_players": [],
+            "console_logs": [],
+            "command_results": []
+        });
+        let four_res = post_internal(&pool, "/internal/admin/sync", Some(&token), four_windows, &random_ip()).await?;
+        assert_eq!(four_res.status(), StatusCode::OK);
+        let four_metrics = body_json(send(&pool, "GET", "/api/admin/metrics", Some(&cookie), None).await?).await?;
+        assert_eq!(four_metrics["tps"], serde_json::json!([19.5, 19.7, 19.9]));
+
+        // Fewer windows than the dashboard draws keeps the neutral value for the rest.
+        let two_windows = serde_json::json!({ "tps": [18.0, 18.5] });
+        let two_res = post_internal(&pool, "/internal/admin/sync", Some(&token), two_windows, &random_ip()).await?;
+        assert_eq!(two_res.status(), StatusCode::OK);
+        let two_metrics = body_json(send(&pool, "GET", "/api/admin/metrics", Some(&cookie), None).await?).await?;
+        assert_eq!(two_metrics["tps"], serde_json::json!([18.0, 18.5, 20.0]));
 
         // 6. Admin executes moderation ban
         let ban_res = send(&pool, "POST", "/api/admin/moderation/ban", Some(&cookie), Some(serde_json::json!({

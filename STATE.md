@@ -1,6 +1,41 @@
 # Project checkpoint — 2026-10-21
 
 
+## Admin console terminal restored — 2026-10-22
+
+- Symptom: the website's Admin Panel → Console Terminal stayed on "Connecting to server
+  terminal stream...", live metrics never left their defaults (`is_live: false`, 0 MB
+  RAM, `Minecraft Server`), and typed commands produced no output — while linking,
+  inventory, chat, privates and clans all worked from the same plugin and token.
+- Root cause (report rejected): `syncAdmin()` built `tps` from `Bukkit.getTPS()`, which
+  Purpur 26.3 returns as **four** windows, but the panel's internal sync request accepted
+  exactly `[f64; 3]`. Every report was answered `400 … tps: trailing characters`, and the
+  plugin silently ignored non-200 answers, so `GLOBAL_ADMIN_STATE` never received one.
+  The website half was live and correct the whole time.
+- Root cause (no server lines): the console mirror hung a `java.util.logging` handler on
+  the JUL root logger, but Paper and its forks log through Log4j2. Even a working sync
+  would have shown almost nothing but plugin messages.
+- Root cause (stream stops after a command): the terminal adopted the local echo's
+  `Date.now()` id as its poll cursor, so `since_id` afterwards asked for lines newer than
+  any the panel could produce. Panel log ids also restarted at 1 on every restart, which
+  invalidated an open tab's cursor for good.
+- Fix: the panel accepts any TPS window count (keeps the first three, a missing window
+  stays 20) and the plugin sends exactly three; the terminal mirrors the Log4j2 root
+  stream with ANSI stripped and keeps the JUL handler as a fallback; dashboard commands
+  run through the real console sender and collect the lines logged on that thread (the
+  hand-built `CommandSender` proxy broke vanilla commands and swallowed output); log ids
+  are seeded from the clock so they keep increasing across restarts; the frontend polls
+  with a server-only cursor and de-duplicates a command's echoed lines; a failing admin
+  sync is logged once a minute instead of vanishing.
+- Also: `.env.docker`'s real `SMTP_USERNAME`/`SMTP_PASSWORD` leaked into the `tests`
+  service, so every mail-sending test answered `503` against mailpit. Blank credentials
+  are now ignored, and the `tests` service sets them empty.
+- Verification: `cargo check --tests` clean; the full `tests`-service suite passes;
+  `npm run build`, `npm run lint` and `npm test` pass; LinkBridge 1.14.0 deployed and the
+  live panel now reports `is_live: true` with Purpur's RAM/version, streams real server
+  lines and returns real command output.
+
+
 ## Offline Mail & Delivery Parcel System and Territory Alerts — 2026-10-21
 
 - **Offline Mail & Delivery Parcel System**:

@@ -314,6 +314,15 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     @Override
     public void onDisable() {
+        if (adminLog4jAppender != null) {
+            try {
+                org.apache.logging.log4j.core.LoggerContext context =
+                    (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+                context.getConfiguration().getRootLogger().removeAppender(adminLog4jAppender.getName());
+                adminLog4jAppender.stop();
+                context.updateLoggers();
+            } catch (Throwable ignored) {}
+        }
         if (adminLogHandler != null) {
             try {
                 java.util.logging.Logger.getLogger("").removeHandler(adminLogHandler);
@@ -6418,8 +6427,107 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private final ConcurrentLinkedQueue<CommandResult> completedCommandsQueue = new ConcurrentLinkedQueue<>();
     private final Map<String, MuteInfo> activeMutes = new ConcurrentHashMap<>();
     private Handler adminLogHandler;
+    private org.apache.logging.log4j.core.Appender adminLog4jAppender;
+    private final List<String> commandOutputStream = new ArrayList<>();
+    private volatile Thread commandOutputThread;
+    private volatile boolean adminSyncStartedLogged;
+    private volatile String lastAdminSyncWarning = "";
+    private volatile long lastAdminSyncWarningAt;
+
+    /**
+     * Nothing else reports a failing console/metrics sync: the dashboard simply stays
+     * empty, so the operator cannot tell a dead panel from a rejected payload. Log the
+     * reason, but at most once a minute per distinct reason so a down panel cannot
+     * flood the server log.
+     */
+    private void warnAdminSync(String detail) {
+        long now = System.currentTimeMillis();
+        if (detail.equals(lastAdminSyncWarning) && now - lastAdminSyncWarningAt < 60_000L) return;
+        lastAdminSyncWarning = detail;
+        lastAdminSyncWarningAt = now;
+        getLogger().warning("[Admin] Console and metrics sync failed: " + detail);
+    }
 
     private void setupAdminLogCapture() {
+        // Paper and its forks log through Log4j2. A handler on the JUL root logger only
+        // ever sees what plugins log through java.util.logging, so the terminal showed
+        // almost nothing; attach to Log4j2 instead, which carries the whole server
+        // stream. The JUL handler stays as the fallback for a server without Log4j.
+        if (!attachServerLogCapture()) {
+            attachJulLogCapture();
+        }
+    }
+
+    private void queueAdminLog(String line) {
+        if (line == null) return;
+        String cleaned = stripAnsi(line).strip();
+        if (cleaned.isEmpty()) return;
+        while (adminConsoleLogQueue.size() >= 500) {
+            adminConsoleLogQueue.poll();
+        }
+        adminConsoleLogQueue.offer(cleaned);
+    }
+
+    private static final java.util.regex.Pattern ANSI_ESCAPE =
+        java.util.regex.Pattern.compile("\u001B\\[[;\\d]*m");
+
+    /** The terminal renders plain text, so colour codes would only show up as noise. */
+    private static String stripAnsi(String text) {
+        return ANSI_ESCAPE.matcher(text).replaceAll("");
+    }
+
+    /**
+     * Copies the server's own Log4j2 stream into the web console terminal. Everything
+     * is guarded: a missing or unreadable logging backend must leave the game running
+     * and simply fall back to the JUL handler.
+     */
+    private boolean attachServerLogCapture() {
+        try {
+            org.apache.logging.log4j.core.LoggerContext context =
+                (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+            org.apache.logging.log4j.core.config.Configuration config = context.getConfiguration();
+            AdminConsoleAppender appender = new AdminConsoleAppender(this);
+            appender.start();
+            config.addAppender(appender);
+            config.getRootLogger().addAppender(appender, org.apache.logging.log4j.Level.ALL, null);
+            context.updateLoggers();
+            adminLog4jAppender = appender;
+            return true;
+        } catch (Throwable error) {
+            getLogger().warning("Could not attach the server log stream: " + error);
+            return false;
+        }
+    }
+
+    /** The server's log stream, formatted as the console terminal shows it. */
+    private static final class AdminConsoleAppender
+        extends org.apache.logging.log4j.core.appender.AbstractAppender {
+        private final LinkBridgePlugin plugin;
+
+        AdminConsoleAppender(LinkBridgePlugin plugin) {
+            super("LinkBridgeAdminConsole", null, null, false);
+            this.plugin = plugin;
+        }
+
+        @Override
+        public void append(org.apache.logging.log4j.core.LogEvent event) {
+            if (event == null || event.getMessage() == null) return;
+            String message = event.getMessage().getFormattedMessage();
+            if (message == null || message.isBlank()) return;
+            plugin.queueAdminLog("[" + event.getLevel().name() + "] " + message);
+            plugin.captureCommandOutput(message);
+        }
+    }
+
+    /** Lines a running dashboard command prints, collected on its own thread. */
+    private void captureCommandOutput(String message) {
+        if (commandOutputThread != Thread.currentThread()) return;
+        synchronized (commandOutputStream) {
+            commandOutputStream.add(stripAnsi(message));
+        }
+    }
+
+    private void attachJulLogCapture() {
         try {
             adminLogHandler = new Handler() {
                 @Override
@@ -6432,11 +6540,8 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         } catch (Exception ignored) {}
                     }
                     String level = record.getLevel() != null ? record.getLevel().getName() : "INFO";
-                    String line = "[" + level + "] " + msg;
-                    while (adminConsoleLogQueue.size() >= 500) {
-                        adminConsoleLogQueue.poll();
-                    }
-                    adminConsoleLogQueue.offer(line);
+                    queueAdminLog("[" + level + "] " + msg);
+                    captureCommandOutput(msg);
                 }
 
                 @Override
@@ -6480,13 +6585,21 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     }
 
     private void syncAdmin() {
-        if (internalBase == null || internalBase.isBlank() || serviceToken == null || serviceToken.isBlank()) return;
+        if (internalBase == null || internalBase.isBlank() || serviceToken == null || serviceToken.isBlank()) {
+            warnAdminSync("the panel address or service token is not configured");
+            return;
+        }
+        if (!adminSyncStartedLogged) {
+            adminSyncStartedLogged = true;
+            getLogger().info("[Admin] Console and metrics sync started.");
+        }
 
-        // Collect TPS
+        // Collect TPS. The panel's dashboard draws the classic three windows, so send
+        // those however many samples this fork exposes (Purpur reports four).
         double[] tpsArr = org.bukkit.Bukkit.getTPS();
         com.google.gson.JsonArray tpsJson = new com.google.gson.JsonArray();
-        for (double t : tpsArr) {
-            tpsJson.add(Math.round(t * 100.0) / 100.0);
+        for (int i = 0; i < Math.min(3, tpsArr.length); i++) {
+            tpsJson.add(Math.round(tpsArr[i] * 100.0) / 100.0);
         }
 
         // Collect RAM
@@ -6587,56 +6700,61 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                     }
                 }
             } else {
+                String detail = response == null
+                    ? "the panel could not be reached"
+                    : "the panel answered HTTP " + response.statusCode()
+                        + (response.body() == null || response.body().isBlank() ? "" : ": " + abbreviate(response.body()))
+                        // A rejected payload is only diagnosable next to what was sent.
+                        + (response.statusCode() == 400 ? " | sent " + abbreviate(root.toString()) : "");
+                warnAdminSync(detail);
                 for (CommandResult r : resultBatch) {
                     completedCommandsQueue.offer(r);
                 }
             }
         } catch (Exception e) {
+            warnAdminSync("the payload could not be built or sent: " + e);
             for (CommandResult r : resultBatch) {
                 completedCommandsQueue.offer(r);
             }
         }
     }
 
+    private static String abbreviate(String text) {
+        String single = text.replace('\n', ' ').strip();
+        return single.length() <= 200 ? single : single.substring(0, 200) + "…";
+    }
+
+    /**
+     * Runs a command the dashboard queued and collects what it printed. The console
+     * sender is used as it is: a hand-made CommandSender breaks Bukkit's vanilla
+     * wrappers ("Unhandled exception executing … in VanillaCommandWrapper") and
+     * missed most output. Everything the command prints reaches the server log, and
+     * the log capture keeps the lines emitted on this thread while it runs.
+     */
     private void executeConsoleCommand(String requestId, String commandLine) {
         List<String> output = new ArrayList<>();
-        org.bukkit.command.ConsoleCommandSender consoleSender = getServer().getConsoleSender();
-        try {
-            CommandSender proxySender = (CommandSender) java.lang.reflect.Proxy.newProxyInstance(
-                getClass().getClassLoader(),
-                new Class<?>[]{ org.bukkit.command.ConsoleCommandSender.class },
-                (proxy, method, args) -> {
-                    String methodName = method.getName();
-                    if (methodName.equals("sendMessage")) {
-                        if (args != null && args.length > 0) {
-                            for (Object arg : args) {
-                                if (arg instanceof String s) {
-                                    output.add(s);
-                                } else if (arg instanceof Component comp) {
-                                    output.add(net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(comp));
-                                } else if (arg instanceof Component[] comps) {
-                                    for (Component c : comps) {
-                                        output.add(net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(c));
-                                    }
-                                } else if (arg != null) {
-                                    output.add(arg.toString());
-                                }
-                            }
-                        }
-                        return null;
-                    }
-                    return method.invoke(consoleSender, args);
-                }
-            );
-            boolean success = getServer().dispatchCommand(proxySender, commandLine);
-            if (output.isEmpty()) {
-                output.add(success ? "Command executed." : "Command unknown or failed.");
-            }
-            completedCommandsQueue.offer(new CommandResult(requestId, output, success));
-        } catch (Exception e) {
-            output.add("Error executing command: " + e.getMessage());
-            completedCommandsQueue.offer(new CommandResult(requestId, output, false));
+        synchronized (commandOutputStream) {
+            commandOutputStream.clear();
         }
+        commandOutputThread = Thread.currentThread();
+        boolean success;
+        try {
+            success = getServer().dispatchCommand(getServer().getConsoleSender(), commandLine);
+        } catch (Exception e) {
+            output.add("Error executing command: " + e);
+            completedCommandsQueue.offer(new CommandResult(requestId, output, false));
+            return;
+        } finally {
+            commandOutputThread = null;
+        }
+        synchronized (commandOutputStream) {
+            output.addAll(commandOutputStream);
+            commandOutputStream.clear();
+        }
+        if (output.isEmpty()) {
+            output.add(success ? "Command executed." : "Command unknown or failed.");
+        }
+        completedCommandsQueue.offer(new CommandResult(requestId, output, success));
     }
 
     private void executeModerationAction(String id, String action, String targetUuid, String targetUsername, String reason, Long durationSeconds) {

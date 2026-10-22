@@ -24,6 +24,13 @@ import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
 import perfCenterIcon from '../assets/icons/vista-perf-center.png'
 import coinIcon from '../assets/icons/coin.png'
 
+const LOG_LEVEL_PREFIX = /^\[[A-Z]+\]\s*/
+
+// The server stream prefixes its lines with the level; a command's own echo does not.
+function withoutLogLevel(text: string): string {
+  return text.replace(LOG_LEVEL_PREFIX, '')
+}
+
 interface Props {
   visible: boolean
 }
@@ -50,6 +57,13 @@ export default function AdminPage({ visible }: Props) {
   const [autoScroll, setAutoScroll] = useState(true)
   const [executingCommand, setExecutingCommand] = useState(false)
   const terminalEndRef = useRef<HTMLDivElement>(null)
+  // The poll cursor is the newest id the *server* handed out. A command's locally
+  // echoed output must never become the cursor, or the terminal would ask for lines
+  // newer than any the panel can produce and then sit silent.
+  const lastServerLogIdRef = useRef<number | undefined>(undefined)
+  // A command prints once as an echo and again in the server stream a moment later;
+  // remember the echoes so the same line is not shown twice.
+  const recentEchoesRef = useRef<{ text: string; at: number }[]>([])
 
   // --- Moderation State ---
   const [modList, setModList] = useState<AdminModerationList>({ bans: [], mutes: [] })
@@ -120,17 +134,24 @@ export default function AdminPage({ visible }: Props) {
 
     const fetchLogs = async () => {
       try {
-        const lastId = consoleLogs.length > 0 ? consoleLogs[consoleLogs.length - 1].id : undefined
-        const newLogs = await getAdminConsoleLogs(lastId)
-        if (active && newLogs.length > 0) {
-          setConsoleLogs((prev) => {
-            const existingIds = new Set(prev.map((l) => l.id))
-            const filtered = newLogs.filter((l) => !existingIds.has(l.id))
-            if (filtered.length === 0) return prev
-            const combined = [...prev, ...filtered]
-            return combined.slice(-500)
+        const newLogs = await getAdminConsoleLogs(lastServerLogIdRef.current)
+        if (!active || newLogs.length === 0) return
+        lastServerLogIdRef.current = newLogs[newLogs.length - 1].id
+        const now = Date.now()
+        recentEchoesRef.current = recentEchoesRef.current.filter((echo) => now - echo.at < 10_000)
+        setConsoleLogs((prev) => {
+          const existingIds = new Set(prev.map((l) => l.id))
+          const fresh = newLogs.filter((l) => !existingIds.has(l.id))
+          const filtered = fresh.filter((log) => {
+            const plain = withoutLogLevel(log.text)
+            const echo = recentEchoesRef.current.findIndex((entry) => entry.text === plain)
+            if (echo === -1) return true
+            recentEchoesRef.current.splice(echo, 1)
+            return false
           })
-        }
+          if (filtered.length === 0) return prev
+          return [...prev, ...filtered].slice(-500)
+        })
       } catch {
         // Ignore
       }
@@ -142,7 +163,7 @@ export default function AdminPage({ visible }: Props) {
       active = false
       clearInterval(timer)
     }
-  }, [visible, activeTab, consoleLogs])
+  }, [visible, activeTab])
 
   // --- Moderation Tab Fetch ---
   const refreshModeration = async () => {
@@ -254,13 +275,15 @@ export default function AdminPage({ visible }: Props) {
     try {
       const res = await executeAdminConsoleCommand(trimmed)
       playSound('done')
-      // Append immediate local representation to console logs
-      const localId = Date.now()
+      // Echo the output immediately with ids outside the server's range: the panel
+      // owns the positive id space, and these entries are display-only.
+      const now = Date.now()
       const logLines: ConsoleLogEntry[] = res.output.map((out, idx) => ({
-        id: localId + idx,
+        id: -(now + idx),
         text: out,
-        timestamp: Date.now(),
+        timestamp: now,
       }))
+      recentEchoesRef.current.push(...res.output.map((text) => ({ text, at: now })))
       setConsoleLogs((prev) => [...prev, ...logLines].slice(-500))
     } catch {
       setError(`Failed to execute command: /${trimmed}`)

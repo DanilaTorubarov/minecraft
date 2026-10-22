@@ -47,6 +47,10 @@ services:
       SMTP_PORT: 1025
       SMTP_TLS: none
       SMTP_FROM: accounts@example.test
+      # .env.docker carries the deployment's real SMTP login; mailpit has no AUTH, so
+      # leaving it in would make every mail-sending test fail with 503.
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
       PUBLIC_SITE_URL: https://localhost
     depends_on:
       db:
