@@ -1,0 +1,18 @@
+# Paper world overrides for the Mining Dimension (created by LinkBridge).
+#
+# Anti-Xray is OFF here, for two reasons:
+#   1. This dimension's entire reward is the vein of fuel crystals the player
+#      finds on foot. Obfuscation replaces those crystals with fake ores in the
+#      client's chunk data, so the crystals become indistinguishable from the
+#      fake stone — nobody can find the thing they came for. (Real crystal blocks
+#      are also sent as some other random ore, so even the correct spot looks
+#      wrong until it is broken.)
+#   2. Every block in a cavern is exposed, so there is no hidden rock for the
+#      obfuscator to protect; all it does here is fake the walkable floor.
+#
+# The overworld keeps the defaults from config/paper-world-defaults.yml.
+
+_version: 31
+anticheat:
+  anti-xray:
+    enabled: false

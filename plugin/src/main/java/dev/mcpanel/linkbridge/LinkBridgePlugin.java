@@ -6302,6 +6302,34 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         }
     }
 
+    /**
+     * Bedrock clients that join through Geyser predict their own block changes
+     * and only correct themselves when the server sends the real block back. A
+     * cancelled Bukkit event sends no correction, so a refused break leaves a
+     * client-side hole the server still has: the player then walks into the
+     * block and is pushed back out of it (Java clients roll the prediction back
+     * on their own). Hand the authoritative block back on every refusal.
+     */
+    private void resyncBlockForClient(Player player, Block block) {
+        if (player == null || block == null || !player.isOnline()) return;
+        player.sendBlockChange(block.getLocation(), block.getBlockData());
+    }
+
+    /**
+     * The same problem in reverse for a refused placement: the Bedrock client
+     * keeps the block it thinks it placed. The event fires before the server
+     * applies the change, so re-read the real block on the next tick instead of
+     * guessing what was there.
+     */
+    private void resyncBlockNextTick(Player player, Block block) {
+        if (player == null || block == null) return;
+        Location location = block.getLocation().clone();
+        getServer().getScheduler().runTask(this, () -> {
+            if (!player.isOnline() || location.getWorld() == null) return;
+            player.sendBlockChange(location, location.getBlock().getBlockData());
+        });
+    }
+
     @EventHandler(priority = EventPriority.NORMAL)
     public void onPrivateBlockBreak(BlockBreakEvent event) {
         Player player = event.getPlayer();
@@ -6322,6 +6350,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 }
                 if (!PickaxeRules.canMineTier(pickaxeTier, oreTier)) {
                     event.setCancelled(true);
+                    resyncBlockForClient(player, block);
                     player.sendMessage("§c[Mine] You need a " + PickaxeRules.pickaxeName(oreTier) + " to extract this fuel crystal!");
                     player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_ANVIL_LAND, 0.5f, 0.5f);
                     return;
@@ -6343,6 +6372,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
             }
             if (block.getType() == Material.BEDROCK) {
                 event.setCancelled(true);
+                resyncBlockForClient(player, block);
                 return;
             }
             // Allow breaking to navigate the cavern, but drop no items and give no exp!
@@ -6355,6 +6385,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (core != null) {
             if (!core.ownerUuid.equals(player.getUniqueId())) {
                 event.setCancelled(true);
+                resyncBlockForClient(player, block);
                 player.sendMessage("§c[Protected] Only the owner (" + core.ownerName + ") can dismantle this protection core!");
                 return;
             }
@@ -6376,6 +6407,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         PlacedPrivateBlock pb = getProtectingBlock(block.getLocation());
         if (pb != null && !canAccessZone(player.getUniqueId(), pb)) {
             event.setCancelled(true);
+            resyncBlockForClient(player, block);
             player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "!"));
         }
     }
@@ -6388,6 +6420,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         if (worldName.equals("mine_world")) {
             event.setCancelled(true);
+            resyncBlockNextTick(player, block);
             player.sendMessage("§c[Mine] You cannot place blocks in the Mining Dimension!");
             return;
         }
@@ -6464,6 +6497,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                 }
             }
             event.setCancelled(true);
+            resyncBlockNextTick(player, block);
             player.sendActionBar(Component.text("§c[Protected] Zone owned by " + pb.ownerName + "! Cannot build or place blocks without a raid."));
         }
     }

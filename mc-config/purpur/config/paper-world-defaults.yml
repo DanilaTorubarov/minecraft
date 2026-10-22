@@ -4,62 +4,75 @@
 _version: 31
 anticheat:
   anti-xray:
-    # Built-in asynchronous chunk obfuscation engine (Anti-Xray)
+    # Built-in asynchronous chunk obfuscation engine (Anti-Xray).
+    #
+    # Engine mode 3, not 2. Mode 2 is currently broken for Bedrock players who
+    # join through Geyser: the client stops receiving clientbound block/entity
+    # updates a few seconds after joining (their own actions still reach the
+    # server, but blocks stay behind and the client eventually times out).
+    # Mode 3 obfuscates the same way but randomises one block per vertical chunk
+    # layer instead of per block, which Geyser translates correctly and which is
+    # also cheaper to send. See Geyser issue #6650.
     enabled: true
-    # Engine Mode 2: Obfuscator mode (hides real ores as stone and scatters fake ores in unexposed blocks)
-    engine-mode: 2
-    # Obfuscate all underground layers from bedrock up to mountain peaks
-    max-block-height: 180
-    # Obscure blocks adjacent to lava until cleared
-    lava-obscures: true
-    # Radius of block updates sent to client on block break
+    engine-mode: 3
+    # Keep this at the surface level Paper recommends (64). This world's spawn is
+    # around y=123, and obfuscating solid blocks at build height puts fake ores in
+    # walls and floors; below 64 the fake ore is behind solid rock where it
+    # belongs. Raise it only if you accept fake blocks at your build height.
+    max-block-height: 64
+    # Obscuring blocks that touch lava is what shows fake ores floating in lava.
+    lava-obscures: false
+    # Radius of real block updates sent to the client when it interacts.
     update-radius: 2
     use-permission: false
+    # Fake-ore pool. Only blocks that can be placed as fakes belong here: tile
+    # entities (chests, spawners) are ignored by Paper and are listed under
+    # replacement-blocks instead. `air` is deliberately absent: it hides ores
+    # exposed to air too, at the cost of a lot of extra fake blocks and client
+    # FPS.
     hidden-blocks:
-    # Overworld & Mining Dimension Fuel Ores
     - copper_ore
     - deepslate_copper_ore
     - raw_copper_block
-    - lapis_ore
-    - deepslate_lapis_ore
-    - redstone_ore
-    - deepslate_redstone_ore
-    - emerald_ore
-    - deepslate_emerald_ore
-    - amethyst_block
-    - budding_amethyst
-    # Precious Vanilla Ores
+    - coal_ore
+    - deepslate_coal_ore
     - diamond_ore
     - deepslate_diamond_ore
+    - emerald_ore
+    - deepslate_emerald_ore
     - gold_ore
     - deepslate_gold_ore
     - raw_gold_block
     - iron_ore
     - deepslate_iron_ore
     - raw_iron_block
-    - coal_ore
-    - deepslate_coal_ore
-    # Nether Ores
-    - ancient_debris
-    - nether_gold_ore
-    - nether_quartz_ore
-    # Containers & Valuables
-    - chest
-    - trapped_chest
-    - ender_chest
-    - spawner
-    - tnt
+    - lapis_ore
+    - deepslate_lapis_ore
+    - redstone_ore
+    - deepslate_redstone_ore
+    # Blocks that get replaced by the fake-ore pool above. Tile entities are
+    # allowed here (they are hidden, never used as fakes).
     replacement-blocks:
     - stone
     - deepslate
+    - cobbled_deepslate
     - andesite
     - diorite
     - granite
     - tuff
-    - netherrack
-    - basalt
-    - blackstone
-    - cobbled_deepslate
+    - calcite
+    - smooth_basalt
     - dirt
     - gravel
     - oak_planks
+    - amethyst_block
+    - budding_amethyst
+    - chest
+    # The nether and the mining dimension override this file: see
+    # world/dimensions/minecraft/the_nether/paper-world.yml and
+    # world/dimensions/minecraft/mine_world/paper-world.yml.
+    - netherrack
+    - basalt
+    - blackstone
+    - soul_sand
+    - soul_soil
