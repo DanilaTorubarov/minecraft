@@ -14,6 +14,34 @@
 - Verification: configuration checked and validated; runtime configs synced to `mc/purpur/`.
 
 
+## Stalled plugin download stopped the container — Geyser/Floodgate pinned — 2026-10-22
+
+- Reported as "the server crashed" at 19:39. It was not a Java crash: Docker records `minecraft-purpur-1` **exit 1**
+  at 19:39:33, ten seconds after the deploy stop (exit 0 at 19:39:23). The failed boot's `mc-image-helper` log reads
+  `Failed to process source: null` / `'mcopy' command failed` / `io.netty.handler.timeout.ReadTimeoutException` — the
+  newly added `floodgate-spigot` PLUGINS URL timed out against `download.geysermc.org`. `restart: unless-stopped`
+  restarted the container, and the retry treated the 16 KB partial jar as "already up to date", so Paper logged
+  `Error loading plugin: zip END header not found` and booted with 5 plugins (no Floodgate).
+- The same defect hit the Velocity restart at 19:55: the interrupted Geyser fetch truncated
+  `Geyser-Velocity.jar` to 15 KB, so Velocity logged `Can't create module for plugin geyser`
+  (`ClassNotFoundException: GeyserVelocityPlugin`). Java players were fine; Bedrock was unreachable.
+- Cause of both: `mc-image-helper` truncates the destination before a download completes, and its freshness check
+  then compares mtimes — the failed partial file is newer than upstream's `Last-Modified`, so the next boot accepts
+  it. `latest` Geyser/Floodgate URLs made this recur on every upstream build (Geyser 2.12.0 build 1269 appeared at
+  18:29 that day), and this host currently receives only ~20 KB per connection before the Geyser download host
+  stalls (several parallel attempts measured 0.1–1.4 KB/s).
+- Fix: `compose.yaml` now pins Geyser `2.12.0` build `1269` and Floodgate `2.2.5` build `141` for both the proxy and
+  the backend, matching the other pinned plugins. The replacement jars were fetched with a resumable parallel-range
+  downloader and verified (`zipfile.testzip()`, 19,560 entries / 4,578 entries).
+- Verification: `purpur` boots **6** plugins — AuthMe, BlueMap, GrimAC, LinkBridge, SkinsRestorer and `floodgate
+  2.2.5-SNAPSHOT (b141)` — and SkinsRestorer logs `Floodgate skin listener registered`; the shared 16-byte
+  `mc/purpur/plugins/floodgate/key.pem` is in place. `velocity` loads `geyser 2.12.0-b1269` and `floodgate 2.2.5`
+  and listens on UDP 19132; runtime configs carry `send-floodgate-data: true` and `cache-images: 14`. A live Bedrock
+  join after the repair still needs a Bedrock client.
+- Geyser also prints its pre-existing NetherNet notice (`Players will not be able to connect ... starting October
+  27th`) as an ERROR-level banner; it was present before this change and is not part of the failure.
+
+
 ## Bedrock players froze and mined nothing — anti-xray mode 2 — 2026-10-22
 
 - Report from the Bedrock player `.Kokochi7232` (Floodgate UUID `00000000-0000-0000-0009-01f835f39efb`): blocks in
