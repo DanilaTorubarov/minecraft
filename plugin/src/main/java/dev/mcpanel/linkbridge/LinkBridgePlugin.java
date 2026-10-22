@@ -1973,6 +1973,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     private String internalBase;
     private final Map<String, PlacedPrivateBlock> placedPrivateBlocks = new ConcurrentHashMap<>();
     private final Map<UUID, Long> activeMineExpeditions = new ConcurrentHashMap<>();
+    private final Map<UUID, Location> mineReturnLocations = new ConcurrentHashMap<>();
     private final Map<UUID, net.kyori.adventure.bossbar.BossBar> expeditionBossBars = new ConcurrentHashMap<>();
     private final Map<Location, RegeneratingOreNode> regeneratingNodes = new ConcurrentHashMap<>();
     private final Map<UUID, PlacedPrivateBlock> activeCoreGuis = new ConcurrentHashMap<>();
@@ -2940,6 +2941,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         if (player.getWorld().getName().equals("mine_world") || activeMineExpeditions.containsKey(player.getUniqueId())) {
             UUID u = player.getUniqueId();
+            mineReturnLocations.remove(u);
             activeMineExpeditions.remove(u);
             var bar = expeditionBossBars.remove(u);
             if (bar != null) {
@@ -4260,8 +4262,13 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         if (bar != null) {
             player.hideBossBar(bar);
         }
-        World overworld = getServer().getWorlds().getFirst();
-        player.teleport(overworld.getSpawnLocation());
+        Location returnLoc = mineReturnLocations.remove(uuid);
+        if (returnLoc != null && returnLoc.getWorld() != null && !returnLoc.getWorld().getName().equals("mine_world")) {
+            player.teleport(returnLoc);
+        } else {
+            World overworld = getServer().getWorlds().getFirst();
+            player.teleport(overworld.getSpawnLocation());
+        }
         player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_CHEST_CLOSE, 1.0f, 1.0f);
         if (message != null && !message.isBlank()) {
             player.sendMessage("§e[Mine] " + message);
@@ -5752,6 +5759,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
                         }
                         lightMineSpawnArea(mineWorld, spawn);
                         clearHostileMobsNear(spawn, 30.0);
+                        mineReturnLocations.put(uuid, player.getLocation().clone());
                         player.teleport(spawn);
                         long expires = System.currentTimeMillis() + 300_000L;
                         activeMineExpeditions.put(uuid, expires);
