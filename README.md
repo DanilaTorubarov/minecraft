@@ -543,6 +543,19 @@ The server runs **GrimAC** (`2.3.75-8baa16f`), an asynchronous, predictive 1:1 p
 - **Operator alerts**: server operators automatically receive `grim.alerts` to monitor flags and potential violations in real time.
 - Configuration templates are version-controlled under `mc-config/purpur/plugins/GrimAC/`.
 
+### AntiBot & DDoS Protection
+
+Multi-layered protection secures both the web panel and the Minecraft network against DDoS, automated bots, and connection floods:
+
+1. **Velocity Proxy Hardening & AntiBot**:
+   - **Sonar AntiBot** (`v2.1.53` on Velocity): Detects bot join floods via automated attack tracking (`attack-tracker`). When bot waves occur, verification mode (`timing: DURING_ATTACK`) activates, while normal players connect seamlessly during peace time. Bedrock players (`check-geyser-players: false`) bypass verification to preserve frictionless crossplay. Maximum of 3 online players per IP address.
+   - **Network & Packet Limiting** (`mc-config/velocity/velocity.toml`): Rapid login attempts from the same IP are throttled (`login-ratelimit = 2000` ms). Connection and read timeouts (5s) prevent slowloris TCP exhaustion. `[packet-limiter]` drops packet-flooding clients (350 packets/s, 1 MB/s wire throughput, 5 MB/s decompression bomb protection).
+2. **Backend Server Protection (AuthMe)**:
+   - AuthMe anti-bot is enabled (`enableProtection: true`, `enableAntiBot: true`) to throttle the authentication gate during join spikes, and kicks bots issuing instant commands on join (`denyCommandsBeforeMilliseconds: 1000`).
+3. **Web Proxy & API Rate Limiting (Caddy & Axum)**:
+   - **Caddy**: HTTP timeouts (`read_body 10s`, `read_header 5s`, `write 15s`, `idle 120s`) mitigate Slowloris / slow HTTP attacks. Request bodies are capped at 10MB to block buffer exhaustion attacks. Automated scanner user-agents (sqlmap, nikto, masscan, zgrab, etc.) are immediately rejected with 403 Forbidden.
+   - **Axum**: An in-memory sliding-window burst limiter on `/api/*` (`rate_limit_global_api`) enforces a 25 req/sec ceiling per IP, returning 429 Too Many Requests immediately without taxing PostgreSQL.
+
 That file is **partial** — AuthMe fills in every other key from its own defaults, so it stays small and survives AuthMe upgrades.
 
 > Two things to know. `ProtectInventoryBeforeLogIn` is silently disabled without the PacketEvents plugin; what actually keeps a registered player out of the world until they log in is AuthMe's Paper **pre-join dialog**. And `/website` must stay **out** of `allowCommands` — that list is the pre-login whitelist, and linking must be impossible before authenticating.

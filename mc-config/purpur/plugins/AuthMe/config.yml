@@ -47,3 +47,17 @@ settings:
         passwordHash: BCRYPT
         # Match the website minimum: six characters for new/changed passwords.
         minPasswordLength: 6
+
+    protection:
+        # Enable backend AntiBot protection against automated login/register floods
+        enableProtection: true
+        enableAntiBot: true
+        antiBotInterval: 5
+        antiBotSensibility: 10
+        antiBotDuration: 10
+        antiBotDelay: 30
+        geoIpDatabase:
+            enabled: false
+        quickCommands:
+            # Kicks bots that spam commands within 1000ms of connecting
+            denyCommandsBeforeMilliseconds: 1000

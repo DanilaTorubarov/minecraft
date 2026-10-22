@@ -102,6 +102,16 @@
 - Server operators (`isOp()`) receive `grim.alerts` to monitor cheat flags.
 - Config templates live in `mc-config/purpur/plugins/GrimAC/` (`config.yml`, `punishments.yml`, `messages.yml`).
 
+## AntiBot & DDoS Protection
+- **Velocity AntiBot & Proxy Hardening**:
+  - **Sonar AntiBot** (`Sonar-Velocity.jar` v2.1.53 on Velocity, pinned in `compose.yaml`): multi-layered bot filter with attack tracker (`attack-tracker.min-players-for-attack: 8`), connection queue (`queue.max-polls`), per-IP join limits (`max-online-per-ip: 3`), and Bedrock exemption (`check-geyser-players: false`). Verification activates automatically during active bot attacks (`timing: DURING_ATTACK`), ensuring zero friction for normal players during peace time.
+  - Proxy rate limiting and packet limiter (`mc-config/velocity/velocity.toml`): `login-ratelimit = 2000` ms, `connection-timeout = 5000` ms, `read-timeout = 5000` ms, and `[packet-limiter]` enforcing 350 pps, 1 MB/s wire throughput, 5 MB/s decompression bomb protection, and `show-ping-requests = false`.
+- **Backend Purpur Protection (AuthMe)**:
+  - `enableProtection: true` and `enableAntiBot: true` in `mc-config/purpur/plugins/AuthMe/config.yml`. Kicks bots issuing instant commands on join (`denyCommandsBeforeMilliseconds: 1000`) and throttles authentication gate during join spikes.
+- **Web & API DDoS Mitigation (Caddy & Axum)**:
+  - Caddy (`Caddyfile`): Slowloris mitigation via strict HTTP server timeouts (`read_body 10s`, `read_header 5s`, `write 15s`, `idle 120s`), `max_header_size 16KB`, `request_body max_size 10MB`, and automated scanner User-Agent blocking (`sqlmap`, `nikto`, `masscan`, `zgrab`, `nmap`, `dirbuster`, `acunetix`, etc.) returning 403 Forbidden.
+  - Axum API burst rate limiter (`rate_limit_global_api` in `src/main.rs`): In-memory sliding window rate limiter on `/api/*` rejecting abusive floods (>25 req/sec sustained per IP) with HTTP 429 immediately without database load.
+
 ## Player skin uploads
 - `GET /api/players/{uuid}/skin` and multipart `POST` are session-protected and owner-only (`404` otherwise), with `Cache-Control: no-store`. POST requires `X-Player-Skin: upload`, `file` and `model` (`classic`/`slim`). Fully decode the PNG, enforce ≤256 KiB and 64×64/64×32, then re-encode to strip metadata. Accepted uploads return `202`; active uploads `409`, accepted-upload cooldown (30 s) `429`.
 - Migration `0009` stores observed `player_skins` separately (no link FK; survives unlink) and durable `skin_uploads` (FK cascades on unlink). Preserve `queued → signing → ready → saved` and `failed`; the SQL worker resumes after restart, retries network/server/rate-limit errors, has a ten-minute signing deadline and discards PNG bytes after success/failure. MineSkin receives unlisted images; optional `MINESKIN_API_KEY` comes from `.env.docker` and must never be committed.

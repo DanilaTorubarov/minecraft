@@ -84,10 +84,11 @@ services:
       VELOCITY_FORWARDING_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
       PUID: "1000"
       PGID: "1000"
-      # Geyser + Floodgate for Minecraft Bedrock (crossplay on UDP 19132).
+      # Geyser + Floodgate for Minecraft Bedrock (crossplay on UDP 19132) + Sonar AntiBot.
       PLUGINS: |
         https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/velocity
         https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/velocity
+        https://cdn.modrinth.com/data/I2qO6xbc/versions/YZGJbFHA/Sonar-Velocity.jar
     ports:
       - "25565:25565"
       - "19132:19132/udp"

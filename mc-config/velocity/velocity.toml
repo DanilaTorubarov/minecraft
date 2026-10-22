@@ -22,10 +22,27 @@ online-mode = false
 player-info-forwarding-mode = "modern"
 forwarding-secret-file = "forwarding.secret"
 
+# Anti-DDoS and connection flood protection: rate limit rapid logins from same IP (ms)
+login-ratelimit = 2000
+
+# Connection timeouts to prevent slow connection exhaustion attacks
+connection-timeout = 5000
+read-timeout = 5000
+
+# Prevent log/IO flooding during MOTD server list ping attacks
+show-ping-requests = false
+
 [servers]
 # "purpur" is the Compose service name; it resolves on the Compose network.
 purpur = "purpur:25565"
 try = ["purpur"]
+
+# Packet limiter: mitigates packet-level flood attacks and compression bombs
+[packet-limiter]
+interval = 7
+packets-per-second = 350
+bytes-per-second = 1048576
+decompressed-bytes-per-second = 5242880
 
 # The mc-proxy image merges Velocity's bundled default template underneath this
 # file, and that template ships example forced hosts pointing at servers we do

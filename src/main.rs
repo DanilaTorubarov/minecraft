@@ -179,6 +179,7 @@ fn app(pool: sqlx::PgPool) -> Router {
         // status to 404, which would serve the shell with a 404 and break the promise
         // that this route exists.
         .fallback_service(ServeDir::new("frontend/dist").fallback(get(spa_fallback)))
+        .layer(middleware::from_fn(rate_limit_global_api))
         .with_state(pool)
 }
 
@@ -392,6 +393,51 @@ async fn rate_limit_register_ip(
 
 async fn rate_limit_security_ip(State(pool): State<sqlx::PgPool>, request: Request, next: Next) -> Response {
     rate_limit_request(&pool, "security_ip", 30, 900, request, next).await
+}
+
+static API_DDOS_LIMITER: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashMap<String, (u64, u32)>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
+const API_DDOS_WINDOW_SECONDS: u64 = 10;
+const API_DDOS_MAX_REQUESTS: u32 = 250;
+
+/// Fast in-memory rate limiter protecting all `/api/*` routes against volumetric HTTP floods.
+/// Rejects abusive bursts (> 25 req/sec sustained per IP) with HTTP 429 immediately without touching Postgres.
+async fn rate_limit_global_api(
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    if !path.starts_with("/api") {
+        return next.run(request).await;
+    }
+
+    let subject = client_ip(request.headers());
+    let now = now_unix() as u64;
+    let window_index = now / API_DDOS_WINDOW_SECONDS;
+
+    let exceeded = {
+        let mut map = API_DDOS_LIMITER.write().unwrap();
+        if map.len() > 10_000 {
+            map.retain(|_, (w, _)| *w >= window_index);
+        }
+        let entry = map.entry(subject).or_insert((window_index, 0));
+        if entry.0 == window_index {
+            entry.1 += 1;
+            entry.1 > API_DDOS_MAX_REQUESTS
+        } else {
+            *entry = (window_index, 1);
+            false
+        }
+    };
+
+    if exceeded {
+        let retry_after = (API_DDOS_WINDOW_SECONDS - (now % API_DDOS_WINDOW_SECONDS)).max(1);
+        return rate_limited(retry_after as i64);
+    }
+
+    next.run(request).await
 }
 
 async fn account_is_locked(pool: &sqlx::PgPool, email: &str) -> Result<bool, sqlx::Error> {
@@ -12282,6 +12328,29 @@ mod test {
         }
         let response = response.expect("at least one request");
         clear_rate_limits(&pool, &ip).await?;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key(axum::http::header::RETRY_AFTER));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn api_ddos_rate_limiter_blocks_abusive_bursts() -> TestResult {
+        let pool = connect().await?;
+        let ip = random_ip();
+        let mut response = None;
+        for _ in 0..=(API_DDOS_MAX_REQUESTS + 1) {
+            response = Some(
+                send_from(
+                    &pool,
+                    "GET",
+                    "/api/me",
+                    None,
+                    None,
+                    Some(&ip),
+                ).await?
+            );
+        }
+        let response = response.expect("at least one response");
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(response.headers().contains_key(axum::http::header::RETRY_AFTER));
         Ok(())
