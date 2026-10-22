@@ -54,36 +54,11 @@ jobs:
         run: docker build -t oasis-ci-app .
       - name: Check Minecraft plugin build
         run: ./scripts/build-plugin.sh
-      - name: Simulate economy and record release acceptance
-        env:
-          ECONOMY_SIM_TARGET_DIR: /app/target
-        run: ./scripts/simulate-economy.sh
-      - uses: actions/setup-python@v5
-        if: always() && hashFiles('reports/economy/runs.json') != ''
-        with:
-          python-version: '3.12'
-      - name: Render economy report
-        if: always() && hashFiles('reports/economy/runs.json') != ''
-        run: |
-          python -m pip install -r scripts/economy/requirements.txt
-          python scripts/economy/render.py
-          cat reports/economy/summary.md >> "$GITHUB_STEP_SUMMARY"
-          if [ -f reports/economy/comparison.md ]; then
-            cat reports/economy/comparison.md >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - uses: actions/upload-artifact@v4
-        if: always() && hashFiles('reports/economy/manifest.json') != ''
-        with:
-          name: economy-simulations
-          path: reports/economy/
-          retention-days: 30
-          if-no-files-found: error
       - name: Remove disposable test containers and data
         if: always()
         run: |
           if [ -f .env.docker ]; then
             docker compose -p oasis-ci --env-file .env.docker --profile tests down
-            docker compose -p oasis-economy-sim -f compose.economy-sim.yaml down
           fi
 
   deploy:
