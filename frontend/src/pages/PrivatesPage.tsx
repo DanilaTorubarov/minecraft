@@ -22,6 +22,7 @@ import {
 } from '../lib/fuel'
 import { isFuelCriticallyLow } from '../lib/parcels'
 import { playSound } from '../lib/sounds'
+import { PROTECTION_CORE_ICON, getFuelTierIcon } from '../lib/customIcons'
 import firewallWarningIcon from '../assets/icons/vista-firewall-warning.png'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
 import firewallOffIcon from '../assets/icons/vista-firewall-off.png'
@@ -267,11 +268,7 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px' }}>
             {fuelCrystals.map(({ slot, item, info }) => (
               <div key={slot} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '6px' }}>
-                {item.icon ? (
-                  <img src={item.icon} alt="" style={{ width: '28px', height: '28px', imageRendering: 'pixelated' }} />
-                ) : (
-                  <div style={{ width: '28px', height: '28px', borderRadius: '4px', background: 'var(--line)' }} />
-                )}
+                <img src={getFuelTierIcon(info.tier)} alt="" style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {info.name} <span style={{ color: 'var(--muted)', fontSize: '12px' }}>×{item.amount || 1}</span>
@@ -310,11 +307,17 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--line)', paddingBottom: '10px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <img
-                      src={isActive ? firewallOnIcon : firewallOffIcon}
+                      src={PROTECTION_CORE_ICON}
                       alt=""
-                      style={{ width: '20px', height: '20px', objectFit: 'contain' }}
+                      style={{ width: '24px', height: '24px', objectFit: 'contain' }}
                     />
                     <strong style={{ fontSize: '15px' }}>Protection Core #{index}</strong>
+                    <img
+                      src={isActive ? firewallOnIcon : firewallOffIcon}
+                      alt={isActive ? 'Active shield' : 'Inactive shield'}
+                      title={isActive ? 'Active shield' : 'Inactive shield'}
+                      style={{ width: '16px', height: '16px', objectFit: 'contain', opacity: 0.9 }}
+                    />
                   </div>
                   <span
                     style={{
@@ -409,7 +412,8 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                               border: isTierActive ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid transparent',
                             }}
                           >
-                            <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <img src={getFuelTierIcon(t)} alt="" style={{ width: '16px', height: '16px', objectFit: 'contain' }} />
                               <span style={{ fontWeight: 600, color: t === 4 ? '#c084fc' : t === 3 ? '#f87171' : t === 2 ? '#38bdf8' : '#fb923c' }}>
                                 Tier {t} ({t === 4 ? '16×16' : t === 3 ? '10×10' : t === 2 ? '5×5' : '2×2'}):
                               </span>{' '}
@@ -474,7 +478,8 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
                               textAlign: 'left',
                             }}
                           >
-                            <span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <img src={getFuelTierIcon(info.tier)} alt="" style={{ width: '16px', height: '16px', objectFit: 'contain' }} />
                               <strong>+ {info.hours}h</strong> {info.name}
                             </span>
                             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -520,7 +525,10 @@ export default function PrivatesPage({ uuid, username, visible, onOpenMarketplac
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <strong style={{ fontSize: '15px', color: 'var(--muted)' }}>Protection Core #{index}</strong>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <img src={PROTECTION_CORE_ICON} alt="" style={{ width: '22px', height: '22px', objectFit: 'contain', opacity: 0.6 }} />
+                  <strong style={{ fontSize: '15px', color: 'var(--muted)' }}>Protection Core #{index}</strong>
+                </div>
                 <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: 'var(--line)', color: 'var(--muted)' }}>
                   Unpurchased
                 </span>

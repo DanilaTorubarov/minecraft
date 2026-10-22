@@ -3768,6 +3768,9 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
         for (String path : List.of(
             "assets/minecraft/textures/item/" + name + ".png",
             "assets/minecraft/textures/block/" + name + ".png",
+            "assets/minecraft/textures/block/" + name + "_top.png",
+            "assets/minecraft/textures/block/" + name + "_side.png",
+            "assets/minecraft/textures/block/" + name + "_front.png",
             "assets/minecraft/textures/item/armor/" + name + ".png")) {
             try (InputStream stream = getResource(path)) {
                 if (stream == null) {

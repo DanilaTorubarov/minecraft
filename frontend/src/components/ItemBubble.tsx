@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { durabilityParts, itemName, slotDescription } from '../lib/inventory'
+import { getCustomItemIcon } from '../lib/customIcons'
 import type { InventorySlot } from '../lib/api'
 import perfCenterIcon from '../assets/icons/vista-perf-center.png'
 
@@ -55,6 +56,9 @@ export default function ItemBubble({ slot, label, onSelect }: { slot: InventoryS
   const worn = wear !== null && slot.damage !== null && slot.damage > 0
   // The pill prints exact numbers; the level only decides how loudly to colour them.
   const durabilityLeft = wear === null ? 0 : Math.min(1, wear.remaining / wear.max)
+  const customIcon = getCustomItemIcon(slot)
+  const iconSrc = customIcon ?? (slot.icon !== null && failedIcon !== slot.icon ? slot.icon : perfCenterIcon)
+  const missingTexture = customIcon === null && (slot.icon === null || failedIcon === slot.icon)
   return (
     <div className="inv-cell">
       <button
@@ -73,11 +77,15 @@ export default function ItemBubble({ slot, label, onSelect }: { slot: InventoryS
       >
         <img
           className="inv-icon"
-          src={slot.icon !== null && failedIcon !== slot.icon ? slot.icon : perfCenterIcon}
+          src={iconSrc}
           alt=""
           loading="lazy"
           draggable={false}
-          onError={() => setFailedIcon(slot.icon)}
+          onError={() => {
+            if (customIcon === null) {
+              setFailedIcon(slot.icon)
+            }
+          }}
         />
         {slot.amount > 1 && <span className="inv-amount">{slot.amount}</span>}
         {worn && wear && (
@@ -96,7 +104,7 @@ export default function ItemBubble({ slot, label, onSelect }: { slot: InventoryS
           onMouseEnter={keepTooltip} onMouseLeave={hideTooltip}>
           <strong>{itemName(slot)}</strong>
           <span>{description.split(' · ').slice(1).join(' · ')}</span>
-          {(slot.icon === null || failedIcon === slot.icon) && <span>Item texture unavailable</span>}
+          {missingTexture && <span>Item texture unavailable</span>}
         </div>, document.body,
       )}
     </div>
