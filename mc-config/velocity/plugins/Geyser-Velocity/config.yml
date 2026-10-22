@@ -218,7 +218,7 @@ notify-on-new-bedrock-update: true
 advanced:
   # Specify how many days player skin images will be cached to disk to save downloading them from the internet.
   # A value of 0 is disabled. (Default: 0)
-  cache-images: 0
+  cache-images: 14
 
   # Geyser updates the Scoreboard after every Scoreboard packet, but when Geyser tries to handle
   # a lot of scoreboard packets per second, this can cause serious lag.

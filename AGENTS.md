@@ -88,11 +88,18 @@
 
 - Preserve the dependency-download settings in Compose: European Paper Maven mirror, HTTP/2 disabled for image downloads, and retained server libraries (AuthMe shares that directory). An interrupted jar must be checked against its provider checksum before restart.
 
-## SkinsRestorer
-- Pinned SkinsRestorer 15.12.6 is installed by Compose on Purpur only. The config template is `mc-config/purpur/plugins/SkinsRestorer/config.yml`.
+## SkinsRestorer & Bedrock Skins
+- Pinned SkinsRestorer 15.12.6 is installed by Compose on Purpur. The config template is `mc-config/purpur/plugins/SkinsRestorer/config.yml`.
 - Intentionally backend-owned on this single-backend Velocity network: `server.proxyMode.detection: DISABLED`, `api: false`. Local file storage travels under `mc/`. Do not add a proxy installation without an AuthMe-aware command gate; proxy skin commands would bypass backend AuthMe restrictions.
 - Keep skin commands and aliases out of AuthMe's pre-login allowlist. Skin lookup is cosmetic and must never replace authentication or alter offline UUIDs.
 - `api.elyByEnabled: true` in release 15.12.6 tries Ely.by first and falls back to Mojang. A same-name Ely.by account has priority. TLauncher skins require a standard PNG import using `/skin upload` or `/skin url`; automatic launcher detection/import is unsupported. Client skin mods may override server-rendered skins.
+- **Bedrock Skin Support (Geyser + Floodgate)**:
+  - Floodgate runs on both Velocity (`floodgate-velocity`) and Purpur (`floodgate-spigot`, pinned in `compose.yaml`).
+  - Velocity forwards Bedrock player packets with `send-floodgate-data: true` in `mc-config/velocity/plugins/floodgate/config.yml`.
+  - Both proxy and backend share the 16-byte AES encryption key (`key.pem`), provisioned automatically by `scripts/mc-init.sh`.
+  - Purpur's Floodgate decrypts the packet and applies the translated Bedrock skin to the player's Java GameProfile, making Bedrock skins visible to all Java and Bedrock players. SkinsRestorer natively defers to Floodgate for Bedrock players unless a `/skin set` override is chosen.
+  - LinkBridge inspects `player.getPlayerProfile().getProperties()` on skin sync passes, extracting the live Floodgate `textures` property to display Bedrock player heads and models in the web panel.
+  - Geyser caches Bedrock skin downloads for 14 days (`cache-images: 14` in `mc-config/velocity/plugins/Geyser-Velocity/config.yml`).
 - Website heads use the reported SkinsRestorer texture hash/model; saved acknowledges storage, not verified rendering on every client. See README's Skins section for commands and verification limits.
 
 ## Anticheat (GrimAC)
@@ -139,6 +146,7 @@
 - The JDK **must** match the backend's Java: `paper-api` 26.3 is Java 25 bytecode (class file major 69) and an older javac refuses to read it. Use Gradle, not raw `javac` — `paper-api` needs ~20 transitive jars (Adventure, annotations, bungee-chat, …) before its signatures resolve.
 - The version lives in `plugin.yml` and is passed to Gradle as `-PpluginVersion`. Keep `paper-api` in `build.gradle` in step with `MC_VERSION`, and `AUTHME` in the script in step with `PLUGINS`.
 - Claim and status answer with bare status codes. Email-hint success returns only a masked plain-text address. The plugin maps status codes to messages and never parses JSON. Claim's `404` covers unknown, used **and** expired codes on purpose.
+- Mining Dimension (`mine_world`): 5-minute mining expeditions (`/mine enter`, `/mine leave`). Players' pre-expedition location is stored in `mineReturnLocations`; upon leaving, expedition expiration, or dying in `mine_world`, the player respawns / returns to the exact location where they were before entering the expedition rather than the world spawnpoint.
 
 ## Testing (`#[cfg(test)] mod test` in src/main.rs)
 - All tests hit real Postgres and run in parallel — they must be idempotent.
