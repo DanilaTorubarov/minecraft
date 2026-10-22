@@ -2962,7 +2962,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
         if (player.getWorld().getName().equals("mine_world") || activeMineExpeditions.containsKey(player.getUniqueId())) {
             UUID u = player.getUniqueId();
-            mineReturnLocations.remove(u);
+            // Retain mineReturnLocations so onPlayerRespawn can return the player to where they were before the expedition
             activeMineExpeditions.remove(u);
             var bar = expeditionBossBars.remove(u);
             if (bar != null) {
@@ -2978,10 +2978,26 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerRespawn(org.bukkit.event.player.PlayerRespawnEvent event) {
         Player player = event.getPlayer();
-        if (event.getRespawnLocation().getWorld().getName().equals("mine_world")
+        UUID u = player.getUniqueId();
+        Location returnLoc = mineReturnLocations.remove(u);
+        if (returnLoc != null && returnLoc.getWorld() != null && !returnLoc.getWorld().getName().equals("mine_world")) {
+            event.setRespawnLocation(returnLoc);
+            final Location target = returnLoc.clone();
+            getServer().getScheduler().runTask(this, () -> {
+                if (player.isOnline()) {
+                    player.teleport(target);
+                    player.sendMessage("§e[Mine] Returned to your previous location.");
+                }
+            });
+        } else if (event.getRespawnLocation().getWorld().getName().equals("mine_world")
             || player.getWorld().getName().equals("mine_world")) {
-            World overworld = getServer().getWorlds().getFirst();
-            event.setRespawnLocation(overworld.getSpawnLocation());
+            Location bedLoc = player.getRespawnLocation();
+            if (bedLoc != null && bedLoc.getWorld() != null && !bedLoc.getWorld().getName().equals("mine_world")) {
+                event.setRespawnLocation(bedLoc);
+            } else {
+                World overworld = getServer().getWorlds().getFirst();
+                event.setRespawnLocation(overworld.getSpawnLocation());
+            }
         }
     }
 

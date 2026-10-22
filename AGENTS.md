@@ -146,6 +146,7 @@
 - The JDK **must** match the backend's Java: `paper-api` 26.3 is Java 25 bytecode (class file major 69) and an older javac refuses to read it. Use Gradle, not raw `javac` — `paper-api` needs ~20 transitive jars (Adventure, annotations, bungee-chat, …) before its signatures resolve.
 - The version lives in `plugin.yml` and is passed to Gradle as `-PpluginVersion`. Keep `paper-api` in `build.gradle` in step with `MC_VERSION`, and `AUTHME` in the script in step with `PLUGINS`.
 - Claim and status answer with bare status codes. Email-hint success returns only a masked plain-text address. The plugin maps status codes to messages and never parses JSON. Claim's `404` covers unknown, used **and** expired codes on purpose.
+- Mining Dimension (`mine_world`): 5-minute mining expeditions (`/mine enter`, `/mine leave`). Players' pre-expedition location is stored in `mineReturnLocations`; upon leaving, expedition expiration, or dying in `mine_world`, the player respawns / returns to the exact location where they were before entering the expedition rather than the world spawnpoint.
 
 ## Testing (`#[cfg(test)] mod test` in src/main.rs)
 - All tests hit real Postgres and run in parallel — they must be idempotent.
