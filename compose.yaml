@@ -85,9 +85,12 @@ services:
       PUID: "1000"
       PGID: "1000"
       # Geyser + Floodgate for Minecraft Bedrock (crossplay on UDP 19132) + Sonar AntiBot.
+      # Pinned by build: a `latest` URL re-downloads whenever upstream publishes,
+      # and a stalled 50 MB fetch leaves a truncated jar (the container exits 1,
+      # then the next boot silently skips the plugin). See AGENTS.md Traps.
       PLUGINS: |
-        https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/velocity
-        https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/velocity
+        https://download.geysermc.org/v2/projects/geyser/versions/2.12.0/builds/1269/downloads/velocity
+        https://download.geysermc.org/v2/projects/floodgate/versions/2.2.5/builds/141/downloads/velocity
         https://cdn.modrinth.com/data/I2qO6xbc/versions/YZGJbFHA/Sonar-Velocity.jar
     ports:
       - "25565:25565"
@@ -128,13 +131,14 @@ services:
       # this it would only reach /data/config.
       COPY_CONFIG_DEST: /data
       # In-game authentication for the offline server. Pinned by URL so a
-      # redeploy gets the same build; use the Paper jar on Purpur.
+      # redeploy gets the same build; use the Paper jar on Purpur. The Floodgate
+      # build matches the proxy's (see AGENTS.md Traps).
       PLUGINS: |
         https://github.com/AuthMe/AuthMeReloaded/releases/download/6.0.1/AuthMe-6.0.1-Paper.jar
         https://github.com/SkinsRestorer/SkinsRestorer/releases/download/15.12.6/SkinsRestorer.jar
         https://github.com/BlueMap-Minecraft/BlueMap/releases/download/v5.29/bluemap-5.29-paper.jar
         https://cdn.modrinth.com/data/LJNGWSvH/versions/X7350Avd/grimac-bukkit-2.3.75-8baa16f.jar
-        https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
+        https://download.geysermc.org/v2/projects/floodgate/versions/2.2.5/builds/141/downloads/spigot
       # Consumed by paper-global.yml's ${CFG_VELOCITY_SECRET} placeholder.
       CFG_VELOCITY_SECRET: ${VELOCITY_SECRET:?run scripts/mc-init.sh to generate VELOCITY_SECRET}
       # Consumed by the link plugin's config.yml placeholder.
