@@ -90,6 +90,7 @@ import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerItemBreakEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
@@ -1862,6 +1863,11 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     // --- Telling unlinked players where to go ---------------------------------
 
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        setupAnticheatPermissions(event.getPlayer());
+    }
+
     /**
      * AuthMe fires these the moment a player is authenticated, which is the first
      * point at which a nudge is both useful and visible: before that the player is
@@ -1869,6 +1875,7 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
      */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onLogin(LoginEvent event) {
+        setupAnticheatPermissions(event.getPlayer());
         countLogin(event.getPlayer());
         announce(event.getPlayer());
         checkPendingMail(event.getPlayer());
@@ -1876,9 +1883,23 @@ public final class LinkBridgePlugin extends JavaPlugin implements CommandExecuto
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onRegister(RegisterEvent event) {
+        setupAnticheatPermissions(event.getPlayer());
         countLogin(event.getPlayer());
         announce(event.getPlayer());
         checkPendingMail(event.getPlayer());
+    }
+
+    private void setupAnticheatPermissions(Player player) {
+        if (player == null) return;
+        // Bedrock / Floodgate clients (usernames starting with '.', or Floodgate UUIDs with 0 MSB)
+        if (player.getName().startsWith(".") || player.getUniqueId().getMostSignificantBits() == 0L) {
+            player.addAttachment(this, "grim.exempt", true);
+            player.addAttachment(this, "grim.nosetback", true);
+            getLogger().info("[Anticheat] Exempted Bedrock player " + player.getName() + " from simulation checks.");
+        }
+        if (player.isOp()) {
+            player.addAttachment(this, "grim.alerts", true);
+        }
     }
 
     /**

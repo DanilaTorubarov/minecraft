@@ -534,6 +534,15 @@ It is configured for a hostile environment out of the box (`allowChat: false`, `
 | `maxLoginPerIp` / `maxJoinPerIp` | `0` (unlimited) | `4` | Allows those four accounts to join/log in while retaining a per-IP limit |
 | `displayOtherAccounts` | `true` | `false` | Otherwise it tells a player which other accounts share their IP |
 
+### Anticheat (GrimAC)
+
+The server runs **GrimAC** (`2.3.75-8baa16f`), an asynchronous, predictive 1:1 physics simulation anticheat powered by PacketEvents.
+- **Predictive movement simulation**: Grim resimulates exact client physics ticks off the main thread. Movement hacks (speed, flight, timer, phase/noclip, ground spoof, step, anti-knockback) are immediately cancelled and set back with zero main-thread TPS drop.
+- **Combat verification**: reach hacks (> 3.0 blocks eye-to-hitbox), impossible angles, and killaura packets are flagged and blocked.
+- **Bedrock / Geyser crossplay exemption**: Bedrock players connecting from Xbox, mobile, or Switch (whose usernames begin with `.` or use Floodgate UUIDs) are automatically granted `grim.exempt` and `grim.nosetback` on join to eliminate false flags caused by Bedrock-to-Java physics translation differences.
+- **Operator alerts**: server operators automatically receive `grim.alerts` to monitor flags and potential violations in real time.
+- Configuration templates are version-controlled under `mc-config/purpur/plugins/GrimAC/`.
+
 That file is **partial** — AuthMe fills in every other key from its own defaults, so it stays small and survives AuthMe upgrades.
 
 > Two things to know. `ProtectInventoryBeforeLogIn` is silently disabled without the PacketEvents plugin; what actually keeps a registered player out of the world until they log in is AuthMe's Paper **pre-join dialog**. And `/website` must stay **out** of `allowCommands` — that list is the pre-login whitelist, and linking must be impossible before authenticating.

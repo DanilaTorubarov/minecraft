@@ -95,6 +95,13 @@
 - `api.elyByEnabled: true` in release 15.12.6 tries Ely.by first and falls back to Mojang. A same-name Ely.by account has priority. TLauncher skins require a standard PNG import using `/skin upload` or `/skin url`; automatic launcher detection/import is unsupported. Client skin mods may override server-rendered skins.
 - Website heads use the reported SkinsRestorer texture hash/model; saved acknowledges storage, not verified rendering on every client. See README's Skins section for commands and verification limits.
 
+## Anticheat (GrimAC)
+- **GrimAC** (`grimac-bukkit-2.3.75-8baa16f.jar` on Purpur): asynchronous 1:1 predictive physics simulation anticheat. Fully off-thread simulation powered by PacketEvents ensures no main-thread TPS degradation.
+- Enforces vanilla boundaries on reach, fly/speed/timer, phase/noclip, anti-knockback, and combat anomalies.
+- Crossplay compatibility: Bedrock players connecting via Geyser/Floodgate (detected by username prefix `.` or Floodgate UUIDs) are automatically assigned `grim.exempt` and `grim.nosetback` on join to prevent false positives caused by Bedrock client physics translation.
+- Server operators (`isOp()`) receive `grim.alerts` to monitor cheat flags.
+- Config templates live in `mc-config/purpur/plugins/GrimAC/` (`config.yml`, `punishments.yml`, `messages.yml`).
+
 ## Player skin uploads
 - `GET /api/players/{uuid}/skin` and multipart `POST` are session-protected and owner-only (`404` otherwise), with `Cache-Control: no-store`. POST requires `X-Player-Skin: upload`, `file` and `model` (`classic`/`slim`). Fully decode the PNG, enforce ≤256 KiB and 64×64/64×32, then re-encode to strip metadata. Accepted uploads return `202`; active uploads `409`, accepted-upload cooldown (30 s) `429`.
 - Migration `0009` stores observed `player_skins` separately (no link FK; survives unlink) and durable `skin_uploads` (FK cascades on unlink). Preserve `queued → signing → ready → saved` and `failed`; the SQL worker resumes after restart, retries network/server/rate-limit errors, has a ten-minute signing deadline and discards PNG bytes after success/failure. MineSkin receives unlisted images; optional `MINESKIN_API_KEY` comes from `.env.docker` and must never be committed.
