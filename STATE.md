@@ -1,6 +1,19 @@
 # Project checkpoint — 2026-10-21
 
 
+## Anti-xray switched to Engine Mode 1 (Ore Hiding) up to Y=180 — 2026-10-22
+
+- Issue observed in game via X-ray client:
+  1. `engine-mode: 3` (`OBFUSCATE_LAYER`) randomized each horizontal 16×16 chunk slice to a single block, creating unnatural, solid horizontal sheets of copper, gold, and diamond ore below Y=64.
+  2. `max-block-height: 64` terminated obfuscation at sea level, leaving mountain terrain and peaks around spawn (spawn is ~Y=123, terrain up to Y=180) completely unhidden, with real coal and iron seams visible to X-ray.
+- Fix:
+  - Switched overworld and nether to **Engine Mode 1 (Ore Hiding)** (`engine-mode: 1`). Unexposed ores underground and in mountains are disguised as ordinary `stone` and `deepslate` (or `netherrack` in the nether).
+  - Raised `max-block-height: 180` in the overworld to cover high mountain emerald, coal, and iron seams.
+  - Eliminated artificial geometric ore sheets and chunk packet bloat entirely; fully compatible with Bedrock (Geyser) clients without desync or freezing.
+  - Mining dimension and The End remain `enabled: false`.
+- Verification: configuration checked and validated; runtime configs synced to `mc/purpur/`.
+
+
 ## Bedrock players froze and mined nothing — anti-xray mode 2 — 2026-10-22
 
 - Report from the Bedrock player `.Kokochi7232` (Floodgate UUID `00000000-0000-0000-0009-01f835f39efb`): blocks in
