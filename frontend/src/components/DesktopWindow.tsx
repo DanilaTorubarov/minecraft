@@ -19,7 +19,7 @@ const FOOTER: Record<WindowKind, [string, string]> = {
   casino: ['Server Mini Games', 'Play and test your luck'],
   marketplace: ['Player marketplace', 'Items held by the server'],
   admin: ['Administration Center', 'Privileged operator controls'],
-  chat: ['Server Chat', 'Live bidirectional Minecraft realm bridge'],
+  chat: ['Server Chat', 'Direct messages, groups & realm bridge'],
   map: ['Live World Map', '2000×2000 Core Terrain Radar'],
   clan: ['Clans & Factions', 'Alliances, treasury & joint private defense'],
   leaderboards: ['Leaderboard Tables', 'Top server player rankings & statistics'],

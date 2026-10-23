@@ -722,6 +722,93 @@ export async function sendChatMessage(text: string): Promise<ChatMessage> {
   return (await response.json()) as ChatMessage
 }
 
+export type ChatParticipant = {
+  user_id: number
+  name: string
+  uuid: string | null
+}
+
+export type ChatLastMessage = {
+  sender_name: string
+  text: string
+  created_at: string
+}
+
+export type ChatConversation = {
+  id: string
+  kind: 'dm' | 'group'
+  title: string
+  participants: ChatParticipant[]
+  last_message: ChatLastMessage | null
+  unread_count: number
+  updated_at: string
+}
+
+export type ChatUserSearchResult = {
+  user_id: number
+  name: string
+  uuid: string | null
+}
+
+export async function getChatConversations(): Promise<ChatConversation[]> {
+  const response = await send('GET', '/api/chat/conversations')
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatConversation[]
+}
+
+export async function createChatConversation(
+  kind: 'dm' | 'group',
+  name: string | null,
+  userIds: number[],
+): Promise<ChatConversation> {
+  const response = await send('POST', '/api/chat/conversations', { kind, name, user_ids: userIds })
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatConversation
+}
+
+export async function getConversationMessages(
+  id: string,
+  sinceId?: number,
+  limit = 50,
+): Promise<ChatMessage[]> {
+  const params = new URLSearchParams()
+  if (sinceId !== undefined) params.set('since_id', String(sinceId))
+  if (limit !== 50) params.set('limit', String(limit))
+  const qs = params.toString()
+  const response = await fetch(`/api/chat/conversations/${id}/messages${qs ? `?${qs}` : ''}`)
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatMessage[]
+}
+
+export async function sendConversationMessage(id: string, text: string): Promise<ChatMessage> {
+  const response = await send('POST', `/api/chat/conversations/${id}/messages`, { text })
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatMessage
+}
+
+export async function markConversationRead(id: string, messageId: number): Promise<void> {
+  const response = await send('POST', `/api/chat/conversations/${id}/read`, { message_id: messageId })
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function addConversationMembers(id: string, userIds: number[]): Promise<ChatConversation> {
+  const response = await send('POST', `/api/chat/conversations/${id}/members`, { user_ids: userIds })
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatConversation
+}
+
+export async function leaveConversation(id: string): Promise<void> {
+  const response = await send('DELETE', `/api/chat/conversations/${id}/members/me`)
+  if (!response.ok) throw new ApiError(response.status)
+}
+
+export async function searchChatUsers(query: string): Promise<ChatUserSearchResult[]> {
+  const params = new URLSearchParams({ query })
+  const response = await fetch(`/api/chat/users?${params.toString()}`)
+  if (!response.ok) throw new ApiError(response.status)
+  return (await response.json()) as ChatUserSearchResult[]
+}
+
 // --- Leaderboard Tables -----------------------------------------------------
 
 export type LeaderboardEntry = {
