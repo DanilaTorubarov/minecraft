@@ -12140,8 +12140,16 @@ async fn report_player_skin(State(pool): State<sqlx::PgPool>, headers: HeaderMap
             .bind(&uuid).bind(request_id).bind(&report.value).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if updated.rows_affected() == 0 { return Err(StatusCode::CONFLICT); }
     }
+    // An empty report means "observed nothing right now", not "this player has no skin".
+    // Floodgate/Bedrock textures only exist on a live player's profile, so a report made
+    // while the player is offline carries no value; keeping the last observation is what
+    // makes a Bedrock skin (and any lookup that failed) survive a logout.
     sqlx::query("INSERT INTO player_skins(uuid,texture_hash,model,observed_at,checked_at) VALUES($1,$2,$3,NOW(),NOW())
-        ON CONFLICT(uuid) DO UPDATE SET texture_hash=EXCLUDED.texture_hash,model=EXCLUDED.model,observed_at=NOW(),checked_at=NOW()")
+        ON CONFLICT(uuid) DO UPDATE SET
+            texture_hash=CASE WHEN EXCLUDED.texture_hash IS NULL THEN player_skins.texture_hash ELSE EXCLUDED.texture_hash END,
+            model=CASE WHEN EXCLUDED.texture_hash IS NULL THEN player_skins.model ELSE EXCLUDED.model END,
+            observed_at=CASE WHEN EXCLUDED.texture_hash IS NULL THEN player_skins.observed_at ELSE NOW() END,
+            checked_at=NOW()")
         .bind(uuid).bind(texture.as_ref().map(|(hash,_)| hash)).bind(texture.map(|(_,model)| model).unwrap_or_else(|| "classic".to_owned()))
         .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -15003,15 +15011,19 @@ mod test {
             let stale_ack = post_internal(&pool,"/internal/skins/report",Some(&token),serde_json::json!({"uuid":uuid,"value":value,"request_id":"stale"}),&random_ip()).await?.status();
             let ack = post_internal(&pool,"/internal/skins/report",Some(&token),serde_json::json!({"uuid":uuid,"value":value,"request_id":request_id}),&random_ip()).await?.status();
             let found = body_json(send(&pool,"GET",&endpoint,Some(&cookie),None).await?).await?;
+            // The plugin reports "nothing observed" whenever an offline Bedrock player is
+            // synchronized; that must not erase the last texture it did observe.
+            let empty_report = post_internal(&pool,"/internal/skins/report",Some(&token),serde_json::json!({"uuid":uuid,"value":null}),&random_ip()).await?.status();
+            let retained = body_json(send(&pool,"GET",&endpoint,Some(&cookie),None).await?).await?;
             let cooldown = skin_multipart(&pool, &cookie, &uuid, true, &png).await?;
             let unlinked = send(&pool,"DELETE",&format!("/api/link/{uuid}"),Some(&cookie),None).await?.status();
             let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM skin_uploads WHERE uuid=$1").bind(&uuid).fetch_one(&pool).await?;
-            Ok::<_, Box<dyn std::error::Error>>((linked,anonymous,stranger,wrong_owner,no_csrf,invalid,accepted,duplicate,unauth_sync,stale_ack,ack,found,cooldown,unlinked,remaining))
+            Ok::<_, Box<dyn std::error::Error>>((linked,anonymous,stranger,wrong_owner,no_csrf,invalid,accepted,duplicate,unauth_sync,stale_ack,ack,found,empty_report,retained,cooldown,unlinked,remaining))
         }.await;
         delete_user(&pool,&email).await?;
         delete_user(&pool,&other_email).await?;
         sqlx::query("DELETE FROM player_skins WHERE uuid=$1").bind(&uuid).execute(&pool).await?;
-        let (linked,anonymous,stranger,wrong_owner,no_csrf,invalid,accepted,duplicate,unauth_sync,stale_ack,ack,found,cooldown,unlinked,remaining) = outcome?;
+        let (linked,anonymous,stranger,wrong_owner,no_csrf,invalid,accepted,duplicate,unauth_sync,stale_ack,ack,found,empty_report,retained,cooldown,unlinked,remaining) = outcome?;
         assert_eq!(linked, StatusCode::OK);
         assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
         assert_eq!(stranger, StatusCode::NOT_FOUND);
@@ -15025,6 +15037,8 @@ mod test {
         assert_eq!(ack, StatusCode::NO_CONTENT);
         assert_eq!(found["upload"]["status"], "saved");
         assert_eq!(found["texture_hash"], "a".repeat(64));
+        assert_eq!(empty_report, StatusCode::NO_CONTENT);
+        assert_eq!(retained["texture_hash"], "a".repeat(64));
         assert_eq!(cooldown, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(unlinked, StatusCode::NO_CONTENT);
         assert_eq!(remaining,0);
