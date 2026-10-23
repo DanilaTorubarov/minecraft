@@ -11,6 +11,29 @@
 - Side effect: the Bedrock ghost-block symptom near spawn (client-predicted breaks that the server refused) is gone.
 
 
+## Bedrock skins vanished from the panel between syncs — 2026-10-23
+
+- Reported as "skins do not work on Bedrock". In game the Floodgate path was healthy
+  (`send-floodgate-data: true`, identical `key.pem` on proxy and backend,
+  `SkinsRestorer` logging `Floodgate skin listener registered`). The panel was the
+  broken half: `player_skins.texture_hash` for `.Kokochi7232`
+  (`00000000-0000-0000-0009-01f835f39efb`) was **NULL** while its `observed_at` kept
+  advancing, i.e. empty reports were being written, not missing ones.
+- Cause: SkinsRestorer deliberately refuses a Java-provider lookup for a Floodgate UUID
+  (`getSkinForPlayerResult` returns empty before Mojang/Ely.by), so the only source of a
+  Bedrock texture is the live player's `GameProfile` property. LinkBridge reads it only
+  while the player is online and otherwise posts `{"value": null}`; the panel's upsert
+  copied that NULL over the stored hash, so the observed skin was erased within 5 s of a
+  logout. Java accounts with resolvable names were unaffected (their name lookup works
+  offline); cracked names such as `polka920` end up NULL the same way.
+- Fix: `report_player_skin` keeps the previous `texture_hash`, `model` and `observed_at`
+  when a report carries no value, and only refreshes `checked_at`. In-game rendering was
+  never touched — the database is display-only for heads and the Skin page.
+- Verification: `player_skin_is_owned_and_saved_only_after_matching_game_ack` now posts a
+  null observation after a saved texture and asserts the hash survives
+  (1 passed). Nothing was deployed; the running stack still has the old build.
+
+
 ## Anti-xray switched to Engine Mode 1 (Ore Hiding) up to Y=180 — 2026-10-22
 
 - Issue observed in game via X-ray client:
