@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 use axum::{
@@ -135,6 +136,12 @@ fn app(pool: sqlx::PgPool) -> Router {
         .route("/internal/clans/sync", get(internal_clans_sync))
         .route("/internal/clans/action", post(internal_clan_action))
         .route("/api/chat/messages", get(get_chat_messages).post(send_chat_message))
+        .route("/api/chat/users", get(search_chat_users))
+        .route("/api/chat/conversations", get(list_chat_conversations).post(create_chat_conversation))
+        .route("/api/chat/conversations/{id}/messages", get(get_conversation_messages).post(send_conversation_message))
+        .route("/api/chat/conversations/{id}/read", post(mark_conversation_read))
+        .route("/api/chat/conversations/{id}/members", post(add_conversation_members))
+        .route("/api/chat/conversations/{id}/members/me", delete(leave_chat_conversation))
         .route("/internal/chat/sync", post(sync_chat_messages))
         .route("/internal/skins/sync", post(sync_player_skins))
         .route("/internal/skins/report", post(report_player_skin))
@@ -7749,7 +7756,8 @@ async fn admin_get_chat_logs(
             sqlx::query(
                 "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
                  FROM chat_messages
-                 WHERE lower(sender_name) = lower($1) AND text ILIKE '%' || $2 || '%'
+                 WHERE conversation_id IS NULL
+                   AND lower(sender_name) = lower($1) AND text ILIKE '%' || $2 || '%'
                  ORDER BY id DESC
                  LIMIT $3"
             )
@@ -7763,7 +7771,7 @@ async fn admin_get_chat_logs(
             sqlx::query(
                 "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
                  FROM chat_messages
-                 WHERE text ILIKE '%' || $1 || '%'
+                 WHERE conversation_id IS NULL AND text ILIKE '%' || $1 || '%'
                  ORDER BY id DESC
                  LIMIT $2"
             )
@@ -7776,7 +7784,7 @@ async fn admin_get_chat_logs(
             sqlx::query(
                 "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
                  FROM chat_messages
-                 WHERE lower(sender_name) = lower($1)
+                 WHERE conversation_id IS NULL AND lower(sender_name) = lower($1)
                  ORDER BY id DESC
                  LIMIT $2"
             )
@@ -7789,6 +7797,7 @@ async fn admin_get_chat_logs(
             sqlx::query(
                 "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
                  FROM chat_messages
+                 WHERE conversation_id IS NULL
                  ORDER BY id DESC
                  LIMIT $1"
             )
@@ -10178,6 +10187,9 @@ async fn internal_clan_action(
 // --- Live Chat Integration --------------------------------------------------
 
 const CHAT_MAX_TEXT_LEN: usize = 256;
+const CHAT_MAX_GROUP_NAME_LEN: usize = 48;
+const CHAT_MAX_GROUP_MEMBERS: usize = 20;
+const CHAT_MAX_LISTED_CONVERSATIONS: i64 = 100;
 
 #[derive(serde::Serialize)]
 struct ChatMessageView {
@@ -10235,7 +10247,7 @@ async fn get_chat_messages(
         sqlx::query(
             "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
              FROM chat_messages
-             WHERE id > $1
+             WHERE conversation_id IS NULL AND id > $1
              ORDER BY id ASC
              LIMIT $2"
         )
@@ -10250,6 +10262,7 @@ async fn get_chat_messages(
              FROM (
                  SELECT id, sender_name, sender_uuid, text, source, created_at
                  FROM chat_messages
+                 WHERE conversation_id IS NULL
                  ORDER BY id DESC
                  LIMIT $1
              ) sub
@@ -10276,38 +10289,47 @@ async fn get_chat_messages(
     Ok(Json(messages))
 }
 
+/// The name and UUID a web message is signed with: the first linked Minecraft
+/// account, or the account's display name while no account is linked.
+async fn resolve_chat_sender(
+    pool: &sqlx::PgPool,
+    user_id: i64,
+) -> Result<(String, Option<String>), StatusCode> {
+    let linked = sqlx::query("SELECT username, uuid FROM minecraft_accounts WHERE user_id = $1 ORDER BY linked_at ASC LIMIT 1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Some(row) = linked {
+        let name: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let uuid: String = row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok((name, Some(uuid)));
+    }
+
+    let user_row = sqlx::query("SELECT displayed_nickname, login_displayed FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let name: String = user_row.try_get("displayed_nickname")
+        .or_else(|_| user_row.try_get("login_displayed"))
+        .unwrap_or_else(|_| "User".to_string());
+    Ok((name, None))
+}
+
+fn valid_chat_text(text: &str) -> Option<&str> {
+    let text = text.trim();
+    (!text.is_empty() && text.len() <= CHAT_MAX_TEXT_LEN).then_some(text)
+}
+
 async fn send_chat_message(
     State(pool): State<sqlx::PgPool>,
     SessionUser { user_id }: SessionUser,
     Json(input): Json<SendChatMessageInput>,
 ) -> Result<(StatusCode, Json<ChatMessageView>), StatusCode> {
-    let text = input.text.trim();
-    if text.is_empty() || text.len() > CHAT_MAX_TEXT_LEN {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    // Resolve author name and uuid
-    let linked = sqlx::query("SELECT username, uuid FROM minecraft_accounts WHERE user_id = $1 ORDER BY linked_at ASC LIMIT 1")
-        .bind(user_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let (sender_name, sender_uuid) = if let Some(row) = linked {
-        let name: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let uuid: String = row.try_get("uuid").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        (name, Some(uuid))
-    } else {
-        let user_row = sqlx::query("SELECT displayed_nickname, login_displayed FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let name: String = user_row.try_get("displayed_nickname")
-            .or_else(|_| user_row.try_get("login_displayed"))
-            .unwrap_or_else(|_| "User".to_string());
-        (name, None)
-    };
+    let text = valid_chat_text(&input.text).ok_or(StatusCode::BAD_REQUEST)?;
+    let (sender_name, sender_uuid) = resolve_chat_sender(&pool, user_id).await?;
 
     let row = sqlx::query(
         "INSERT INTO chat_messages (sender_name, sender_uuid, user_id, text, source, broadcasted_in_game)
@@ -10367,7 +10389,9 @@ async fn sync_chat_messages(
     let rows = sqlx::query(
         "SELECT id, sender_name, text
          FROM chat_messages
-         WHERE source = 'web' AND broadcasted_in_game = FALSE
+         WHERE conversation_id IS NULL
+           AND source = 'web'
+           AND broadcasted_in_game = FALSE
          ORDER BY id ASC
          LIMIT 50
          FOR UPDATE"
@@ -10403,6 +10427,634 @@ async fn sync_chat_messages(
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(InternalChatSyncResponse { outgoing }))
+}
+
+// --- Direct Messages & Group Conversations ---------------------------------
+
+#[derive(serde::Deserialize)]
+struct CreateChatConversationInput {
+    kind: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    user_ids: Vec<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConversationMessagesQuery {
+    since_id: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct AddConversationMembersInput {
+    user_ids: Vec<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct MarkConversationReadInput {
+    message_id: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatUserSearchQuery {
+    query: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ChatParticipantView {
+    user_id: i64,
+    name: String,
+    uuid: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ChatLastMessageView {
+    sender_name: String,
+    text: String,
+    created_at: String,
+}
+
+#[derive(serde::Serialize)]
+struct ChatConversationView {
+    id: String,
+    kind: String,
+    title: String,
+    participants: Vec<ChatParticipantView>,
+    last_message: Option<ChatLastMessageView>,
+    unread_count: i64,
+    updated_at: String,
+}
+
+#[derive(serde::Serialize)]
+struct ChatUserSearchView {
+    user_id: i64,
+    name: String,
+    uuid: Option<String>,
+}
+
+fn escape_like(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// `Some(kind)` when the caller is a participant, `None` for unknown and
+/// foreign conversations alike — callers answer both with `404`.
+async fn chat_membership(
+    pool: &sqlx::PgPool,
+    conversation_id: &str,
+    user_id: i64,
+) -> Result<Option<String>, StatusCode> {
+    let row = sqlx::query(
+        "SELECT c.kind
+         FROM chat_conversations c
+         JOIN chat_participants p ON p.conversation_id = c.id AND p.user_id = $2
+         WHERE c.id = $1::uuid"
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(row.map(|r| r.get("kind")))
+}
+
+/// Load conversation cards, including participants, last message and the
+/// caller's unread count. `ids` of `None` means every conversation of the user.
+async fn chat_conversation_views(
+    pool: &sqlx::PgPool,
+    ids: Option<&[String]>,
+    viewer_id: i64,
+) -> Result<Vec<ChatConversationView>, StatusCode> {
+    let rows = match ids {
+        Some(ids) if ids.is_empty() => Vec::new(),
+        Some(ids) => sqlx::query(
+            "SELECT c.id::text AS id, c.kind, c.name, c.updated_at::text AS updated_at,
+                    (SELECT count(*)
+                     FROM chat_messages m
+                     WHERE m.conversation_id = c.id
+                       AND m.id > p.last_read_message_id
+                       AND m.user_id IS DISTINCT FROM $2) AS unread_count
+             FROM chat_conversations c
+             JOIN chat_participants p ON p.conversation_id = c.id AND p.user_id = $2
+             WHERE c.id::text = ANY($1)
+             ORDER BY c.updated_at DESC"
+        )
+        .bind(ids.to_vec())
+        .bind(viewer_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        None => sqlx::query(
+            "SELECT c.id::text AS id, c.kind, c.name, c.updated_at::text AS updated_at,
+                    (SELECT count(*)
+                     FROM chat_messages m
+                     WHERE m.conversation_id = c.id
+                       AND m.id > p.last_read_message_id
+                       AND m.user_id IS DISTINCT FROM $1) AS unread_count
+             FROM chat_conversations c
+             JOIN chat_participants p ON p.conversation_id = c.id AND p.user_id = $1
+             ORDER BY c.updated_at DESC
+             LIMIT $2"
+        )
+        .bind(viewer_id)
+        .bind(CHAT_MAX_LISTED_CONVERSATIONS)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    };
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conversation_ids: Vec<String> = rows.iter().map(|r| r.get("id")).collect();
+
+    let participant_rows = sqlx::query(
+        "SELECT p.conversation_id::text AS conversation_id, u.id AS user_id,
+                u.displayed_nickname AS name, ma.uuid
+         FROM chat_participants p
+         JOIN users u ON u.id = p.user_id
+         LEFT JOIN LATERAL (
+             SELECT uuid FROM minecraft_accounts
+             WHERE user_id = u.id ORDER BY linked_at ASC LIMIT 1
+         ) ma ON TRUE
+         WHERE p.conversation_id::text = ANY($1)
+         ORDER BY p.joined_at ASC"
+    )
+    .bind(&conversation_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let last_rows = sqlx::query(
+        "SELECT DISTINCT ON (conversation_id)
+                conversation_id::text AS conversation_id,
+                sender_name, text, created_at::text AS created_at
+         FROM chat_messages
+         WHERE conversation_id::text = ANY($1)
+         ORDER BY conversation_id, id DESC"
+    )
+    .bind(&conversation_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut participants: HashMap<String, Vec<ChatParticipantView>> = HashMap::new();
+    for row in participant_rows {
+        participants
+            .entry(row.get("conversation_id"))
+            .or_default()
+            .push(ChatParticipantView {
+                user_id: row.get("user_id"),
+                name: row.get("name"),
+                uuid: row.get("uuid"),
+            });
+    }
+
+    let mut last_messages: HashMap<String, ChatLastMessageView> = HashMap::new();
+    for row in last_rows {
+        last_messages.insert(row.get("conversation_id"), ChatLastMessageView {
+            sender_name: row.get("sender_name"),
+            text: row.get("text"),
+            created_at: row.get("created_at"),
+        });
+    }
+
+    let mut views = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: String = row.get("id");
+        let kind: String = row.get("kind");
+        let name: Option<String> = row.get("name");
+        let members = participants.remove(&id).unwrap_or_default();
+        let title = if kind == "dm" {
+            members
+                .iter()
+                .find(|p| p.user_id != viewer_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "Deleted account".to_string())
+        } else {
+            name.unwrap_or_else(|| "Group".to_string())
+        };
+        views.push(ChatConversationView {
+            id: id.clone(),
+            kind,
+            title,
+            participants: members,
+            last_message: last_messages.remove(&id),
+            unread_count: row.get("unread_count"),
+            updated_at: row.get("updated_at"),
+        });
+    }
+
+    Ok(views)
+}
+
+async fn list_chat_conversations(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<Json<Vec<ChatConversationView>>, StatusCode> {
+    Ok(Json(chat_conversation_views(&pool, None, user_id).await?))
+}
+
+async fn create_chat_conversation(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<CreateChatConversationInput>,
+) -> Result<(StatusCode, Json<ChatConversationView>), StatusCode> {
+    let kind = input.kind.trim().to_ascii_lowercase();
+    let mut member_ids = input.user_ids;
+    member_ids.sort_unstable();
+    member_ids.dedup();
+    if member_ids.iter().any(|id| *id == user_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !member_ids.is_empty() {
+        let found: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE id = ANY($1)")
+            .bind(&member_ids)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if found != member_ids.len() as i64 {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    match kind.as_str() {
+        "dm" => {
+            if member_ids.len() != 1 {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            let other = member_ids[0];
+            let dm_key = format!("{}:{}", user_id.min(other), user_id.max(other));
+            let inserted = sqlx::query(
+                "INSERT INTO chat_conversations (kind, dm_key, created_by)
+                 VALUES ('dm', $1, $2)
+                 ON CONFLICT (dm_key) DO NOTHING
+                 RETURNING id::text AS id"
+            )
+            .bind(&dm_key)
+            .bind(user_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let (id, created) = match inserted {
+                Some(row) => (row.get::<String, _>("id"), true),
+                None => {
+                    let row = sqlx::query("SELECT id::text AS id FROM chat_conversations WHERE dm_key = $1")
+                        .bind(&dm_key)
+                        .fetch_one(&pool)
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    (row.get::<String, _>("id"), false)
+                }
+            };
+            // Re-adding both sides also repairs a DM whose other participant
+            // had left or deleted their account.
+            sqlx::query(
+                "INSERT INTO chat_participants (conversation_id, user_id)
+                 VALUES ($1::uuid, $2), ($1::uuid, $3)
+                 ON CONFLICT DO NOTHING"
+            )
+            .bind(&id)
+            .bind(user_id)
+            .bind(other)
+            .execute(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let view = chat_conversation_views(&pool, Some(&[id]), user_id)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+            let status = if created { StatusCode::CREATED } else { StatusCode::OK };
+            Ok((status, Json(view)))
+        }
+        "group" => {
+            let name = input.name.as_deref().map(str::trim).unwrap_or("");
+            if name.is_empty()
+                || name.chars().count() > CHAT_MAX_GROUP_NAME_LEN
+                || name.chars().any(char::is_control)
+            {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            if member_ids.len() + 1 > CHAT_MAX_GROUP_MEMBERS {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+
+            let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let row = sqlx::query(
+                "INSERT INTO chat_conversations (kind, name, created_by)
+                 VALUES ('group', $1, $2)
+                 RETURNING id::text AS id"
+            )
+            .bind(name)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let id: String = row.get("id");
+
+            for member in std::iter::once(user_id).chain(member_ids.iter().copied()) {
+                sqlx::query(
+                    "INSERT INTO chat_participants (conversation_id, user_id)
+                     VALUES ($1::uuid, $2)
+                     ON CONFLICT DO NOTHING"
+                )
+                .bind(&id)
+                .bind(member)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let view = chat_conversation_views(&pool, Some(&[id]), user_id)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+            Ok((StatusCode::CREATED, Json(view)))
+        }
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+async fn get_conversation_messages(
+    State(pool): State<sqlx::PgPool>,
+    Path(id): Path<String>,
+    SessionUser { user_id }: SessionUser,
+    Query(query): Query<ConversationMessagesQuery>,
+) -> Result<Json<Vec<ChatMessageView>>, StatusCode> {
+    if !is_uuid(&id) || chat_membership(&pool, &id, user_id).await?.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+
+    let rows = if let Some(since_id) = query.since_id {
+        sqlx::query(
+            "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+             FROM chat_messages
+             WHERE conversation_id = $1::uuid AND id > $2
+             ORDER BY id ASC
+             LIMIT $3"
+        )
+        .bind(&id)
+        .bind(since_id)
+        .bind(limit)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        sqlx::query(
+            "SELECT id, sender_name, sender_uuid, text, source, created_at::text AS created_at
+             FROM (
+                 SELECT id, sender_name, sender_uuid, text, source, created_at
+                 FROM chat_messages
+                 WHERE conversation_id = $1::uuid
+                 ORDER BY id DESC
+                 LIMIT $2
+             ) sub
+             ORDER BY id ASC"
+        )
+        .bind(&id)
+        .bind(limit)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    let mut messages = Vec::with_capacity(rows.len());
+    for row in rows {
+        messages.push(ChatMessageView {
+            id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            sender_name: row.try_get("sender_name").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            sender_uuid: row.try_get("sender_uuid").ok(),
+            text: row.try_get("text").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            source: row.try_get("source").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            created_at: row.try_get("created_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        });
+    }
+    Ok(Json(messages))
+}
+
+async fn send_conversation_message(
+    State(pool): State<sqlx::PgPool>,
+    Path(id): Path<String>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<SendChatMessageInput>,
+) -> Result<(StatusCode, Json<ChatMessageView>), StatusCode> {
+    let text = valid_chat_text(&input.text).ok_or(StatusCode::BAD_REQUEST)?;
+    if !is_uuid(&id) || chat_membership(&pool, &id, user_id).await?.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let (sender_name, sender_uuid) = resolve_chat_sender(&pool, user_id).await?;
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = sqlx::query(
+        "INSERT INTO chat_messages
+             (sender_name, sender_uuid, user_id, text, source, broadcasted_in_game, conversation_id)
+         VALUES ($1, $2, $3, $4, 'web', TRUE, $5::uuid)
+         RETURNING id, sender_name, sender_uuid, text, source, created_at::text AS created_at"
+    )
+    .bind(&sender_name)
+    .bind(&sender_uuid)
+    .bind(user_id)
+    .bind(text)
+    .bind(&id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    sqlx::query("UPDATE chat_conversations SET updated_at = now() WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok((StatusCode::CREATED, Json(ChatMessageView {
+        id: row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        sender_name: row.try_get("sender_name").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        sender_uuid: row.try_get("sender_uuid").ok(),
+        text: row.try_get("text").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        source: row.try_get("source").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        created_at: row.try_get("created_at").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    })))
+}
+
+async fn mark_conversation_read(
+    State(pool): State<sqlx::PgPool>,
+    Path(id): Path<String>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<MarkConversationReadInput>,
+) -> Result<StatusCode, StatusCode> {
+    if !is_uuid(&id) || chat_membership(&pool, &id, user_id).await?.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let result = sqlx::query(
+        "UPDATE chat_participants p
+         SET last_read_message_id = GREATEST(
+             p.last_read_message_id,
+             LEAST($3, COALESCE((SELECT max(id) FROM chat_messages WHERE conversation_id = $1::uuid), 0))
+         )
+         WHERE p.conversation_id = $1::uuid AND p.user_id = $2"
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(input.message_id)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn add_conversation_members(
+    State(pool): State<sqlx::PgPool>,
+    Path(id): Path<String>,
+    SessionUser { user_id }: SessionUser,
+    Json(input): Json<AddConversationMembersInput>,
+) -> Result<Json<ChatConversationView>, StatusCode> {
+    if !is_uuid(&id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    match chat_membership(&pool, &id, user_id).await? {
+        Some(kind) if kind == "group" => {}
+        Some(_) => return Err(StatusCode::BAD_REQUEST),
+        None => return Err(StatusCode::NOT_FOUND),
+    }
+
+    let mut member_ids = input.user_ids;
+    member_ids.sort_unstable();
+    member_ids.dedup();
+    member_ids.retain(|id| *id != user_id);
+    if member_ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let existing: Vec<i64> = sqlx::query_scalar(
+        "SELECT user_id FROM chat_participants WHERE conversation_id = $1::uuid"
+    )
+    .bind(&id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let new_ids: Vec<i64> = member_ids
+        .into_iter()
+        .filter(|id| !existing.contains(id))
+        .collect();
+    if new_ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if existing.len() + new_ids.len() > CHAT_MAX_GROUP_MEMBERS {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let found: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE id = ANY($1)")
+        .bind(&new_ids)
+        .fetch_one(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if found != new_ids.len() as i64 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    for member in new_ids {
+        sqlx::query(
+            "INSERT INTO chat_participants (conversation_id, user_id)
+             VALUES ($1::uuid, $2)
+             ON CONFLICT DO NOTHING"
+        )
+        .bind(&id)
+        .bind(member)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    let view = chat_conversation_views(&pool, Some(&[id]), user_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(view))
+}
+
+async fn leave_chat_conversation(
+    State(pool): State<sqlx::PgPool>,
+    Path(id): Path<String>,
+    SessionUser { user_id }: SessionUser,
+) -> Result<StatusCode, StatusCode> {
+    if !is_uuid(&id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let result = sqlx::query(
+        "DELETE FROM chat_participants WHERE conversation_id = $1::uuid AND user_id = $2"
+    )
+    .bind(&id)
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn search_chat_users(
+    State(pool): State<sqlx::PgPool>,
+    SessionUser { user_id }: SessionUser,
+    Query(query): Query<ChatUserSearchQuery>,
+) -> Result<Json<Vec<ChatUserSearchView>>, StatusCode> {
+    let term = query.query.as_deref().map(str::trim).unwrap_or("");
+    if term.chars().count() > 64 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if term.chars().count() < 2 {
+        return Ok(Json(Vec::new()));
+    }
+    let pattern = format!("%{}%", escape_like(term));
+
+    let rows = sqlx::query(
+        "SELECT u.id AS user_id, u.displayed_nickname AS name, ma.uuid
+         FROM users u
+         LEFT JOIN LATERAL (
+             SELECT uuid FROM minecraft_accounts
+             WHERE user_id = u.id ORDER BY linked_at ASC LIMIT 1
+         ) ma ON TRUE
+         WHERE u.id <> $1
+           AND (
+               u.login ILIKE $2
+               OR u.displayed_nickname ILIKE $2
+               OR EXISTS (
+                   SELECT 1 FROM minecraft_accounts m
+                   WHERE m.user_id = u.id AND m.username ILIKE $2
+               )
+           )
+         ORDER BY u.displayed_nickname ASC
+         LIMIT 10"
+    )
+    .bind(user_id)
+    .bind(&pattern)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut users = Vec::with_capacity(rows.len());
+    for row in rows {
+        users.push(ChatUserSearchView {
+            user_id: row.get("user_id"),
+            name: row.get("name"),
+            uuid: row.get("uuid"),
+        });
+    }
+    Ok(Json(users))
 }
 
 // --- Offline Mail & Parcels and Territory Alerts ----------------------------
@@ -18177,6 +18829,172 @@ mod test {
         assert_eq!(since_arr[0]["sender_name"], "SteveMiner");
 
         delete_user(&pool, &email).await?;
+        drop_budget_pool(admin, pool, schema).await
+    }
+
+    #[tokio::test]
+    async fn chat_direct_messages_and_groups_stay_private() -> TestResult {
+        let (admin, pool, schema) = isolated_budget_pool().await?;
+        let token = test_service_token();
+        let random = random_id();
+
+        let email_a = format!("dm_a_{random}@example.com").to_lowercase();
+        let email_b = format!("dm_b_{random}@example.com").to_lowercase();
+        let email_c = format!("dm_c_{random}@example.com").to_lowercase();
+        let email_d = format!("dm_d_{random}@example.com").to_lowercase();
+        let login_a = format!("dm_a_{random}").to_lowercase();
+        let login_b = format!("dm_b_{random}").to_lowercase();
+        let login_c = format!("dm_c_{random}").to_lowercase();
+        let login_d = format!("dm_d_{random}").to_lowercase();
+        let name_a = format!("DmAlpha{random}");
+        let name_b = format!("DmBravo{random}");
+        let name_c = format!("DmCharlie{random}");
+        let name_d = format!("DmDelta{random}");
+
+        register_request(&pool, &name_a, &login_a, &email_a, "password12345").await?;
+        register_request(&pool, &name_b, &login_b, &email_b, "password12345").await?;
+        register_request(&pool, &name_c, &login_c, &email_c, "password12345").await?;
+        register_request(&pool, &name_d, &login_d, &email_d, "password12345").await?;
+        let cookie_a = login_cookie(&pool, &email_a, "password12345").await?;
+        let cookie_b = login_cookie(&pool, &email_b, "password12345").await?;
+        let cookie_c = login_cookie(&pool, &email_c, "password12345").await?;
+        let cookie_d = login_cookie(&pool, &email_d, "password12345").await?;
+
+        let id_a: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email_a).fetch_one(&pool).await?;
+        let id_b: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email_b).fetch_one(&pool).await?;
+        let id_c: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email_c).fetch_one(&pool).await?;
+        let id_d: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1").bind(&email_d).fetch_one(&pool).await?;
+
+        // A direct message can only target one other user and never yourself.
+        let self_dm = send(&pool, "POST", "/api/chat/conversations", Some(&cookie_a), Some(serde_json::json!({
+            "kind": "dm", "user_ids": [id_a]
+        }))).await?;
+        assert_eq!(self_dm.status(), StatusCode::BAD_REQUEST);
+        let bad_kind = send(&pool, "POST", "/api/chat/conversations", Some(&cookie_a), Some(serde_json::json!({
+            "kind": "channel", "user_ids": [id_b]
+        }))).await?;
+        assert_eq!(bad_kind.status(), StatusCode::BAD_REQUEST);
+
+        // Creating the same DM twice returns the same conversation.
+        let dm_res = send(&pool, "POST", "/api/chat/conversations", Some(&cookie_a), Some(serde_json::json!({
+            "kind": "dm", "user_ids": [id_b]
+        }))).await?;
+        assert_eq!(dm_res.status(), StatusCode::CREATED);
+        let dm_json = body_json(dm_res).await?;
+        let dm_id = dm_json["id"].as_str().expect("dm id").to_owned();
+        assert_eq!(dm_json["kind"], "dm");
+        assert_eq!(dm_json["title"], name_b);
+        assert_eq!(dm_json["unread_count"], 0);
+
+        let dm_again = send(&pool, "POST", "/api/chat/conversations", Some(&cookie_a), Some(serde_json::json!({
+            "kind": "dm", "user_ids": [id_b]
+        }))).await?;
+        assert_eq!(dm_again.status(), StatusCode::OK);
+        assert_eq!(body_json(dm_again).await?["id"], dm_id);
+
+        // The message reaches both participants only.
+        let dm_send = send(&pool, "POST", &format!("/api/chat/conversations/{dm_id}/messages"), Some(&cookie_a), Some(serde_json::json!({
+            "text": "Private hello"
+        }))).await?;
+        assert_eq!(dm_send.status(), StatusCode::CREATED);
+        let dm_message_id = body_json(dm_send).await?["id"].as_i64().expect("message id");
+
+        let b_inbox = send(&pool, "GET", &format!("/api/chat/conversations/{dm_id}/messages"), Some(&cookie_b), None).await?;
+        assert_eq!(b_inbox.status(), StatusCode::OK);
+        let b_messages = body_json(b_inbox).await?;
+        assert_eq!(b_messages.as_array().unwrap().len(), 1);
+        assert_eq!(b_messages[0]["text"], "Private hello");
+        assert_eq!(b_messages[0]["sender_name"], name_a);
+
+        let c_read = send(&pool, "GET", &format!("/api/chat/conversations/{dm_id}/messages"), Some(&cookie_c), None).await?;
+        assert_eq!(c_read.status(), StatusCode::NOT_FOUND);
+        let c_write = send(&pool, "POST", &format!("/api/chat/conversations/{dm_id}/messages"), Some(&cookie_c), Some(serde_json::json!({
+            "text": "Can I join?"
+        }))).await?;
+        assert_eq!(c_write.status(), StatusCode::NOT_FOUND);
+
+        // The global realm feed and the in-game bridge never see private chat.
+        let global = send(&pool, "GET", "/api/chat/messages", None, None).await?;
+        assert_eq!(global.status(), StatusCode::OK);
+        let global_messages = body_json(global).await?;
+        assert!(global_messages.as_array().unwrap().iter().all(|m| m["id"] != dm_message_id));
+        let sync = post_internal(&pool, "/internal/chat/sync", Some(&token), serde_json::json!({"incoming": []}), &random_ip()).await?;
+        assert_eq!(sync.status(), StatusCode::OK);
+        assert_eq!(body_json(sync).await?["outgoing"].as_array().unwrap().len(), 0);
+
+        // B sees one unread message and can clear it.
+        let b_list = send(&pool, "GET", "/api/chat/conversations", Some(&cookie_b), None).await?;
+        assert_eq!(b_list.status(), StatusCode::OK);
+        let b_conversations = body_json(b_list).await?;
+        let dm_card = b_conversations.as_array().unwrap().iter().find(|c| c["id"] == dm_id).expect("dm card");
+        assert_eq!(dm_card["unread_count"], 1);
+        assert_eq!(dm_card["last_message"]["text"], "Private hello");
+        let mark_read = send(&pool, "POST", &format!("/api/chat/conversations/{dm_id}/read"), Some(&cookie_b), Some(serde_json::json!({
+            "message_id": dm_message_id
+        }))).await?;
+        assert_eq!(mark_read.status(), StatusCode::NO_CONTENT);
+        let b_list_after = send(&pool, "GET", "/api/chat/conversations", Some(&cookie_b), None).await?;
+        let b_after = body_json(b_list_after).await?;
+        let dm_card_after = b_after.as_array().unwrap().iter().find(|c| c["id"] == dm_id).expect("dm card");
+        assert_eq!(dm_card_after["unread_count"], 0);
+
+        // A group is created with participants and can be extended later.
+        let group_name = format!("Raiders {random}");
+        let group_res = send(&pool, "POST", "/api/chat/conversations", Some(&cookie_a), Some(serde_json::json!({
+            "kind": "group", "name": group_name, "user_ids": [id_b, id_c]
+        }))).await?;
+        assert_eq!(group_res.status(), StatusCode::CREATED);
+        let group_json = body_json(group_res).await?;
+        let group_id = group_json["id"].as_str().expect("group id").to_owned();
+        assert_eq!(group_json["kind"], "group");
+        assert_eq!(group_json["title"], group_name);
+        assert_eq!(group_json["participants"].as_array().unwrap().len(), 3);
+
+        let b_group_send = send(&pool, "POST", &format!("/api/chat/conversations/{group_id}/messages"), Some(&cookie_b), Some(serde_json::json!({
+            "text": "Group hello"
+        }))).await?;
+        assert_eq!(b_group_send.status(), StatusCode::CREATED);
+        let a_group_inbox = send(&pool, "GET", &format!("/api/chat/conversations/{group_id}/messages"), Some(&cookie_a), None).await?;
+        assert_eq!(body_json(a_group_inbox).await?.as_array().unwrap().len(), 1);
+
+        let outsider = send(&pool, "GET", &format!("/api/chat/conversations/{group_id}/messages"), Some(&cookie_d), None).await?;
+        assert_eq!(outsider.status(), StatusCode::NOT_FOUND);
+
+        let add_member = send(&pool, "POST", &format!("/api/chat/conversations/{group_id}/members"), Some(&cookie_a), Some(serde_json::json!({
+            "user_ids": [id_d]
+        }))).await?;
+        assert_eq!(add_member.status(), StatusCode::OK);
+        assert_eq!(body_json(add_member).await?["participants"].as_array().unwrap().len(), 4);
+        let now_member = send(&pool, "GET", &format!("/api/chat/conversations/{group_id}/messages"), Some(&cookie_d), None).await?;
+        assert_eq!(now_member.status(), StatusCode::OK);
+
+        // Leaving a group removes access but not the group for everyone else.
+        let leave = send(&pool, "DELETE", &format!("/api/chat/conversations/{group_id}/members/me"), Some(&cookie_d), None).await?;
+        assert_eq!(leave.status(), StatusCode::NO_CONTENT);
+        let after_leave = send(&pool, "GET", &format!("/api/chat/conversations/{group_id}/messages"), Some(&cookie_d), None).await?;
+        assert_eq!(after_leave.status(), StatusCode::NOT_FOUND);
+        let a_still_member = send(&pool, "GET", &format!("/api/chat/conversations/{group_id}/messages"), Some(&cookie_a), None).await?;
+        assert_eq!(a_still_member.status(), StatusCode::OK);
+
+        // User lookup finds a website account by its (escaped) login text.
+        let search = send(&pool, "GET", &format!("/api/chat/users?query={login_b}"), Some(&cookie_a), None).await?;
+        assert_eq!(search.status(), StatusCode::OK);
+        let found = body_json(search).await?;
+        assert!(found.as_array().unwrap().iter().any(|u| u["user_id"] == id_b && u["name"] == name_b));
+
+        // Removing every participant prunes the conversations and their messages.
+        delete_user(&pool, &email_a).await?;
+        delete_user(&pool, &email_b).await?;
+        delete_user(&pool, &email_c).await?;
+        delete_user(&pool, &email_d).await?;
+        let leftovers: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_conversations WHERE id::text = ANY($1)"
+        )
+        .bind(vec![dm_id.clone(), group_id.clone()])
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(leftovers, 0);
+
         drop_budget_pool(admin, pool, schema).await
     }
 
