@@ -570,7 +570,7 @@ Purpur's native Paper-based asynchronous Anti-Xray engine is configured with **E
 - **Protected blocks**: Diamonds, ancient debris, emeralds, gold, iron, copper, lapis, redstone, coal (and deepslate variants), raw ore blocks, amethyst, and valuable containers (chests, trapped chests, ender chests, mob spawners, TNT).
 - **Height bounds**: `max-block-height: 180` covers diamond layers (down to Y=-64) all the way through high mountain emerald, coal, and iron peaks above spawn (spawn is ~Y=123). The nether uses 128.
 - **Zero TPS degradation**: Obfuscation runs asynchronously off the server thread during chunk packet serialization, maintaining 20.0 TPS even during heavy exploration.
-- **Bedrock ghost blocks that are *not* anti-xray**: `spawn-protection=16` (vanilla `server.properties`) refuses block breaks within 16 blocks of the world spawn for non-operators. Bedrock clients predict the break and keep the hole until the server corrects them, so a new player breaking spawn blocks can look stuck. Operators bypass it.
+- **Spawn protection**: currently **disabled** (`SPAWN_PROTECTION: "0"` in Compose, `spawn-protection=0`). Vanilla spawn protection stays off until the planned spawn rework. When it is re-enabled, non-operators cannot break blocks near the world spawn and Bedrock clients can predict those breaks and briefly show ghost blocks; that behaviour is vanilla, not anti-xray.
 
 That file is **partial** — AuthMe fills in every other key from its own defaults, so it stays small and survives AuthMe upgrades.
 

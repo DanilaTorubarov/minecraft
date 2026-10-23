@@ -126,7 +126,7 @@
 - `mine_world` **and** `the_end` disable Anti-Xray (`enabled: false`). The mining dimension's reward is the fuel-crystal veins; obfuscation would replace real crystals or their surrounding rock, interfering with crystal prospecting. The end is off per Paper's recommendation.
 - Hidden blocks include: diamonds, ancient debris, emeralds, gold, iron, copper, lapis, redstone, coal (and deepslate variants), raw ore blocks, amethyst, chests, trapped chests, ender chests, mob spawners, and TNT.
 - Runs fully off-thread during chunk packet serialization with zero main-thread TPS degradation and full crossplay (Java & Bedrock) support.
-- `spawn-protection=16` in the runtime `server.properties` still refuses breaks within 16 blocks of the world spawn for non-ops; that is vanilla, not anti-xray, and ops bypass it.
+- Spawn protection is **disabled** (`spawn-protection=0`, set by `SPAWN_PROTECTION: "0"` in Compose) until the planned spawn rework. This is a vanilla `server.properties` value, not anti-xray: when re-enabled, non-ops cannot break blocks near world spawn and Bedrock clients can show predicted ghost blocks there.
 
 ## Player skin uploads
 - `GET /api/players/{uuid}/skin` and multipart `POST` are session-protected and owner-only (`404` otherwise), with `Cache-Control: no-store`. POST requires `X-Player-Skin: upload`, `file` and `model` (`classic`/`slim`). Fully decode the PNG, enforce ≤256 KiB and 64×64/64×32, then re-encode to strip metadata. Accepted uploads return `202`; active uploads `409`, accepted-upload cooldown (30 s) `429`.
