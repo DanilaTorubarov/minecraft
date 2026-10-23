@@ -1,6 +1,16 @@
 # Project checkpoint — 2026-10-21
 
 
+## Spawn protection disabled ahead of the spawn rework — 2026-10-23
+
+- `SPAWN_PROTECTION: "0"` in `compose.yaml` now owns vanilla's `spawn-protection`, and the runtime
+  `mc/purpur/server.properties` was set to `0` and the backend restarted, so non-operators can build and break
+  around world spawn again.
+- This is deliberate and temporary: the planned spawn rework will reintroduce protected-area rules. Do not
+  re-enable vanilla spawn protection as a substitute.
+- Side effect: the Bedrock ghost-block symptom near spawn (client-predicted breaks that the server refused) is gone.
+
+
 ## Anti-xray switched to Engine Mode 1 (Ore Hiding) up to Y=180 — 2026-10-22
 
 - Issue observed in game via X-ray client:

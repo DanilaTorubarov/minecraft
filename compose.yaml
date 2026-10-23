@@ -122,6 +122,9 @@ services:
       # trusts the proxy instead. In-game passwords live in an auth plugin.
       ONLINE_MODE: "FALSE"
       ENFORCE_SECURE_PROFILE: "false"
+      # Spawn protection is off until the planned spawn rework. The image maps
+      # this to vanilla's spawn-protection on every boot (0 = no protection).
+      SPAWN_PROTECTION: "0"
       MEMORY: ${MC_MEMORY:-4G}
       REPLACE_ENV_VARIABLES: "true"
       REPLACE_ENV_DURING_SYNC: "true"
