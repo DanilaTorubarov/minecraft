@@ -3,6 +3,7 @@ import { ApiError, depositBank, withdrawBank, sharedMessage, type StatsAccount }
 import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 import { formatCoins } from '../lib/minigames'
+import { displayPlayerName } from '../lib/playerName'
 
 interface BankTransferCardProps {
   accounts: StatsAccount[]
@@ -39,7 +40,7 @@ export default function BankTransferCard({ accounts, bankCoins, compact = false 
         setSuccess(`Deposited ${formatCoins(parsedAmount)} coins to your Web Bank! Pocket: ${formatCoins(res.pocket_coins)}, Bank: ${formatCoins(res.bank_coins)}`)
       } else {
         const res = await withdrawBank(activeAccount.uuid, parsedAmount)
-        setSuccess(`Withdrew ${formatCoins(parsedAmount)} coins to ${activeAccount.username}'s pocket! Pocket: ${formatCoins(res.pocket_coins)}, Bank: ${formatCoins(res.bank_coins)}`)
+        setSuccess(`Withdrew ${formatCoins(parsedAmount)} coins to ${displayPlayerName(activeAccount.username)}'s pocket! Pocket: ${formatCoins(res.pocket_coins)}, Bank: ${formatCoins(res.bank_coins)}`)
       }
       playSound('done')
       invalidateServerData('stats')
@@ -129,7 +130,7 @@ export default function BankTransferCard({ accounts, bankCoins, compact = false 
             >
               {accounts.map((acc) => (
                 <option key={acc.uuid} value={acc.uuid}>
-                  {acc.username} ({formatCoins(acc.coins)} pocket coins)
+                  {displayPlayerName(acc.username)} ({formatCoins(acc.coins)} pocket coins)
                 </option>
               ))}
             </select>

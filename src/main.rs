@@ -11829,11 +11829,13 @@ async fn get_territory_alerts(
         });
     }
 
-    // 2. Fetch stored alerts (e.g. breach alerts)
+    // 2. Fetch stored alerts (e.g. breach alerts). A read alert has been dismissed:
+    //    it stays in the table as history but must never reappear in the panel or
+    //    the desktop toast after a reload.
     let stored = sqlx::query(
         "SELECT id::text AS id, uuid, kind, title, message, block_index, world, x, y, z, read, created_at::text AS created_at
          FROM territory_alerts
-         WHERE uuid = ANY($1::text[])
+         WHERE uuid = ANY($1::text[]) AND read = false
          ORDER BY created_at DESC
          LIMIT 50",
     )
@@ -11863,18 +11865,54 @@ async fn get_territory_alerts(
     Ok(Json(alerts))
 }
 
+#[derive(serde::Deserialize)]
+struct MarkTerritoryAlertsReadInput {
+    /// The one alert the player dismissed. Omitted means "every stored alert".
+    #[serde(default)]
+    id: Option<String>,
+}
+
 async fn mark_territory_alerts_read(
     State(pool): State<sqlx::PgPool>,
     SessionUser { user_id }: SessionUser,
+    // Optional so a bare POST (no body at all) keeps the original "dismiss every
+    // stored alert" meaning instead of failing extraction.
+    body: Option<Json<MarkTerritoryAlertsReadInput>>,
 ) -> Result<StatusCode, StatusCode> {
-    sqlx::query(
-        "UPDATE territory_alerts SET read = true
-         WHERE uuid IN (SELECT uuid FROM minecraft_accounts WHERE user_id = $1) AND read = false",
-    )
-    .bind(user_id)
-    .execute(&pool)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let alert_id = body
+        .as_ref()
+        .and_then(|body| body.0.id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    match alert_id {
+        // The toast shows one alert at a time, so dismissing it must not silently
+        // swallow the next breach that is already waiting behind it.
+        Some(alert_id) => {
+            if alert_id.len() > 64 {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            sqlx::query(
+                "UPDATE territory_alerts SET read = true
+                 WHERE id::text = $2 AND read = false
+                   AND uuid IN (SELECT uuid FROM minecraft_accounts WHERE user_id = $1)",
+            )
+            .bind(user_id)
+            .bind(alert_id)
+            .execute(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        None => {
+            sqlx::query(
+                "UPDATE territory_alerts SET read = true
+                 WHERE uuid IN (SELECT uuid FROM minecraft_accounts WHERE user_id = $1) AND read = false",
+            )
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+    }
 
     Ok(StatusCode::OK)
 }
@@ -19195,10 +19233,54 @@ mod test {
         assert!(al_arr3.iter().any(|a| a["kind"] == "fuel_low"));
         assert!(al_arr3.iter().any(|a| a["kind"] == "breach"));
 
-        // 5. Mark alerts read
+        // 5. Mark every stored alert read: a dismissal survives a reload, so the
+        //    breach alert must not come back. The live low-fuel warning is derived
+        //    from the block's remaining fuel, not stored, and stays visible.
         let read_res = send(&pool, "POST", "/api/territory/alerts/read", Some(&cookie), Some(serde_json::json!({}))).await?;
         assert_eq!(read_res.status(), StatusCode::OK);
+        let after_read = body_json(send(&pool, "GET", "/api/territory/alerts", Some(&cookie), None).await?).await?;
+        let after_read = after_read.as_array().unwrap();
+        assert_eq!(after_read.len(), 1);
+        assert_eq!(after_read[0]["kind"], "fuel_low");
 
+        // 6. A later breach is a new alert and has to be shown even though the
+        //    previous one was dismissed.
+        let second_breach = post_internal(&pool, "/internal/territory/alert", Some(&token), serde_json::json!({
+            "uuid": player_uuid,
+            "kind": "breach",
+            "title": "Base Breached!",
+            "message": "Your base at (100, 64, -200) was breached again by RaiderSteve!",
+            "block_index": 1,
+            "world": "world",
+            "x": 100,
+            "y": 64,
+            "z": -200
+        }), &random_ip()).await?;
+        assert_eq!(second_breach.status(), StatusCode::OK);
+        let with_second = body_json(send(&pool, "GET", "/api/territory/alerts", Some(&cookie), None).await?).await?;
+        let with_second = with_second.as_array().unwrap();
+        assert_eq!(with_second.len(), 2);
+        let breach_id = with_second
+            .iter()
+            .find(|alert| alert["kind"] == "breach")
+            .and_then(|alert| alert["id"].as_str())
+            .expect("the breach alert carries its id")
+            .to_string();
+
+        // 7. Dismissing one alert marks only that alert read.
+        let one_res = send(&pool, "POST", "/api/territory/alerts/read", Some(&cookie), Some(serde_json::json!({ "id": breach_id }))).await?;
+        assert_eq!(one_res.status(), StatusCode::OK);
+        let after_one = body_json(send(&pool, "GET", "/api/territory/alerts", Some(&cookie), None).await?).await?;
+        let after_one = after_one.as_array().unwrap();
+        assert_eq!(after_one.len(), 1);
+        assert_eq!(after_one[0]["kind"], "fuel_low");
+
+        // An id that belongs to no stored alert is an idempotent no-op (dynamic
+        // low-fuel alerts are dismissed on the client and never stored).
+        let unknown_res = send(&pool, "POST", "/api/territory/alerts/read", Some(&cookie), Some(serde_json::json!({ "id": "fuel-not-a-stored-alert" }))).await?;
+        assert_eq!(unknown_res.status(), StatusCode::OK);
+
+        sqlx::query("DELETE FROM territory_alerts WHERE uuid = $1").bind(&player_uuid).execute(&pool).await?;
         delete_user(&pool, &email).await?;
         drop_budget_pool(admin, pool, schema).await
     }

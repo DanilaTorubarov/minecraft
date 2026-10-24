@@ -28,6 +28,14 @@ import ClanPage from '../pages/ClanPage'
 import LeaderboardsPage from '../pages/LeaderboardsPage'
 import { getTerritoryAlerts, markTerritoryAlertsRead, type TerritoryAlert } from '../lib/api'
 import { usePresence } from '../lib/usePresence'
+import { displayPlayerName } from '../lib/playerName'
+import {
+  dismissAlert,
+  isAlertDismissed,
+  readDismissedAlerts,
+  writeDismissedAlerts,
+  type DismissedAlerts,
+} from '../lib/territoryAlerts'
 
 function Shell() {
   const { user, signOut } = useAuth()
@@ -64,7 +72,7 @@ function Shell() {
   const { stats, loadError, retry } = useStatistics(user?.id)
   const statsAccounts = stats?.accounts ?? []
   const [territoryAlerts, setTerritoryAlerts] = useState<TerritoryAlert[]>([])
-  const [alertDismissed, setAlertDismissed] = useState<Record<string, boolean>>({})
+  const [alertDismissed, setAlertDismissed] = useState<DismissedAlerts>(() => readDismissedAlerts())
   const [lowPerf] = useLowPerformanceSetting()
   const { presence } = usePresence(Boolean(user))
 
@@ -86,7 +94,9 @@ function Shell() {
     return () => { active = false; window.clearInterval(timer) }
   }, [user, statsAccounts.length, lowPerf])
 
-  const activeAlerts = territoryAlerts.filter((a) => !alertDismissed[a.id])
+  const activeAlerts = territoryAlerts.filter(
+    (alert) => !alert.read && !isAlertDismissed(alertDismissed, alert.id, Date.now()),
+  )
   const [playerOpen, setPlayerOpen] = useState(false)
   const [playerActivation, setPlayerActivation] = useState(0)
   const [playerSelection, setPlayerSelection] = useState<{ userId: number; uuid: string } | null>(null)
@@ -336,7 +346,7 @@ function Shell() {
             }}
             title={
               presence.in_game_account
-                ? `${presence.in_game_account.username} is ${presence.in_game_account.status_label} (click to view)`
+                ? `${displayPlayerName(presence.in_game_account.username)} is ${presence.in_game_account.status_label} (click to view)`
                 : `${presence.user_status_label} (click to view)`
             }
             style={{
@@ -372,7 +382,7 @@ function Shell() {
             />
             <span>
               {presence.in_game_account
-                ? `${presence.in_game_account.username}: ${presence.in_game_account.status_label}`
+                ? `${displayPlayerName(presence.in_game_account.username)}: ${presence.in_game_account.status_label}`
                 : presence.user_status_label}
             </span>
           </button>
@@ -411,8 +421,13 @@ function Shell() {
                 type="button"
                 className="btn btn-quiet"
                 onClick={() => {
-                  setAlertDismissed((prev) => ({ ...prev, [activeAlerts[0].id]: true }))
-                  void markTerritoryAlertsRead().catch(() => {})
+                  const alert = activeAlerts[0]
+                  setAlertDismissed((previous) => {
+                    const next = dismissAlert(previous, alert.id, Date.now())
+                    writeDismissedAlerts(next)
+                    return next
+                  })
+                  void markTerritoryAlertsRead(alert.id).catch(() => {})
                 }}
                 style={{ fontSize: '11px', padding: '2px 6px' }}
               >
@@ -497,7 +512,7 @@ function Shell() {
         </DesktopWindow>
         <DesktopWindow key={`player-controls-${user?.id ?? 'guest'}`} id="player-controls-window" title="Player Controls" icon={perfCenterIcon} kind="player"
           titleContent={selectedPlayer ? <span className="player-account-picker"><PlayerHead username={selectedPlayer.username} textureHash={selectedPlayer.skin_hash} /><select aria-label="Player account" value={selectedPlayer.uuid} onChange={(event) => { if (user) setPlayerSelection({ userId: user.id, uuid: event.target.value }) }}>
-            {statsAccounts.map((account) => <option key={account.uuid} value={account.uuid}>{account.username}</option>)}
+            {statsAccounts.map((account) => <option key={account.uuid} value={account.uuid}>{displayPlayerName(account.username)}</option>)}
           </select></span> : undefined}
           open={playerOpen} activation={playerActivation} active={active === 'player'}
           onFocus={() => setActive('player')} onClose={hidePlayer} onMinimize={hidePlayer}>

@@ -16,6 +16,7 @@ import {
   type MyClanData,
   type PublicClan,
 } from '../lib/api'
+import { displayPlayerName } from '../lib/playerName'
 import { playSound } from '../lib/sounds'
 import coinIcon from '../assets/icons/coin.png'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
@@ -572,7 +573,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                             }}
                           />
                           <div>
-                            <span style={{ fontWeight: 600, color: 'var(--text)' }}>{m.username}</span>
+                            <span style={{ fontWeight: 600, color: 'var(--text)' }}>{displayPlayerName(m.username)}</span>
                             {m.uuid === clanData.my_uuid && (
                               <span style={{ fontSize: 10, color: 'var(--primary-bottom, #0284c7)', marginLeft: 6, fontWeight: 700 }}>
                                 (YOU)
@@ -622,7 +623,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                                 {isLeader && m.role === 'member' && (
                                   <button
                                     type="button"
-                                    onClick={() => handlePromote(m.uuid, m.username, 'officer')}
+                                    onClick={() => handlePromote(m.uuid, displayPlayerName(m.username), 'officer')}
                                     style={{
                                       padding: '3px 8px',
                                       borderRadius: 4,
@@ -639,7 +640,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                                 {isLeader && m.role === 'officer' && (
                                   <button
                                     type="button"
-                                    onClick={() => handlePromote(m.uuid, m.username, 'member')}
+                                    onClick={() => handlePromote(m.uuid, displayPlayerName(m.username), 'member')}
                                     style={{
                                       padding: '3px 8px',
                                       borderRadius: 4,
@@ -656,7 +657,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                                 {isLeader && (
                                   <button
                                     type="button"
-                                    onClick={() => handlePromote(m.uuid, m.username, 'leader')}
+                                    onClick={() => handlePromote(m.uuid, displayPlayerName(m.username), 'leader')}
                                     style={{
                                       padding: '3px 8px',
                                       borderRadius: 4,
@@ -673,7 +674,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                                 {(isLeader || (clanData.my_role === 'officer' && m.role === 'member')) && (
                                   <button
                                     type="button"
-                                    onClick={() => handleKick(m.uuid, m.username)}
+                                    onClick={() => handleKick(m.uuid, displayPlayerName(m.username))}
                                     style={{
                                       padding: '3px 8px',
                                       borderRadius: 4,
@@ -809,7 +810,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                               {new Date(log.created_at).toLocaleString()}
                             </td>
                             <td style={{ padding: '8px', fontWeight: 600, color: 'var(--text)' }}>
-                              {log.player_username}
+                              {displayPlayerName(log.player_username)}
                             </td>
                             <td style={{ padding: '8px' }}>
                               <span
@@ -1093,7 +1094,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
-                            {base.owner_username}’s Base #{base.block_index}
+                            {displayPlayerName(base.owner_username)}’s Base #{base.block_index}
                           </span>
                           <span
                             style={{
@@ -1427,7 +1428,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                           </span>
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
-                          Invited for character: <strong>{inv.invited_username}</strong>
+                          Invited for character: <strong>{displayPlayerName(inv.invited_username)}</strong>
                         </div>
                       </div>
 
@@ -1532,7 +1533,7 @@ export default function ClanPage({ visible, onOpenMap }: Props) {
                               <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{c.description}</div>
                             )}
                           </td>
-                          <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{c.leader_username}</td>
+                          <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{displayPlayerName(c.leader_username)}</td>
                           <td style={{ padding: '10px 10px', color: 'var(--muted)' }}>{c.member_count}</td>
                           <td style={{ padding: '10px 10px', textAlign: 'right', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#eab308' }}>
                             {c.coins.toLocaleString()} c

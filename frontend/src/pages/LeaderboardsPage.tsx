@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { getLeaderboards, type LeaderboardResponse } from '../lib/api'
 import PlayerHead from '../components/PlayerHead'
+import { displayPlayerName } from '../lib/playerName'
 import perfCenterIcon from '../assets/icons/vista-perf-center.png'
 
 type Category = {
@@ -230,7 +231,7 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
                                     onOpenPlayer?.(entry.uuid)
                                   }
                                 }}
-                                title={onOpenPlayer ? `View ${entry.username} in Player Controls` : undefined}
+                                title={onOpenPlayer ? `View ${displayPlayerName(entry.username)} in Player Controls` : undefined}
                               >
                                 <td className="td-rank">{renderRankBadge(entry.rank)}</td>
                                 <td className="td-player">
@@ -238,7 +239,7 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
                                     <span className={`table-avatar ${getAvatarRankClass(entry.rank)}`}>
                                       <PlayerHead username={entry.username} textureHash={entry.skin_hash} />
                                     </span>
-                                    <span className="player-name">{entry.username}</span>
+                                    <span className="player-name">{displayPlayerName(entry.username)}</span>
                                     {isMe && <span className="you-badge">You</span>}
                                   </div>
                                 </td>
@@ -349,7 +350,7 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
                               onOpenPlayer?.(entry.uuid)
                             }
                           }}
-                          title={onOpenPlayer ? `View ${entry.username} in Player Controls` : undefined}
+                          title={onOpenPlayer ? `View ${displayPlayerName(entry.username)} in Player Controls` : undefined}
                         >
                           <td className="td-rank">{renderRankBadge(entry.rank)}</td>
                           <td className="td-player">
@@ -357,7 +358,7 @@ export default function LeaderboardsPage({ visible, onOpenPlayer, linkedUuids = 
                               <span className={`table-avatar ${getAvatarRankClass(entry.rank)}`}>
                                 <PlayerHead username={entry.username} textureHash={entry.skin_hash} />
                               </span>
-                              <span className="player-name">{entry.username}</span>
+                              <span className="player-name">{displayPlayerName(entry.username)}</span>
                               {isMe && <span className="you-badge">Your Account</span>}
                             </div>
                           </td>

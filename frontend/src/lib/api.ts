@@ -920,8 +920,10 @@ export async function getTerritoryAlerts(): Promise<TerritoryAlert[]> {
   return (await response.json()) as TerritoryAlert[]
 }
 
-export async function markTerritoryAlertsRead(): Promise<void> {
-  const response = await send('POST', '/api/territory/alerts/read', {})
+export async function markTerritoryAlertsRead(id?: string): Promise<void> {
+  // Without an id the panel dismisses every stored alert; the toast names the one
+  // the player actually clicked so a waiting breach is not swallowed with it.
+  const response = await send('POST', '/api/territory/alerts/read', id === undefined ? {} : { id })
   if (!response.ok) throw new ApiError(response.status)
 }
 

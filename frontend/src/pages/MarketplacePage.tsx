@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError, buyMarketListing, cancelMarketListing, getMarketplace, giftMarketListing, type MarketListing, type MarketPurchase, type MarketView, type StatsAccount } from '../lib/api'
 import ItemBubble from '../components/ItemBubble'
 import { durabilityText, itemName, slotDescription } from '../lib/inventory'
+import { displayPlayerName } from '../lib/playerName'
 import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 
@@ -83,7 +84,7 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
           message: giftMessage.trim() || undefined,
         })
         playSound('done')
-        setMessage(`Parcel sent to ${giftRecipient.trim()}! When they log into Minecraft, they will see: You received a delivery from ${buyerAccount.username}! Type /mail claim.`)
+        setMessage(`Parcel sent to ${displayPlayerName(giftRecipient.trim())}! When they log into Minecraft, they will see: You received a delivery from ${displayPlayerName(buyerAccount.username)}! Type /mail claim.`)
         invalidateServerData('stats'); dismiss()
         return
       } else {
@@ -123,21 +124,21 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
         <button className="btn" aria-pressed={mine} onClick={() => { setMine(true); setCursors([]) }}>My listings</button>
       </div>
     </div>
-    {accounts.length > 0 ? <details className="market-sell"><summary>Sell items from your inventory</summary><p>Open a player’s Inventory, select a bubble, then choose Send to Marketplace.</p><div className="inv-actions">{accounts.map((account) => <button key={account.uuid} className="btn" onClick={() => onOpenInventory(account.uuid)}>{account.username}’s inventory</button>)}</div></details> : <p className="note">Link a Minecraft account in Account to sell items or buy with its coins.</p>}
+    {accounts.length > 0 ? <details className="market-sell"><summary>Sell items from your inventory</summary><p>Open a player’s Inventory, select a bubble, then choose Send to Marketplace.</p><div className="inv-actions">{accounts.map((account) => <button key={account.uuid} className="btn" onClick={() => onOpenInventory(account.uuid)}>{displayPlayerName(account.username)}’s inventory</button>)}</div></details> : <p className="note">Link a Minecraft account in Account to sell items or buy with its coins.</p>}
     {loadError && <div className="note" data-tone="error" role="alert"><p>{loadError}</p><button className="btn" onClick={() => setVersion((value) => value + 1)}>Retry loading Marketplace</button></div>}
     {message && <p className="note" data-tone="success" role="status">{message}</p>}
     {selected && <section key={selected.id} className="note inv-selection" aria-labelledby={formId} onKeyDown={(event) => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); dismiss() } }}>
       <h2 ref={heading} tabIndex={-1} id={formId}>{itemName(selected.item)}</h2>
-      <p>{slotDescription(selected.item)} · Seller: {selected.seller}</p>
+      <p>{slotDescription(selected.item)} · Seller: {displayPlayerName(selected.seller)}</p>
       <p>Seller commission: {selected.commission_bps / 100}%, included in the displayed price. {selected.mine && `${selected.gross_sold.toLocaleString()} coins sold · ${selected.fee_paid.toLocaleString()} coins commission charged.`}</p>
       {selected.status !== 'active' ? <p>{selected.status === 'pending' ? 'Waiting for the game server to transfer these items.' : selected.status === 'conflict' ? 'The stack changed or could not be transferred. Nothing was listed.' : 'This listing is closed.'}</p>
-        : selected.mine ? <><p>{selected.remaining} unsold items. Cancel this listing to return them to {selected.seller}’s inventory. Delivery waits for an empty storage slot.</p>
-          {sellerQueueFull && <p className="note" data-tone="error" role="alert">{selected.seller} already has 5 items queued for delivery. Free inventory space in-game before returning more items.</p>}
+        : selected.mine ? <><p>{selected.remaining} unsold items. Cancel this listing to return them to {displayPlayerName(selected.seller)}’s inventory. Delivery waits for an empty storage slot.</p>
+          {sellerQueueFull && <p className="note" data-tone="error" role="alert">{displayPlayerName(selected.seller)} already has 5 items queued for delivery. Free inventory space in-game before returning more items.</p>}
           <button className="btn" disabled={busy || sellerQueueFull} onClick={() => { void trade(true) }}>{busy ? 'Cancelling…' : 'Cancel listing & return items'}</button></>
         : <form onSubmit={(event) => { event.preventDefault(); void trade() }}>
           <fieldset disabled={busy || purchase !== null} className="market-buy-fields">
             <div className="market-fields">
-              <label>Buy as<select value={buyerAccount?.uuid ?? ''} onChange={(event) => setBuyer(event.target.value)} required><option value="" disabled>Choose a linked player</option>{accounts.map((account) => <option key={account.uuid} value={account.uuid}>{account.username} · {account.coins.toLocaleString()} coins</option>)}</select></label>
+              <label>Buy as<select value={buyerAccount?.uuid ?? ''} onChange={(event) => setBuyer(event.target.value)} required><option value="" disabled>Choose a linked player</option>{accounts.map((account) => <option key={account.uuid} value={account.uuid}>{displayPlayerName(account.username)} · {account.coins.toLocaleString()} coins</option>)}</select></label>
               <label>Price option<select value={pricing} onChange={(event) => setPricing(event.target.value as 'unit' | 'lot')}>
                 {selected.unit_price !== null && <option value="unit">Per item · {selected.unit_price.toLocaleString()} coins each</option>}
                 {selected.lot_price !== null && <option value="lot">Whole lot · {selected.lot_price.toLocaleString()} coins</option>}
@@ -164,8 +165,8 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
             </div>
           </fieldset>
           <p className="market-total">{purchase ? `Retrying the same purchase: ${purchase.body.quantity} items for ${purchase.body.expected_total.toLocaleString()} coins.` : valid ? `${amount} ${amount === 1 ? 'item' : 'items'} · ${total?.toLocaleString()} coins total` : 'Choose a valid quantity.'}</p>
-          <p>{isGift ? `Coins debit from ${buyerAccount?.username ?? 'your account'}. The recipient will receive an alert in Minecraft: "You received a delivery from ${buyerAccount?.username ?? 'you'}! Type /mail claim."` : `Coins transfer immediately after purchase. Items arrive in ${buyerAccount?.username ?? 'your player'}’s inventory once a storage slot is free, online or offline.`}</p>
-          {buyerQueueFull && <p className="note" data-tone="error" role="alert">{buyerAccount?.username} already has 5 items queued for delivery. Free inventory space in-game before buying more.</p>}
+          <p>{isGift ? `Coins debit from ${displayPlayerName(buyerAccount?.username) || 'your account'}. The recipient will receive an alert in Minecraft: "You received a delivery from ${displayPlayerName(buyerAccount?.username) || 'you'}! Type /mail claim."` : `Coins transfer immediately after purchase. Items arrive in ${displayPlayerName(buyerAccount?.username) || 'your player'}’s inventory once a storage slot is free, online or offline.`}</p>
+          {buyerQueueFull && <p className="note" data-tone="error" role="alert">{displayPlayerName(buyerAccount?.username)} already has 5 items queued for delivery. Free inventory space in-game before buying more.</p>}
           <button className="btn btn-primary" type="submit" disabled={busy || buyerQueueFull || (!purchase && (!valid || !buyerAccount || (isGift && !giftRecipient.trim())))}>{busy ? 'Confirming…' : isGift ? 'Dispatch Parcel Gift' : purchase ? 'Retry purchase' : 'Confirm purchase'}</button>
         </form>}
       <button className="btn market-dismiss" disabled={busy} onClick={dismiss}>Close details</button>
@@ -183,7 +184,7 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
               <span className="market-durability-pill"> ({durabilityText(listing.item)} durability)</span>
             )}
           </button>
-          <span>{listing.remaining} available · {listing.mine ? 'Your listing' : listing.seller}</span>
+          <span>{listing.remaining} available · {listing.mine ? 'Your listing' : displayPlayerName(listing.seller)}</span>
           {listing.status === 'active' ? <span className="market-prices">{listing.unit_price !== null && <span>{listing.unit_price.toLocaleString()} coins / item</span>}{listing.lot_price !== null && <span>{listing.lot_price.toLocaleString()} coins / whole lot</span>}</span> : <span>{listing.status === 'pending' ? 'Awaiting server transfer' : listing.status === 'conflict' ? 'Transfer unsuccessful' : 'Closed'}</span>}
         </div>
       </li>)}
@@ -192,6 +193,6 @@ export default function MarketplacePage({ visible, accounts, onOpenInventory }: 
       <button className="btn" disabled={cursors.length === 0} onClick={() => setCursors((pages) => pages.slice(0, -1))}>Previous listings</button>
       <button className="btn" disabled={!market.next_cursor} onClick={() => { if (market.next_cursor) setCursors((pages) => [...pages, market.next_cursor!]) }}>More listings</button>
     </nav>}
-    {market && market.deliveries.length > 0 && <section className="market-deliveries"><h2>Deliveries & returns</h2><p className="page-sub">Pending items wait safely for an empty storage slot. You can stay offline.</p><ul className="rows">{market.deliveries.map((delivery) => <li className="row" key={delivery.id}><span>{delivery.quantity} × {itemName(delivery.item)} → {delivery.username}</span><strong>{delivery.status === 'done' ? 'Delivered' : 'Waiting for inventory space / server'}</strong></li>)}</ul></section>}
+    {market && market.deliveries.length > 0 && <section className="market-deliveries"><h2>Deliveries & returns</h2><p className="page-sub">Pending items wait safely for an empty storage slot. You can stay offline.</p><ul className="rows">{market.deliveries.map((delivery) => <li className="row" key={delivery.id}><span>{delivery.quantity} × {itemName(delivery.item)} → {displayPlayerName(delivery.username)}</span><strong>{delivery.status === 'done' ? 'Delivered' : 'Waiting for inventory space / server'}</strong></li>)}</ul></section>}
   </>
 }

@@ -6,6 +6,7 @@ import {
   type Parcel,
 } from '../lib/api'
 import { parcelSummary } from '../lib/parcels'
+import { displayPlayerName } from '../lib/playerName'
 import ItemBubble from '../components/ItemBubble'
 import { playSound } from '../lib/sounds'
 import globeIcon from '../assets/icons/vista-search-globe.png'
@@ -79,7 +80,7 @@ export default function MailPage({ uuid, username, visible, onOpenInventory }: P
         message: message.trim() || undefined,
       })
       playSound('done')
-      setActionSuccess(`Parcel sent to ${recipient.trim()} with ${coinsNum.toLocaleString()} coins! When they log into Minecraft, they will see: You received a delivery from ${username}! Type /mail claim.`)
+      setActionSuccess(`Parcel sent to ${displayPlayerName(recipient.trim())} with ${coinsNum.toLocaleString()} coins! When they log into Minecraft, they will see: You received a delivery from ${username}! Type /mail claim.`)
       setRecipient('')
       setCoins('')
       setMessage('')
@@ -159,7 +160,7 @@ export default function MailPage({ uuid, username, visible, onOpenInventory }: P
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600 }}>{parcelSummary(p)}</div>
                     <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
-                      From <strong>{p.sender_username}</strong> · Sent {new Date(p.created_at).toLocaleString()}
+                      From <strong>{displayPlayerName(p.sender_username)}</strong> · Sent {new Date(p.created_at).toLocaleString()}
                       {p.message && <span> — <em>"{p.message}"</em></span>}
                     </div>
                   </div>
@@ -256,7 +257,7 @@ export default function MailPage({ uuid, username, visible, onOpenInventory }: P
             {mySent.slice(0, 10).map((p) => (
               <li key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--line)', borderRadius: '6px', fontSize: '13px' }}>
                 <div>
-                  <strong>{parcelSummary(p)}</strong> to <strong>{p.recipient_username}</strong>
+                  <strong>{parcelSummary(p)}</strong> to <strong>{displayPlayerName(p.recipient_username)}</strong>
                   <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
                     Sent {new Date(p.created_at).toLocaleString()}
                     {p.message && <span> · "{p.message}"</span>}
