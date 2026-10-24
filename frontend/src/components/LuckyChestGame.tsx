@@ -9,6 +9,7 @@ import pufferfish from '../assets/items/pufferfish.png'
 import fish from '../assets/items/tropical_fish.png'
 import icon from '../assets/icons/game-lucky-chest.png'
 import PayerSelect from './PayerSelect'
+import { displayPlayerName } from '../lib/playerName'
 import GameBetControls from './GameBetControls'
 import { ApiError, spinChest } from '../lib/api'
 import { readChestRequest, writeChestRequest, type ChestRequest } from '../lib/chestRetry'
@@ -158,7 +159,7 @@ export default function LuckyChestGame({ onBack, payer, accounts, onChoosePayer,
     </div>
     <div className="page-head game-heading"><img src={icon} alt="" /><div><h1>Lucky Chest</h1><p className="page-sub">Three bubbles. A little ocean luck.</p></div></div>
     {error && <p className="note" data-tone="error" role="alert">{error}</p>}
-    {pending && !busy && <p className="note">A spin for {accounts.find((account) => account.uuid === pending.uuid)?.username ?? 'your previously selected player'} is unresolved. Recover it below before placing another stake.</p>}
+    {pending && !busy && <p className="note">A spin for {displayPlayerName(accounts.find((account) => account.uuid === pending.uuid)?.username) || 'your previously selected player'} is unresolved. Recover it below before placing another stake.</p>}
     <div className="game-layout">
       <section className="slot-machine" aria-label="Lucky Chest reels">
         <div className="slot-reels" aria-busy={busy}>

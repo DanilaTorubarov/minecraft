@@ -1,5 +1,6 @@
 import coinIcon from '../assets/icons/coin.png'
 import { formatCoins, type Payer } from '../lib/minigames'
+import { displayPlayerName } from '../lib/playerName'
 
 type Props = {
   payer: Payer
@@ -31,12 +32,12 @@ export default function PayerSelect({ payer, accounts, onChoose, disabled = fals
         >
           {accounts.map((account) => (
             <option key={account.uuid} value={account.uuid}>
-              {account.username}
+              {displayPlayerName(account.username)}
             </option>
           ))}
         </select>
       ) : (
-        <span className="casino-payer-name">{payer.username}</span>
+        <span className="casino-payer-name">{displayPlayerName(payer.username)}</span>
       )}
     </div>
   )

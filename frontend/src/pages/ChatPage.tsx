@@ -25,6 +25,7 @@ import {
   type ChatUserSearchResult,
 } from '../lib/api'
 import { useAuth } from '../lib/auth-context'
+import { displayPlayerName } from '../lib/playerName'
 import { playSound } from '../lib/sounds'
 import globeIcon from '../assets/icons/vista-search-globe.png'
 
@@ -118,7 +119,7 @@ function ChatAvatar({ name, uuid, size = 28 }: { name: string; uuid: string | nu
 
 function conversationPreview(conversation: ChatConversation): string {
   if (!conversation.last_message) return 'No messages yet'
-  return `${conversation.last_message.sender_name}: ${conversation.last_message.text}`
+  return `${displayPlayerName(conversation.last_message.sender_name)}: ${conversation.last_message.text}`
 }
 
 function composerMessage(error: unknown): string {
@@ -342,12 +343,12 @@ function ChatThread({
                   border: '1px solid rgba(255, 255, 255, 0.05)',
                 }}
               >
-                <ChatAvatar name={message.sender_name} uuid={message.sender_uuid} size={28} />
+                <ChatAvatar name={displayPlayerName(message.sender_name)} uuid={message.sender_uuid} size={28} />
 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>
-                      {message.sender_name}
+                      {displayPlayerName(message.sender_name)}
                     </span>
 
                     <span

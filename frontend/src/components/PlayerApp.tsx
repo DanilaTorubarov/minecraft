@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { StatsAccount, StatsView } from '../lib/api'
 import { usePresence } from '../lib/usePresence'
+import { displayPlayerName } from '../lib/playerName'
 import StatusBadge from './StatusBadge'
 import StatisticsPage from '../pages/StatisticsPage'
 import InventoryPage from '../pages/InventoryPage'
@@ -22,10 +23,13 @@ export default function PlayerApp({ account, stats, loadError, onRetry, onSelect
     setSeenLaunch(inventoryLaunch)
     if (inventoryLaunch > 0) { setPage('inventory'); setInventoryVisited(true) }
   }
+  // A Floodgate Bedrock name arrives as ".Kokochi7232"; the pages show the player
+  // as Kokochi7232 while the account's UUID keeps identifying them.
+  const playerName = displayPlayerName(account.username)
   return <>
     <div className="account-toolbar player-toolbar">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <span>{account.username}</span>
+        <span>{playerName}</span>
         {accPresence && (
           <StatusBadge
             status={accPresence.status}
@@ -36,7 +40,7 @@ export default function PlayerApp({ account, stats, loadError, onRetry, onSelect
           />
         )}
       </div>
-      <nav className="nav" aria-label={`${account.username} pages`}>
+      <nav className="nav" aria-label={`${playerName} pages`}>
       <button className="btn btn-quiet" aria-current={page === 'statistics' ? 'page' : undefined} onClick={() => setPage('statistics')}>Statistics</button>
       <button className="btn btn-quiet" aria-current={page === 'inventory' ? 'page' : undefined} onClick={() => { setPage('inventory'); setInventoryVisited(true) }}>Inventory</button>
       <button className="btn btn-quiet" aria-current={page === 'privates' ? 'page' : undefined} onClick={() => { setPage('privates'); setPrivatesVisited(true) }}>Privates</button>
@@ -45,10 +49,10 @@ export default function PlayerApp({ account, stats, loadError, onRetry, onSelect
     </nav></div>
     <div className="workspace stats-workspace"><main className="main">
       <div hidden={page !== 'statistics'}><StatisticsPage scope={account.uuid} stats={stats} loadError={loadError} onRetry={onRetry} onSelectAccount={onSelectAccount} onGoToAccount={onGoToAccount} /></div>
-      {inventoryVisited && <div hidden={page !== 'inventory'}><InventoryPage uuid={account.uuid} username={account.username} visible={open && page === 'inventory'} /></div>}
-      {privatesVisited && <div hidden={page !== 'privates'}><PrivatesPage uuid={account.uuid} username={account.username} visible={open && page === 'privates'} onOpenMarketplace={onOpenMarketplace} /></div>}
-      {mailVisited && <div hidden={page !== 'mail'}><MailPage uuid={account.uuid} username={account.username} visible={open && page === 'mail'} onOpenInventory={() => { setPage('inventory'); setInventoryVisited(true) }} /></div>}
-      {skinVisited && <div hidden={page !== 'skin'}><SkinPage uuid={account.uuid} username={account.username} visible={open && page === 'skin'} /></div>}
+      {inventoryVisited && <div hidden={page !== 'inventory'}><InventoryPage uuid={account.uuid} username={playerName} visible={open && page === 'inventory'} /></div>}
+      {privatesVisited && <div hidden={page !== 'privates'}><PrivatesPage uuid={account.uuid} username={playerName} visible={open && page === 'privates'} onOpenMarketplace={onOpenMarketplace} /></div>}
+      {mailVisited && <div hidden={page !== 'mail'}><MailPage uuid={account.uuid} username={playerName} visible={open && page === 'mail'} onOpenInventory={() => { setPage('inventory'); setInventoryVisited(true) }} /></div>}
+      {skinVisited && <div hidden={page !== 'skin'}><SkinPage uuid={account.uuid} username={playerName} visible={open && page === 'skin'} /></div>}
     </main></div>
   </>
 }

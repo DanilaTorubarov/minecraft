@@ -1,5 +1,6 @@
 import { formatDate, formatDuration, type StatsView } from '../lib/api'
 import PlayerHead from '../components/PlayerHead'
+import { displayPlayerName } from '../lib/playerName'
 import { STAT_GROUPS, countersOf, type StatCounters } from '../lib/statsFormat'
 
 type Props = {
@@ -91,7 +92,7 @@ function StatisticsPage({ onGoToAccount, scope, onSelectAccount, stats, loadErro
       return (
         <>
           <div className="page-head">
-            <h1 className="player-heading"><PlayerHead username={account.username} textureHash={account.skin_hash} />{account.username}</h1>
+            <h1 className="player-heading"><PlayerHead username={account.username} textureHash={account.skin_hash} />{displayPlayerName(account.username)}</h1>
             <p className="page-sub">
               <span className="row-id" title={account.uuid}>{account.uuid}</span>
               {' · '}Linked {formatDate(account.linked_at)}
@@ -192,9 +193,9 @@ function StatisticsPage({ onGoToAccount, scope, onSelectAccount, stats, loadErro
                     type="button"
                     className="stat-open"
                     onClick={() => onSelectAccount(account.uuid)}
-                    aria-label={`Show ${account.username}'s statistics`}
+                    aria-label={`Show ${displayPlayerName(account.username)}'s statistics`}
                   >
-                    <PlayerHead username={account.username} textureHash={account.skin_hash} />{account.username}
+                    <PlayerHead username={account.username} textureHash={account.skin_hash} />{displayPlayerName(account.username)}
                   </button>
                   <span className="row-id" title={account.uuid}>
                     {account.uuid}

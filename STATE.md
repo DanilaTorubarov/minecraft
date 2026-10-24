@@ -1,6 +1,35 @@
 # Project checkpoint — 2026-10-21
 
 
+## Dismissed territory alerts stay dismissed; Bedrock names lose the Floodgate dot — 2026-10-24
+
+- Reported: the "base breached by polka920" alert on `Danila_Teenager` reappeared after every
+  page reload even though Dismiss had been pressed, and a Bedrock account such as `.Kokochi7232`
+  showed its leading dot on the website.
+- The alert was **already** marked read in the database (`territory_alerts.read = true` for
+  `f3a605cd-…`), but `GET /api/territory/alerts` returned stored alerts regardless of `read`, so
+  the row came back with every poll and reload; the Dismiss button only hid it in React state.
+  `GET` now returns unread stored alerts only. The live low-fuel warning is derived from a block's
+  fuel and is deliberately still shown while the core is actually low.
+- `POST /api/territory/alerts/read` accepts an optional `{ "id": "…" }`, so the toast dismisses the
+  one alert it shows; a second breach waiting behind it is not swallowed. No body (or `{}`) still
+  marks every stored alert, as before. Dynamic low-fuel warnings have no row to mark, so the
+  desktop remembers their id in `minecraft-dismissed-alerts` for 12 hours (`lib/territoryAlerts.ts`);
+  without that they returned on reload too.
+- Bedrock display: Floodgate names every Bedrock player with a leading `.` (Geyser's
+  `bedrock.username-prefix`). `lib/playerName.ts#displayPlayerName` strips only that marker, and
+  every surface that prints a Minecraft name uses it — cabinet, statistics, Player Controls,
+  inventory/skin/privates/mail, marketplace, chat senders, clans, leaderboards, minigames payer,
+  bank transfer, presence and the admin panel. Stored identity (`minecraft_accounts.username`,
+  UUIDs, API payloads, comparisons, moderation calls) is untouched, so linking, lookups and
+  in-game actions keep working. Website display nicknames and group titles are never rewritten.
+- Verification: `cargo check --tests` and the extended `territory_defense_alerts_low_fuel_and_breach`
+  (read exclusion, per-id dismissal, a second breach still shown, unknown id a no-op) pass;
+  `npm run build`, `npm run lint` and `npm test` (101 tests, including the two new helper suites)
+  pass on Node 24. Nothing was deployed; the running stack still serves the old build until
+  `docker compose --env-file .env.docker up --build -d proxy app`.
+
+
 ## Spawn protection disabled ahead of the spawn rework — 2026-10-23
 
 - `SPAWN_PROTECTION: "0"` in `compose.yaml` now owns vanilla's `spawn-protection`, and the runtime

@@ -16,6 +16,7 @@ import { useAuth } from '../lib/auth-context'
 import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 import { linkCommand } from '../lib/linkCommand'
+import { displayPlayerName } from '../lib/playerName'
 import { usePresence } from '../lib/usePresence'
 import { useStatistics } from '../lib/useStatistics'
 import StatusBadge from '../components/StatusBadge'
@@ -165,7 +166,7 @@ function CabinetPage() {
   }
 
   const linked = accounts.length > 0
-  const names = accounts.map((account) => account.username)
+  const names = accounts.map((account) => displayPlayerName(account.username))
   const since = linked ? formatDate(accounts[0].linked_at) : ''
   const secondsLeft =
     code === null ? 0 : Math.max(0, Math.ceil((expiresAt - now) / 1000))
@@ -303,7 +304,7 @@ function CabinetPage() {
                       <li className="row" key={account.uuid}>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                            <span className="row-name">{account.username}</span>
+                            <span className="row-name">{displayPlayerName(account.username)}</span>
                             <StatusBadge
                               status={accPresence?.status ?? 'offline'}
                               label={accPresence?.status_label}

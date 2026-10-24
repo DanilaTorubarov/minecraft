@@ -18,6 +18,7 @@ import {
   type ChatMessage,
   type ConsoleLogEntry,
 } from '../lib/api'
+import { displayPlayerName } from '../lib/playerName'
 import { invalidateServerData } from '../lib/serverData'
 import { playSound } from '../lib/sounds'
 import firewallOnIcon from '../assets/icons/vista-firewall-on.png'
@@ -326,7 +327,7 @@ export default function AdminPage({ visible }: Props) {
           uuid: targetUuid,
           reason: modReason.trim() || undefined,
         })
-        setSuccessMessage(`Player ${targetUsername} has been kicked.`)
+        setSuccessMessage(`Player ${displayPlayerName(targetUsername)} has been kicked.`)
       } else if (modAction === 'ban') {
         await adminBanPlayer({
           username: targetUsername.trim(),
@@ -335,7 +336,7 @@ export default function AdminPage({ visible }: Props) {
           duration_seconds: modDuration > 0 ? modDuration : undefined,
         })
         setSuccessMessage(
-          `Player ${targetUsername} has been banned (${modDuration > 0 ? `${modDuration / 3600}h` : 'permanently'}).`
+          `Player ${displayPlayerName(targetUsername)} has been banned (${modDuration > 0 ? `${modDuration / 3600}h` : 'permanently'}).`
         )
       } else if (modAction === 'mute') {
         await adminMutePlayer({
@@ -345,7 +346,7 @@ export default function AdminPage({ visible }: Props) {
           duration_seconds: modDuration > 0 ? modDuration : undefined,
         })
         setSuccessMessage(
-          `Player ${targetUsername} has been muted (${modDuration > 0 ? `${modDuration / 60}m` : 'permanently'}).`
+          `Player ${displayPlayerName(targetUsername)} has been muted (${modDuration > 0 ? `${modDuration / 60}m` : 'permanently'}).`
         )
       }
       playSound('done')
@@ -355,37 +356,37 @@ export default function AdminPage({ visible }: Props) {
       const data = await getAdminMetrics()
       setMetrics(data)
     } catch {
-      setError(`Failed to apply ${modAction} on ${targetUsername}.`)
+      setError(`Failed to apply ${modAction} on ${displayPlayerName(targetUsername)}.`)
     } finally {
       setModSubmitting(false)
     }
   }
 
   const handleUnban = async (username: string) => {
-    if (!confirm(`Unban player ${username}?`)) return
+    if (!confirm(`Unban player ${displayPlayerName(username)}?`)) return
     playSound('click')
     try {
       await adminUnbanPlayer(username)
       playSound('done')
-      setSuccessMessage(`Player ${username} has been unbanned.`)
+      setSuccessMessage(`Player ${displayPlayerName(username)} has been unbanned.`)
       void refreshModeration()
     } catch {
-      setError(`Failed to unban ${username}.`)
+      setError(`Failed to unban ${displayPlayerName(username)}.`)
     }
   }
 
   const handleUnmute = async (username: string) => {
-    if (!confirm(`Unmute player ${username}?`)) return
+    if (!confirm(`Unmute player ${displayPlayerName(username)}?`)) return
     playSound('click')
     try {
       await adminUnmutePlayer(username)
       playSound('done')
-      setSuccessMessage(`Player ${username} has been unmuted.`)
+      setSuccessMessage(`Player ${displayPlayerName(username)} has been unmuted.`)
       void refreshModeration()
       const data = await getAdminMetrics()
       setMetrics(data)
     } catch {
-      setError(`Failed to unmute ${username}.`)
+      setError(`Failed to unmute ${displayPlayerName(username)}.`)
     }
   }
 
@@ -413,7 +414,7 @@ export default function AdminPage({ visible }: Props) {
       const delta = res.new_coins - res.previous_coins
       const deltaFormatted = delta >= 0 ? `+${delta.toLocaleString()}` : `${delta.toLocaleString()}`
       setSuccessMessage(
-        `Balance for ${res.username} successfully updated to ${res.new_coins.toLocaleString()} coins (${deltaFormatted} coins).`
+        `Balance for ${displayPlayerName(res.username)} successfully updated to ${res.new_coins.toLocaleString()} coins (${deltaFormatted} coins).`
       )
       setAmountInput('')
       invalidateServerData('stats')
@@ -879,7 +880,7 @@ export default function AdminPage({ visible }: Props) {
                             }}
                           />
                           <div>
-                            <div style={{ fontWeight: 600, color: 'var(--text)' }}>{p.username}</div>
+                            <div style={{ fontWeight: 600, color: 'var(--text)' }}>{displayPlayerName(p.username)}</div>
                             <code style={{ fontSize: 10, color: 'var(--muted)' }}>{p.uuid.slice(0, 8)}…</code>
                           </div>
                         </td>
@@ -1238,7 +1239,7 @@ export default function AdminPage({ visible }: Props) {
                     {modList.bans.map((b) => (
                       <tr key={b.id} style={{ borderBottom: '1px solid var(--line)' }}>
                         <td style={{ padding: '8px 10px', fontWeight: 600, color: 'var(--text)' }}>
-                          {b.username}
+                          {displayPlayerName(b.username)}
                         </td>
                         <td style={{ padding: '8px 10px', color: 'var(--muted)' }}>{b.reason}</td>
                         <td style={{ padding: '8px 10px', color: 'var(--muted)' }}>{b.banned_by_or_muted_by}</td>
@@ -1321,7 +1322,7 @@ export default function AdminPage({ visible }: Props) {
                     {modList.mutes.map((m) => (
                       <tr key={m.id} style={{ borderBottom: '1px solid var(--line)' }}>
                         <td style={{ padding: '8px 10px', fontWeight: 600, color: 'var(--text)' }}>
-                          {m.username}
+                          {displayPlayerName(m.username)}
                         </td>
                         <td style={{ padding: '8px 10px', color: 'var(--muted)' }}>{m.reason}</td>
                         <td style={{ padding: '8px 10px', color: 'var(--muted)' }}>{m.banned_by_or_muted_by}</td>
@@ -1473,7 +1474,7 @@ export default function AdminPage({ visible }: Props) {
                   >
                     {msg.source}
                   </span>
-                  <strong style={{ color: 'var(--text)', flexShrink: 0 }}>{msg.sender_name}:</strong>
+                  <strong style={{ color: 'var(--text)', flexShrink: 0 }}>{displayPlayerName(msg.sender_name)}:</strong>
                   <span style={{ color: 'var(--text)', wordBreak: 'break-word' }}>{msg.text}</span>
                 </div>
               ))
@@ -1553,7 +1554,7 @@ export default function AdminPage({ visible }: Props) {
                             ;(e.currentTarget as HTMLImageElement).style.display = 'none'
                           }}
                         />
-                        <span>{acc.username}</span>
+                        <span>{displayPlayerName(acc.username)}</span>
                         {acc.is_self && (
                           <span
                             style={{
