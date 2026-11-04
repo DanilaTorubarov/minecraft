@@ -48,3 +48,6 @@ Dockerfile.local
 /.tmp.drive*/
 __pycache__/
 *.pyc
+
+# Agent skills and tooling
+/.agent/
